@@ -25,20 +25,20 @@ export const qualifyWorker = new Worker<QualifyJob>(
       throw new Error(`Lead ${lead_id} not found`)
     }
 
-    // Use the first active campaign's ICP config, or a sensible default
-    const { data: campaigns } = await supabase
-      .from('campaigns')
-      .select('icp_config')
-      .eq('user_id', user_id)
-      .eq('status', 'active')
-      .limit(1)
+    // Use user-level ICP config from settings, fallback to first active campaign's config
+    const [settingsRes, campaignsRes] = await Promise.all([
+      supabase.from('user_settings').select('icp_config').eq('user_id', user_id).maybeSingle(),
+      supabase.from('campaigns').select('icp_config').eq('user_id', user_id).eq('status', 'active').limit(1),
+    ])
 
-    const icpConfig = campaigns?.[0]?.icp_config ?? {
-      target_titles: ['CEO', 'CTO', 'VP', 'Director', 'Head of', 'Founder'],
-      target_industries: [],
-      target_locations: [],
-      notes: 'Score based on seniority and decision-making authority.',
-    }
+    const icpConfig = settingsRes.data?.icp_config
+      ?? campaignsRes.data?.[0]?.icp_config
+      ?? {
+        target_titles: ['CEO', 'CTO', 'VP', 'Director', 'Head of', 'Founder'],
+        target_industries: [],
+        target_locations: [],
+        notes: 'Score based on seniority and decision-making authority.',
+      }
 
     const result = await qualifyLead(
       {

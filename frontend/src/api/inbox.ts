@@ -79,6 +79,18 @@ export async function fetchUnreadCount(): Promise<number> {
   return count ?? 0
 }
 
+export async function updateLeadStatus(
+  campaignLeadId: string,
+  status: string
+): Promise<void> {
+  const res = await apiFetch(`/api/inbox/${campaignLeadId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status }),
+  })
+  if (!res.ok) throw new Error('Failed to update status')
+}
+
 export async function markThreadRead(campaignLeadId: string): Promise<void> {
   await apiFetch(`/api/inbox/${campaignLeadId}/mark-read`, { method: 'POST' })
 }

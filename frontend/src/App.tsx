@@ -11,6 +11,7 @@ import { Inbox } from './pages/Inbox'
 import { Accounts } from './pages/Accounts'
 import { Blacklist } from './pages/Blacklist'
 import { Templates } from './pages/Templates'
+import { Settings } from './pages/Settings'
 import { Login } from './pages/Login'
 import { Signup } from './pages/Signup'
 
@@ -44,6 +45,7 @@ function App() {
                 <Route path="/accounts" element={<Accounts />} />
                 <Route path="/blacklist" element={<Blacklist />} />
                 <Route path="/templates" element={<Templates />} />
+                <Route path="/settings" element={<Settings />} />
               </Route>
             </Route>
 

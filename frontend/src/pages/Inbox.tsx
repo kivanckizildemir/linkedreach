@@ -4,6 +4,7 @@ import {
   fetchInbox,
   fetchThread,
   updateClassification,
+  updateLeadStatus,
   replyToConversation,
   getSuggestions,
   markThreadRead,
@@ -116,6 +117,15 @@ export function Inbox() {
   const suggestionMutation = useMutation({
     mutationFn: (id: string) => getSuggestions(id),
     onSuccess: () => setShowSuggestions(true),
+  })
+
+  const statusMutation = useMutation({
+    mutationFn: ({ id, status }: { id: string; status: string }) =>
+      updateLeadStatus(id, status),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['inbox'] })
+      void queryClient.invalidateQueries({ queryKey: ['thread', selectedId] })
+    },
   })
 
   return (
@@ -256,6 +266,25 @@ export function Inbox() {
                 >
                   Open LinkedIn profile ↗
                 </a>
+                {/* Mark as Converted */}
+                {selectedMsg.campaign_lead.status !== 'converted' ? (
+                  <button
+                    onClick={() =>
+                      statusMutation.mutate({
+                        id: selectedMsg.campaign_lead_id,
+                        status: 'converted',
+                      })
+                    }
+                    disabled={statusMutation.isPending}
+                    className="text-xs font-medium px-3 py-1.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-lg hover:bg-emerald-100 disabled:opacity-50 transition-colors"
+                  >
+                    {statusMutation.isPending ? '…' : '✓ Mark Converted'}
+                  </button>
+                ) : (
+                  <span className="text-xs font-medium px-3 py-1.5 bg-emerald-100 text-emerald-700 rounded-lg border border-emerald-200">
+                    ✓ Converted
+                  </span>
+                )}
               </div>
             </div>
 
