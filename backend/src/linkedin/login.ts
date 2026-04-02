@@ -100,7 +100,7 @@ async function resolveProxy(accountId: string): Promise<
   if (BD_PROXY_URL) {
     const url = new URL(BD_PROXY_URL)
     const host = url.hostname
-    const port = url.port === '33335' ? '22225' : url.port
+    const port = url.port
     return {
       server:   `http://${host}:${port}`,
       username: decodeURIComponent(url.username) || undefined,
