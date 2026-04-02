@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { fetchLeads, requalifyLead, qualifyAllLeads, importLeads, startSalesNavImport, getScrapeStatus, fetchLeadNotes, addLeadNote, deleteLeadNote } from '../api/leads'
 import type { Lead, LeadNote } from '../api/leads'
+import { fetchLabels, fetchLeadLabels, assignLabel, removeLabel, createLabel, type LeadLabel } from '../api/labels'
 import { fetchAccounts } from '../api/accounts'
 import { fetchCampaigns, addLeadsToCampaign } from '../api/campaigns'
 import * as XLSX from 'xlsx'
@@ -60,6 +61,8 @@ export function Leads() {
   const [showAddToCampaign, setShowAddToCampaign] = useState(false)
   const [targetCampaignId, setTargetCampaignId] = useState('')
   const [notesLead, setNotesLead] = useState<Lead | null>(null)
+  const [labelsLead, setLabelsLead] = useState<Lead | null>(null)
+  const [showManageLabels, setShowManageLabels] = useState(false)
 
   const { data: leads = [], isLoading } = useQuery({
     queryKey: ['leads', { search, icp_flag: icpFlag }],
@@ -83,6 +86,11 @@ export function Leads() {
   })
 
   const unscoredCount = leads.filter(l => l.icp_score == null).length
+
+  const { data: labels = [] } = useQuery({
+    queryKey: ['labels'],
+    queryFn: fetchLabels,
+  })
 
   const { data: campaigns = [] } = useQuery({
     queryKey: ['campaigns'],
@@ -143,6 +151,15 @@ export function Leads() {
               Export CSV
             </button>
           )}
+          <button
+            onClick={() => setShowManageLabels(true)}
+            className="px-4 py-2 border border-gray-300 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-50 transition-colors flex items-center gap-1.5"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" />
+            </svg>
+            Labels
+          </button>
           <button
             onClick={() => setShowCsvModal(true)}
             className="px-4 py-2 border border-gray-300 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-50 transition-colors"
@@ -219,6 +236,7 @@ export function Leads() {
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Company</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ICP Score</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Flag</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Labels</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Source</th>
                 <th className="px-4 py-3" />
               </tr>
@@ -226,11 +244,11 @@ export function Leads() {
             <tbody className="divide-y divide-gray-100">
               {isLoading ? (
                 <tr>
-                  <td colSpan={8} className="px-4 py-16 text-center text-gray-400 text-sm">Loading…</td>
+                  <td colSpan={9} className="px-4 py-16 text-center text-gray-400 text-sm">Loading…</td>
                 </tr>
               ) : leads.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="px-4 py-16 text-center text-gray-500">
+                  <td colSpan={9} className="px-4 py-16 text-center text-gray-500">
                     No leads yet. Import from a Sales Navigator Excel export to get started.
                   </td>
                 </tr>
@@ -277,6 +295,9 @@ export function Leads() {
                         ) : (
                           <span className="text-gray-400 text-xs italic">Unscored</span>
                         )}
+                      </td>
+                      <td className="px-4 py-3">
+                        <LeadLabelCell leadId={lead.id} allLabels={labels} queryClient={queryClient} />
                       </td>
                       <td className="px-4 py-3 text-gray-500 capitalize">{lead.source.replace('_', ' ')}</td>
                       <td className="px-4 py-3 text-right">
@@ -356,6 +377,15 @@ export function Leads() {
         <NotesDrawer
           lead={notesLead}
           onClose={() => setNotesLead(null)}
+          queryClient={queryClient}
+        />
+      )}
+
+      {/* Manage Labels Modal */}
+      {showManageLabels && (
+        <ManageLabelsModal
+          labels={labels}
+          onClose={() => setShowManageLabels(false)}
           queryClient={queryClient}
         />
       )}
@@ -466,6 +496,206 @@ function parseSheet(rows: Record<string, string>[]): ParsedLead[] {
     })
   }
   return leads
+}
+
+// ── Lead Label Cell ──────────────────────────────────────────────────────────
+
+const PRESET_COLORS = [
+  '#6366f1', '#8b5cf6', '#ec4899', '#ef4444',
+  '#f97316', '#eab308', '#22c55e', '#14b8a6',
+  '#3b82f6', '#64748b',
+]
+
+function LeadLabelCell({
+  leadId,
+  allLabels,
+  queryClient,
+}: {
+  leadId: string
+  allLabels: LeadLabel[]
+  queryClient: ReturnType<typeof useQueryClient>
+}) {
+  const [open, setOpen] = useState(false)
+
+  const { data: assigned = [] } = useQuery({
+    queryKey: ['lead-labels', leadId],
+    queryFn: () => fetchLeadLabels(leadId),
+    enabled: open || true, // always load so chips show
+    staleTime: 60_000,
+  })
+
+  const assignMutation = useMutation({
+    mutationFn: (labelId: string) => assignLabel(leadId, labelId),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['lead-labels', leadId] }),
+  })
+
+  const removeMutation = useMutation({
+    mutationFn: (labelId: string) => removeLabel(leadId, labelId),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['lead-labels', leadId] }),
+  })
+
+  const assignedIds = new Set(assigned.map((l: LeadLabel) => l.id))
+
+  return (
+    <div className="relative flex items-center gap-1 flex-wrap min-w-[80px]">
+      {assigned.map((lbl: LeadLabel) => (
+        <span
+          key={lbl.id}
+          className="inline-flex items-center gap-0.5 text-[10px] font-medium px-2 py-0.5 rounded-full text-white cursor-pointer"
+          style={{ background: lbl.color }}
+          onClick={e => { e.stopPropagation(); removeMutation.mutate(lbl.id) }}
+          title={`Remove "${lbl.name}"`}
+        >
+          {lbl.name}
+          <svg className="w-2.5 h-2.5 opacity-70" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </span>
+      ))}
+      {allLabels.length > 0 && (
+        <div className="relative">
+          <button
+            onClick={e => { e.stopPropagation(); setOpen(v => !v) }}
+            className="w-5 h-5 rounded-full border border-dashed border-gray-300 text-gray-400 hover:border-gray-400 hover:text-gray-600 text-xs flex items-center justify-center transition-colors"
+            title="Add label"
+          >
+            +
+          </button>
+          {open && (
+            <>
+              <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
+              <div className="absolute left-0 top-6 z-40 bg-white rounded-xl shadow-xl border border-gray-200 p-2 min-w-[140px]">
+                {allLabels.filter(l => !assignedIds.has(l.id)).map(lbl => (
+                  <button
+                    key={lbl.id}
+                    onClick={() => { assignMutation.mutate(lbl.id); setOpen(false) }}
+                    className="flex items-center gap-2 w-full px-2 py-1.5 rounded-lg hover:bg-gray-50 text-left"
+                  >
+                    <span className="w-3 h-3 rounded-full shrink-0" style={{ background: lbl.color }} />
+                    <span className="text-sm text-gray-700">{lbl.name}</span>
+                  </button>
+                ))}
+                {allLabels.every(l => assignedIds.has(l.id)) && (
+                  <p className="text-xs text-gray-400 px-2 py-1">All labels assigned</p>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Manage Labels Modal ───────────────────────────────────────────────────────
+
+function ManageLabelsModal({
+  labels,
+  onClose,
+  queryClient,
+}: {
+  labels: LeadLabel[]
+  onClose: () => void
+  queryClient: ReturnType<typeof useQueryClient>
+}) {
+  const [newName, setNewName] = useState('')
+  const [newColor, setNewColor] = useState('#6366f1')
+
+  const createMutation = useMutation({
+    mutationFn: () => createLabel(newName.trim(), newColor),
+    onSuccess: () => {
+      setNewName('')
+      void queryClient.invalidateQueries({ queryKey: ['labels'] })
+    },
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => import('../api/labels').then(m => m.deleteLabel(id)),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['labels'] })
+      void queryClient.invalidateQueries({ queryKey: ['lead-labels'] })
+    },
+  })
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md">
+        <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+          <h2 className="text-lg font-semibold text-gray-900">Manage Labels</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">✕</button>
+        </div>
+
+        <div className="px-6 py-4 space-y-4">
+          {/* Create new label */}
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-2">New Label</label>
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={newName}
+                onChange={e => setNewName(e.target.value)}
+                placeholder="Label name…"
+                className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                onKeyDown={e => { if (e.key === 'Enter' && newName.trim()) createMutation.mutate() }}
+              />
+              <div className="flex gap-1">
+                {PRESET_COLORS.map(c => (
+                  <button
+                    key={c}
+                    onClick={() => setNewColor(c)}
+                    className={`w-5 h-5 rounded-full transition-transform ${newColor === c ? 'scale-125 ring-2 ring-offset-1 ring-gray-400' : ''}`}
+                    style={{ background: c }}
+                  />
+                ))}
+              </div>
+              <button
+                onClick={() => createMutation.mutate()}
+                disabled={!newName.trim() || createMutation.isPending}
+                className="px-3 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
+              >
+                Add
+              </button>
+            </div>
+          </div>
+
+          {/* Existing labels */}
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-2">
+              Existing Labels ({labels.length})
+            </label>
+            {labels.length === 0 ? (
+              <p className="text-sm text-gray-400 py-2">No labels yet.</p>
+            ) : (
+              <div className="space-y-1.5 max-h-48 overflow-y-auto">
+                {labels.map(lbl => (
+                  <div key={lbl.id} className="flex items-center gap-3 py-1.5 px-2 rounded-lg hover:bg-gray-50 group">
+                    <span className="w-3 h-3 rounded-full shrink-0" style={{ background: lbl.color }} />
+                    <span className="flex-1 text-sm text-gray-800">{lbl.name}</span>
+                    <button
+                      onClick={() => deleteMutation.mutate(lbl.id)}
+                      disabled={deleteMutation.isPending}
+                      className="opacity-0 group-hover:opacity-100 text-xs text-red-400 hover:text-red-600 transition-all"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="px-6 pb-4 flex justify-end">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 border border-gray-200 text-sm font-medium rounded-lg hover:bg-gray-50"
+          >
+            Done
+          </button>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 // ── Lead Notes Drawer ────────────────────────────────────────────────────────

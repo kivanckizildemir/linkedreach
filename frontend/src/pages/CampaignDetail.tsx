@@ -205,6 +205,32 @@ export function CampaignDetail() {
               Complete
             </button>
           )}
+          {campaignLeads.length > 0 && (
+            <button
+              onClick={() => {
+                const headers = ['First Name','Last Name','Title','Company','LinkedIn URL','ICP Flag','ICP Score','Status','Reply']
+                const rows = campaignLeads.map(cl => [
+                  cl.lead.first_name, cl.lead.last_name,
+                  cl.lead.title ?? '', cl.lead.company ?? '',
+                  cl.lead.linkedin_url ?? '', cl.lead.icp_flag ?? '',
+                  cl.lead.icp_score ?? '', cl.status,
+                  cl.reply_classification !== 'none' ? cl.reply_classification : '',
+                ])
+                const csv = [headers, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n')
+                const blob = new Blob([csv], { type: 'text/csv' })
+                const url = URL.createObjectURL(blob)
+                const a = document.createElement('a')
+                a.href = url; a.download = `${campaign.name.replace(/[^a-z0-9]/gi,'-')}-leads.csv`
+                a.click(); URL.revokeObjectURL(url)
+              }}
+              className="px-3 py-2 border border-gray-200 text-gray-600 text-sm rounded-lg hover:bg-gray-50 flex items-center gap-1.5 transition-colors"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+              </svg>
+              Export CSV
+            </button>
+          )}
           <button
             onClick={() => {
               if (confirm('Delete this campaign? This cannot be undone.')) deleteMutation.mutate()

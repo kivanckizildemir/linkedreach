@@ -11,6 +11,7 @@ import { analyticsRouter } from './routes/analytics'
 import { blacklistRouter } from './routes/blacklist'
 import { messageTemplatesRouter } from './routes/messageTemplates'
 import { activityLogRouter } from './routes/activityLog'
+import { labelsRouter } from './routes/labels'
 import { errorHandler, notFound } from './middleware/errors'
 
 dotenv.config()
@@ -35,6 +36,7 @@ app.use('/api/analytics', analyticsRouter)
 app.use('/api/blacklist', blacklistRouter)
 app.use('/api/message-templates', messageTemplatesRouter)
 app.use('/api/activity', activityLogRouter)
+app.use('/api/labels', labelsRouter)
 
 app.use(notFound)
 app.use(errorHandler)
