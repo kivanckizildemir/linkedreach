@@ -13,6 +13,9 @@ export interface Campaign {
   schedule_end_hour: number
   schedule_days: number[]
   schedule_timezone: string
+  account_id: string | null
+  min_icp_score: number
+  connection_note: string | null
   created_at: string
   updated_at: string
 }
@@ -40,7 +43,7 @@ export async function createCampaign(name: string): Promise<Campaign> {
 
 export async function updateCampaign(
   id: string,
-  updates: Partial<Pick<Campaign, 'name' | 'status' | 'icp_config' | 'daily_connection_limit' | 'daily_message_limit' | 'schedule_start_hour' | 'schedule_end_hour' | 'schedule_days' | 'schedule_timezone'>>
+  updates: Partial<Pick<Campaign, 'name' | 'status' | 'icp_config' | 'daily_connection_limit' | 'daily_message_limit' | 'schedule_start_hour' | 'schedule_end_hour' | 'schedule_days' | 'schedule_timezone' | 'account_id' | 'min_icp_score' | 'connection_note'>>
 ): Promise<Campaign> {
   const res = await apiFetch(`/api/campaigns/${id}`, {
     method: 'PATCH',

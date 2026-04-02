@@ -111,6 +111,9 @@ campaignsRouter.patch('/:id', async (req: Request, res: Response) => {
     'schedule_end_hour',
     'schedule_days',
     'schedule_timezone',
+    'account_id',
+    'min_icp_score',
+    'connection_note',
   ] as const
   type AllowedKey = (typeof allowed)[number]
 

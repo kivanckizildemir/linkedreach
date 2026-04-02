@@ -11,6 +11,7 @@ import {
   type Campaign,
   type CampaignLead,
 } from '../api/campaigns'
+import { fetchAccounts } from '../api/accounts'
 import { apiFetch } from '../lib/fetchJson'
 
 interface Lead {
@@ -62,6 +63,7 @@ export function CampaignDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const [tab, setTab] = useState<'leads' | 'settings'>('leads')
   const [search, setSearch] = useState('')
   const [showAddLeads, setShowAddLeads] = useState(false)
   const [selectedLeadIds, setSelectedLeadIds] = useState<Set<string>>(new Set())
@@ -83,6 +85,11 @@ export function CampaignDetail() {
     queryKey: ['all-leads'],
     queryFn: fetchAllLeads,
     enabled: showAddLeads,
+  })
+
+  const { data: accounts = [] } = useQuery({
+    queryKey: ['accounts'],
+    queryFn: fetchAccounts,
   })
 
   const statusMutation = useMutation({
@@ -263,6 +270,25 @@ export function CampaignDetail() {
         ))}
       </div>
 
+      {/* Tab selector */}
+      <div className="flex gap-1 border-b border-gray-200">
+        {(['leads', 'settings'] as const).map(t => (
+          <button
+            key={t}
+            onClick={() => setTab(t)}
+            className={[
+              'px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors capitalize',
+              tab === t
+                ? 'border-blue-600 text-blue-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700',
+            ].join(' ')}
+          >
+            {t === 'leads' ? `Leads (${total})` : 'Settings'}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'leads' && <>
       {/* Funnel chart */}
       {total > 0 && (
         <FunnelChart total={total} sent={sent} connected={connected} messaged={messaged} replied={replied} converted={converted} />
@@ -457,6 +483,151 @@ export function CampaignDetail() {
           </div>
         </div>
       )}
+      </>}
+
+      {tab === 'settings' && (
+        <CampaignSettings
+          campaign={campaign}
+          accounts={accounts}
+          onSave={updates => scheduleMutation.mutate(updates)}
+          saving={scheduleMutation.isPending}
+        />
+      )}
+    </div>
+  )
+}
+
+// ── Campaign Settings ─────────────────────────────────────────────────────────
+
+function CampaignSettings({
+  campaign,
+  accounts,
+  onSave,
+  saving,
+}: {
+  campaign: Campaign
+  accounts: import('../api/accounts').LinkedInAccount[]
+  onSave: (updates: Partial<Campaign>) => void
+  saving: boolean
+}) {
+  const [accountId, setAccountId] = useState(campaign.account_id ?? '')
+  const [minScore, setMinScore] = useState(campaign.min_icp_score ?? 0)
+  const [connLimit, setConnLimit] = useState(campaign.daily_connection_limit)
+  const [msgLimit, setMsgLimit] = useState(campaign.daily_message_limit)
+  const [connNote, setConnNote] = useState(campaign.connection_note ?? '')
+
+  const isDirty =
+    accountId !== (campaign.account_id ?? '') ||
+    minScore !== campaign.min_icp_score ||
+    connLimit !== campaign.daily_connection_limit ||
+    msgLimit !== campaign.daily_message_limit ||
+    connNote !== (campaign.connection_note ?? '')
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-6">
+      {/* LinkedIn Account */}
+      <div>
+        <label className="block text-sm font-semibold text-gray-900 mb-1">LinkedIn Account</label>
+        <p className="text-xs text-gray-400 mb-2">Which account will run this campaign</p>
+        <select
+          value={accountId}
+          onChange={e => setAccountId(e.target.value)}
+          className="w-full max-w-sm px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+        >
+          <option value="">Auto-select (any active account)</option>
+          {accounts.map(acc => (
+            <option key={acc.id} value={acc.id}>
+              {acc.linkedin_email} · {acc.status} · {acc.daily_connection_count}/{acc.status === 'warming_up' ? Math.min(5 + Math.floor((acc.warmup_day-1)/7)*3, 25) : 25}/day
+            </option>
+          ))}
+        </select>
+      </div>
+
+      {/* ICP Score threshold */}
+      <div>
+        <label className="block text-sm font-semibold text-gray-900 mb-1">Minimum ICP Score</label>
+        <p className="text-xs text-gray-400 mb-2">Only reach out to leads at or above this score. 0 = all leads.</p>
+        <div className="flex items-center gap-4 max-w-sm">
+          <input
+            type="range"
+            min={0}
+            max={100}
+            step={5}
+            value={minScore}
+            onChange={e => setMinScore(Number(e.target.value))}
+            className="flex-1"
+          />
+          <span className={`text-sm font-bold w-12 text-center ${minScore >= 75 ? 'text-red-600' : minScore >= 50 ? 'text-orange-500' : minScore > 0 ? 'text-blue-600' : 'text-gray-400'}`}>
+            {minScore > 0 ? `≥${minScore}` : 'Any'}
+          </span>
+        </div>
+      </div>
+
+      {/* Daily limits */}
+      <div className="grid grid-cols-2 gap-6 max-w-sm">
+        <div>
+          <label className="block text-sm font-semibold text-gray-900 mb-1">Connection Limit</label>
+          <p className="text-xs text-gray-400 mb-2">Per day, per account</p>
+          <input
+            type="number"
+            min={1}
+            max={25}
+            value={connLimit}
+            onChange={e => setConnLimit(Number(e.target.value))}
+            className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+          <p className="text-[10px] text-gray-400 mt-1">Max 25/day (LinkedIn limit)</p>
+        </div>
+        <div>
+          <label className="block text-sm font-semibold text-gray-900 mb-1">Message Limit</label>
+          <p className="text-xs text-gray-400 mb-2">Per day, per account</p>
+          <input
+            type="number"
+            min={1}
+            max={100}
+            value={msgLimit}
+            onChange={e => setMsgLimit(Number(e.target.value))}
+            className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+          <p className="text-[10px] text-gray-400 mt-1">Max 100/day (LinkedIn limit)</p>
+        </div>
+      </div>
+
+      {/* Default connection note */}
+      <div>
+        <label className="block text-sm font-semibold text-gray-900 mb-1">
+          Default Connection Note
+          <span className="text-xs font-normal text-gray-400 ml-2">({(connNote ?? '').length}/300 chars)</span>
+        </label>
+        <p className="text-xs text-gray-400 mb-2">
+          Shown on connection requests. Use <code className="bg-gray-100 px-1 rounded">{'{{first_name}}'}</code>,{' '}
+          <code className="bg-gray-100 px-1 rounded">{'{{company}}'}</code> etc. Leave blank to send without a note.
+        </p>
+        <textarea
+          value={connNote}
+          onChange={e => setConnNote(e.target.value)}
+          maxLength={300}
+          rows={3}
+          className={`w-full px-3.5 py-2.5 border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none ${connNote.length > 280 ? 'border-orange-300' : 'border-gray-200'}`}
+          placeholder="Hi {{first_name}}, I came across your profile and thought it'd be great to connect…"
+        />
+      </div>
+
+      <div className="flex justify-end">
+        <button
+          onClick={() => onSave({
+            account_id: accountId || null,
+            min_icp_score: minScore,
+            daily_connection_limit: connLimit,
+            daily_message_limit: msgLimit,
+            connection_note: connNote || null,
+          })}
+          disabled={!isDirty || saving}
+          className="px-5 py-2.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
+        >
+          {saving ? 'Saving…' : 'Save Settings'}
+        </button>
+      </div>
     </div>
   )
 }

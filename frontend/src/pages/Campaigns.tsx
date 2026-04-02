@@ -4,6 +4,24 @@ import { useNavigate } from 'react-router-dom'
 import { useForm } from 'react-hook-form'
 import { fetchCampaigns, createCampaign } from '../api/campaigns'
 import type { Campaign } from '../api/campaigns'
+import { apiFetch } from '../lib/fetchJson'
+
+interface CampaignStats {
+  id: string
+  total: number
+  connection_sent: number
+  connected: number
+  replied: number
+  acceptance_rate: number
+  reply_rate: number
+}
+
+async function fetchCampaignStats(): Promise<CampaignStats[]> {
+  const res = await apiFetch('/api/analytics')
+  if (!res.ok) return []
+  const { campaigns } = await res.json() as { campaigns: CampaignStats[] }
+  return campaigns ?? []
+}
 
 const STATUS_COLORS: Record<Campaign['status'], string> = {
   draft: 'bg-gray-100 text-gray-700',
@@ -24,6 +42,14 @@ export function Campaigns() {
     queryKey: ['campaigns'],
     queryFn: fetchCampaigns,
   })
+
+  const { data: stats = [] } = useQuery({
+    queryKey: ['campaign-stats'],
+    queryFn: fetchCampaignStats,
+    staleTime: 60_000,
+  })
+
+  const statsById = Object.fromEntries(stats.map(s => [s.id, s]))
 
   const filtered = filter === 'all' ? campaigns : campaigns.filter(c => c.status === filter)
 
@@ -84,22 +110,38 @@ export function Campaigns() {
               <div
                 key={c.id}
                 onClick={() => navigate(`/campaigns/${c.id}`)}
-                className="px-6 py-4 flex items-center justify-between hover:bg-gray-50 transition-colors cursor-pointer"
+                className="px-6 py-4 flex items-center justify-between hover:bg-gray-50 transition-colors cursor-pointer group"
               >
-                <div>
-                  <p className="text-sm font-medium text-gray-900">{c.name}</p>
-                  <p className="text-xs text-gray-400 mt-0.5">
-                    Created {new Date(c.created_at).toLocaleDateString()}
-                  </p>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2.5">
+                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full shrink-0 ${STATUS_COLORS[c.status]}`}>
+                      {c.status}
+                    </span>
+                    <p className="text-sm font-semibold text-gray-900 truncate">{c.name}</p>
+                  </div>
+                  {statsById[c.id] && statsById[c.id].total > 0 ? (
+                    <div className="flex items-center gap-4 mt-1.5 text-xs text-gray-500">
+                      <span>{statsById[c.id].total} leads</span>
+                      <span className="text-gray-200">·</span>
+                      <span>{statsById[c.id].connection_sent} sent</span>
+                      <span className="text-gray-200">·</span>
+                      <span className={`font-medium ${statsById[c.id].acceptance_rate >= 30 ? 'text-green-600' : statsById[c.id].acceptance_rate >= 15 ? 'text-orange-500' : 'text-gray-500'}`}>
+                        {statsById[c.id].acceptance_rate}% accept
+                      </span>
+                      <span className="text-gray-200">·</span>
+                      <span className={`font-medium ${statsById[c.id].reply_rate >= 20 ? 'text-green-600' : statsById[c.id].reply_rate >= 10 ? 'text-orange-500' : 'text-gray-500'}`}>
+                        {statsById[c.id].reply_rate}% reply
+                      </span>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-gray-400 mt-0.5">
+                      Created {new Date(c.created_at).toLocaleDateString()}
+                    </p>
+                  )}
                 </div>
-                <div className="flex items-center gap-3">
-                  <span className={`text-xs font-medium px-2.5 py-1 rounded-full ${STATUS_COLORS[c.status]}`}>
-                    {c.status}
-                  </span>
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-gray-300">
-                    <path d="M9 18l6-6-6-6" />
-                  </svg>
-                </div>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-gray-300 group-hover:text-gray-400 shrink-0 ml-4 transition-colors">
+                  <path d="M9 18l6-6-6-6" />
+                </svg>
               </div>
             ))}
           </div>
