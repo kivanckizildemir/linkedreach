@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useForm } from 'react-hook-form'
 import {
@@ -22,6 +22,7 @@ import {
   type Proxy,
 } from '../api/proxies'
 import { fetchActivity, ACTION_LABELS, ACTION_COLORS } from '../api/activity'
+import { apiFetch } from '../lib/fetchJson'
 
 const STATUS_COLORS: Record<LinkedInAccount['status'], string> = {
   active:     'bg-green-100 text-green-700',
@@ -762,6 +763,123 @@ function SetSessionModal({
   )
 }
 
+function PushStep({
+  accountId,
+  sessionKey,
+  hint,
+  onCancel,
+}: {
+  accountId: string
+  sessionKey: string
+  hint: string
+  onCancel: () => void
+}) {
+  const [screenshotUrl, setScreenshotUrl] = useState<string | null>(null)
+  const [screenshotLoading, setScreenshotLoading] = useState(false)
+  const screenshotRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const isSecurityCheck = hint.toLowerCase().includes('security') ||
+    hint.toLowerCase().includes('verification') ||
+    hint.toLowerCase().includes('verify') ||
+    hint.toLowerCase().includes('check')
+
+  function startScreenshotPolling() {
+    if (screenshotRef.current) return
+    fetchScreenshot()
+    screenshotRef.current = setInterval(fetchScreenshot, 5000)
+  }
+
+  function stopScreenshotPolling() {
+    if (screenshotRef.current) { clearInterval(screenshotRef.current); screenshotRef.current = null }
+  }
+
+  async function fetchScreenshot() {
+    if (!sessionKey) return
+    setScreenshotLoading(true)
+    try {
+      const res = await apiFetch(`/api/accounts/${accountId}/connect-screenshot/${sessionKey}`)
+      if (res.ok) {
+        const blob = await res.blob()
+        const url = URL.createObjectURL(blob)
+        setScreenshotUrl(prev => { if (prev) URL.revokeObjectURL(prev); return url })
+      }
+    } catch { /* ignore */ }
+    finally { setScreenshotLoading(false) }
+  }
+
+  // Auto-start screenshot polling when security check detected
+  useEffect(() => {
+    if (isSecurityCheck && sessionKey) startScreenshotPolling()
+    return () => stopScreenshotPolling()
+  }, [isSecurityCheck, sessionKey])
+
+  return (
+    <div className="space-y-3">
+      <div className={`border rounded-xl p-4 space-y-2 ${isSecurityCheck ? 'bg-amber-50 border-amber-200' : 'bg-blue-50 border-blue-200'}`}>
+        <div className="flex items-center gap-2">
+          <svg className={`w-4 h-4 animate-spin flex-shrink-0 ${isSecurityCheck ? 'text-amber-600' : 'text-blue-600'}`} fill="none" viewBox="0 0 24 24">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+          </svg>
+          <p className={`text-sm font-medium ${isSecurityCheck ? 'text-amber-900' : 'text-blue-900'}`}>
+            {isSecurityCheck ? 'LinkedIn security challenge detected' : 'Signing in…'}
+          </p>
+        </div>
+        {hint && hint !== 'Signing in to LinkedIn…' && (
+          <p className={`text-xs mt-1 ${isSecurityCheck ? 'text-amber-700' : 'text-blue-700'}`}>{hint}</p>
+        )}
+        {isSecurityCheck && (
+          <p className="text-xs text-amber-600 mt-1">
+            LinkedIn is showing a security challenge on the headless browser. View the screenshot below to see what it requires.
+          </p>
+        )}
+      </div>
+
+      {/* Screenshot viewer */}
+      <div className="border border-gray-200 rounded-xl overflow-hidden bg-gray-50">
+        <div className="flex items-center justify-between px-3 py-2 border-b border-gray-200 bg-white">
+          <span className="text-xs font-medium text-gray-600">Browser view (live)</span>
+          <button
+            onClick={() => { if (!screenshotRef.current) startScreenshotPolling(); else fetchScreenshot() }}
+            className="text-xs text-blue-600 hover:underline flex items-center gap-1"
+          >
+            {screenshotLoading ? 'Refreshing…' : '↻ Refresh'}
+          </button>
+        </div>
+        {screenshotUrl ? (
+          <img src={screenshotUrl} alt="Browser screenshot" className="w-full" />
+        ) : (
+          <div className="h-32 flex items-center justify-center">
+            <button
+              onClick={startScreenshotPolling}
+              className="text-xs text-blue-600 hover:underline"
+            >
+              {screenshotLoading ? 'Loading…' : 'Load screenshot'}
+            </button>
+          </div>
+        )}
+      </div>
+
+      {isSecurityCheck && (
+        <div className="bg-gray-50 border border-gray-200 rounded-xl p-3 text-xs text-gray-600 space-y-1">
+          <p className="font-medium text-gray-700">What to do:</p>
+          <ol className="list-decimal list-inside space-y-1">
+            <li>If LinkedIn sent a verification code to your email/phone — enter it below after it arrives</li>
+            <li>If it's an image puzzle (CAPTCHA) — cancel, then use <strong>Set Session</strong> to paste your li_at cookie instead</li>
+          </ol>
+        </div>
+      )}
+
+      <div className="flex gap-2">
+        <button type="button" onClick={onCancel}
+          className="flex-1 py-2 border border-gray-200 text-sm text-gray-600 rounded-lg hover:bg-gray-50">
+          Cancel
+        </button>
+      </div>
+    </div>
+  )
+}
+
 function BrowserLoginModal({
   accountId,
   onClose,
@@ -896,26 +1014,14 @@ function BrowserLoginModal({
           </div>
         )}
 
-        {/* ── Push notification waiting ── */}
+        {/* ── Push notification / security check waiting ── */}
         {step === 'push' && (
-          <div className="space-y-4">
-            <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 space-y-2">
-              <div className="flex items-center gap-2">
-                <svg className="w-4 h-4 text-blue-600 animate-spin flex-shrink-0" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-                </svg>
-                <p className="text-sm font-medium text-blue-900">Signing in…</p>
-              </div>
-              {hint && hint !== 'Signing in to LinkedIn…' && (
-                <p className="text-xs text-blue-700 mt-1">{hint}</p>
-              )}
-            </div>
-            <button type="button" onClick={() => { stopPolling(); setStep('form') }}
-              className="w-full py-2 border border-gray-200 text-sm text-gray-600 rounded-lg hover:bg-gray-50">
-              Cancel
-            </button>
-          </div>
+          <PushStep
+            accountId={accountId}
+            sessionKey={sessionKey}
+            hint={hint}
+            onCancel={() => { stopPolling(); setStep('form') }}
+          />
         )}
 
         {/* ── 2FA code entry ── */}
