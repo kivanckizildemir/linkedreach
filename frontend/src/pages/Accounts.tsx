@@ -954,7 +954,25 @@ function BrowserLoginModal({
   const [cookieJson, setCookieJson] = useState('')
   const [importError, setImportError] = useState('')
   const [importSaving, setImportSaving] = useState(false)
+  const [detectedCountry, setDetectedCountry] = useState<string | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // Auto-detect country via Cloudflare trace on modal open
+  useEffect(() => {
+    const SUPPORTED = new Set(['us','gb','de','fr','nl','ca','au','sg','in','ae','tr'])
+    fetch('https://www.cloudflare.com/cdn-cgi/trace')
+      .then(r => r.text())
+      .then(text => {
+        const match = text.match(/^loc=([A-Z]{2})$/m)
+        if (!match) return
+        const code = match[1].toLowerCase()
+        if (!SUPPORTED.has(code)) return
+        setDetectedCountry(code)
+        // Silently persist to account so proxy routing uses the right country
+        void updateAccount(accountId, { proxy_country: code })
+      })
+      .catch(() => { /* non-critical */ })
+  }, [accountId])
 
   function stopPolling() {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
@@ -1153,6 +1171,12 @@ function BrowserLoginModal({
                     Find it in LinkedIn Settings → Sign in &amp; Security → Two-step verification → Authenticator app setup (the QR code secret).
                   </p>
                 </div>
+                {detectedCountry && (
+                  <div className="flex items-center gap-2 text-xs text-gray-500 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2">
+                    <span>📍</span>
+                    <span>Location detected: <strong className="text-gray-700">{detectedCountry.toUpperCase()}</strong> — proxy routing set automatically</span>
+                  </div>
+                )}
                 {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg p-3">{error}</p>}
                 <div className="flex gap-3 pt-1">
                   <button type="button" onClick={onClose}
