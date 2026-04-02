@@ -5,6 +5,12 @@ const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379'
 
 export const connection = new IORedis(redisUrl, {
   maxRetriesPerRequest: null,
+  enableOfflineQueue: true,
+  retryStrategy: (times) => Math.min(times * 500, 5000),
+})
+
+connection.on('error', (err) => {
+  console.error('[Redis] Connection error:', err.message)
 })
 
 export const linkedinActionQueue = new Queue('linkedin-actions', { connection })
