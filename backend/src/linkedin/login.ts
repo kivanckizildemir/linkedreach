@@ -316,22 +316,31 @@ async function runLogin(key: string, email: string, password: string): Promise<v
         }
 
         // Click any intermediate "Continue" / "Send code" buttons on security check pages
-        try {
-          const continueBtn = await page.$(
-            'button:has-text("Continue"), button:has-text("Send verification code"), ' +
-            'button:has-text("Send a verification code"), button:has-text("Request a verification code"), ' +
-            'button:has-text("Send code"), button:has-text("Get a verification code"), ' +
-            'button[data-litms-control-urn="challenge|primary-action"], ' +
-            'button.primary-action-new'
-          )
-          if (continueBtn) {
-            await continueBtn.click()
-            await DELAY(2000)
-            // Update hint after clicking
-            const hintEl2 = await page.$('.secondary-action, .challenge-main-content p, h1, h2')
-            if (hintEl2) session.hint = (await hintEl2.innerText()).trim()
-          }
-        } catch { /* ok */ }
+        // Only try on first few polls and after navigations to avoid repeated clicks
+        if (pollCount <= 3 || pollCount % 10 === 1) {
+          try {
+            const continueBtn = await page.$(
+              'button:has-text("Continue"), button:has-text("Send verification code"), ' +
+              'button:has-text("Send a verification code"), button:has-text("Request a verification code"), ' +
+              'button:has-text("Send code"), button:has-text("Get a verification code"), ' +
+              'button:has-text("Request verification"), button:has-text("Send"), ' +
+              'button[data-litms-control-urn="challenge|primary-action"], ' +
+              'button.primary-action-new, ' +
+              'form button[type="submit"]'   // last-resort: any form submit button
+            )
+            if (continueBtn) {
+              const btnText = await continueBtn.evaluate((el: Element) => (el as HTMLElement).textContent?.trim())
+              // Don't click Cancel or back buttons
+              if (btnText && !btnText.toLowerCase().includes('cancel') && !btnText.toLowerCase().includes('back')) {
+                await continueBtn.click()
+                await DELAY(2000)
+                // Update hint after clicking
+                const hintEl2 = await page.$('.secondary-action, .challenge-main-content p, h1, h2')
+                if (hintEl2) session.hint = (await hintEl2.innerText()).trim()
+              }
+            }
+          } catch { /* ok */ }
+        }
 
         // Did LinkedIn switch to PIN after push confirmation?
         const nowHasPin = !!(await page.$(
