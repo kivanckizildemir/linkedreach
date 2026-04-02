@@ -10,6 +10,7 @@ import { Leads } from './pages/Leads'
 import { Inbox } from './pages/Inbox'
 import { Accounts } from './pages/Accounts'
 import { Blacklist } from './pages/Blacklist'
+import { Templates } from './pages/Templates'
 import { Login } from './pages/Login'
 import { Signup } from './pages/Signup'
 
@@ -42,6 +43,7 @@ function App() {
                 <Route path="/inbox" element={<Inbox />} />
                 <Route path="/accounts" element={<Accounts />} />
                 <Route path="/blacklist" element={<Blacklist />} />
+                <Route path="/templates" element={<Templates />} />
               </Route>
             </Route>
 

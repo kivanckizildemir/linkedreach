@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { fetchLeads, requalifyLead, qualifyAllLeads, importLeads, startSalesNavImport, getScrapeStatus } from '../api/leads'
 import type { Lead } from '../api/leads'
 import { fetchAccounts } from '../api/accounts'
+import { fetchCampaigns, addLeadsToCampaign } from '../api/campaigns'
 import * as XLSX from 'xlsx'
 
 const FLAG_COLORS: Record<NonNullable<Lead['icp_flag']>, string> = {
@@ -55,6 +56,9 @@ export function Leads() {
   const [icpFlag, setIcpFlag] = useState('')
   const [showImportModal, setShowImportModal] = useState(false)
   const [showCsvModal, setShowCsvModal] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [showAddToCampaign, setShowAddToCampaign] = useState(false)
+  const [targetCampaignId, setTargetCampaignId] = useState('')
 
   const { data: leads = [], isLoading } = useQuery({
     queryKey: ['leads', { search, icp_flag: icpFlag }],
@@ -78,6 +82,21 @@ export function Leads() {
   })
 
   const unscoredCount = leads.filter(l => l.icp_score == null).length
+
+  const { data: campaigns = [] } = useQuery({
+    queryKey: ['campaigns'],
+    queryFn: () => import('../api/campaigns').then(m => m.fetchCampaigns()),
+    enabled: showAddToCampaign,
+  })
+
+  const addToCampaignMutation = useMutation({
+    mutationFn: () => addLeadsToCampaign(targetCampaignId, [...selectedIds]),
+    onSuccess: () => {
+      setShowAddToCampaign(false)
+      setSelectedIds(new Set())
+      setTargetCampaignId('')
+    },
+  })
 
   return (
     <div className="p-8">
@@ -162,11 +181,38 @@ export function Leads() {
         </select>
       </div>
 
+      {/* Bulk action bar */}
+      {selectedIds.size > 0 && (
+        <div className="mt-4 flex items-center gap-3 px-4 py-3 bg-blue-50 border border-blue-200 rounded-xl">
+          <span className="text-sm font-medium text-blue-800">{selectedIds.size} lead{selectedIds.size !== 1 ? 's' : ''} selected</span>
+          <button
+            onClick={() => setShowAddToCampaign(true)}
+            className="px-3 py-1.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors"
+          >
+            + Add to Campaign
+          </button>
+          <button
+            onClick={() => setSelectedIds(new Set())}
+            className="ml-auto text-sm text-blue-500 hover:text-blue-700"
+          >
+            Clear selection
+          </button>
+        </div>
+      )}
+
       <div className="mt-4 bg-white rounded-xl border border-gray-200 overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-sm min-w-[700px]">
             <thead className="bg-gray-50 border-b border-gray-200">
               <tr>
+                <th className="px-4 py-3 w-8">
+                  <input
+                    type="checkbox"
+                    checked={leads.length > 0 && selectedIds.size === leads.length}
+                    onChange={e => setSelectedIds(e.target.checked ? new Set(leads.map(l => l.id)) : new Set())}
+                    className="rounded border-gray-300 text-blue-600"
+                  />
+                </th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Title</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Company</th>
@@ -179,11 +225,11 @@ export function Leads() {
             <tbody className="divide-y divide-gray-100">
               {isLoading ? (
                 <tr>
-                  <td colSpan={7} className="px-4 py-16 text-center text-gray-400 text-sm">Loading…</td>
+                  <td colSpan={8} className="px-4 py-16 text-center text-gray-400 text-sm">Loading…</td>
                 </tr>
               ) : leads.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-4 py-16 text-center text-gray-500">
+                  <td colSpan={8} className="px-4 py-16 text-center text-gray-500">
                     No leads yet. Import from a Sales Navigator Excel export to get started.
                   </td>
                 </tr>
@@ -192,7 +238,20 @@ export function Leads() {
                   const isQueued = requalifyMutation.isPending && requalifyMutation.variables === lead.id
                   const reasoning = lead.raw_data?.ai_reasoning
                   return (
-                    <tr key={lead.id} className="hover:bg-gray-50 transition-colors">
+                    <tr key={lead.id} className={`hover:bg-gray-50 transition-colors ${selectedIds.has(lead.id) ? 'bg-blue-50' : ''}`}>
+                      <td className="px-4 py-3 w-8">
+                        <input
+                          type="checkbox"
+                          checked={selectedIds.has(lead.id)}
+                          onChange={e => {
+                            const next = new Set(selectedIds)
+                            if (e.target.checked) next.add(lead.id)
+                            else next.delete(lead.id)
+                            setSelectedIds(next)
+                          }}
+                          className="rounded border-gray-300 text-blue-600"
+                        />
+                      </td>
                       <td className="px-4 py-3 font-medium text-gray-900 whitespace-nowrap">
                         {lead.first_name} {lead.last_name}
                       </td>
@@ -277,6 +336,44 @@ export function Leads() {
             setTimeout(() => queryClient.invalidateQueries({ queryKey: ['leads'] }), 3000)
           }}
         />
+      )}
+
+      {/* Add to Campaign modal */}
+      {showAddToCampaign && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6">
+            <h2 className="text-lg font-semibold text-gray-900 mb-1">Add to Campaign</h2>
+            <p className="text-sm text-gray-500 mb-4">Adding {selectedIds.size} lead{selectedIds.size !== 1 ? 's' : ''} to a campaign.</p>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">Select Campaign</label>
+              <select
+                value={targetCampaignId}
+                onChange={e => setTargetCampaignId(e.target.value)}
+                className="w-full px-3.5 py-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">Choose a campaign…</option>
+                {campaigns.map(c => (
+                  <option key={c.id} value={c.id}>{c.name} ({c.status})</option>
+                ))}
+              </select>
+            </div>
+            <div className="flex gap-3 mt-5">
+              <button
+                onClick={() => { setShowAddToCampaign(false); setTargetCampaignId('') }}
+                className="flex-1 py-2.5 border border-gray-200 text-sm font-medium rounded-lg hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => addToCampaignMutation.mutate()}
+                disabled={!targetCampaignId || addToCampaignMutation.isPending}
+                className="flex-1 py-2.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-60 transition-colors"
+              >
+                {addToCampaignMutation.isPending ? 'Adding…' : 'Add to Campaign'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )
