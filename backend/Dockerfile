@@ -1,28 +1,24 @@
-# Use lightweight Node base + install system Chromium (much smaller than playwright image)
+# Lightweight Node base
 FROM node:20-slim
 
-# Playwright/Chromium system dependencies
+# System deps required by Playwright's Chromium
 RUN apt-get update && apt-get install -y \
-    chromium \
+    wget gnupg ca-certificates \
     libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
     libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 \
     libgbm1 libasound2 libpangocairo-1.0-0 libxshmfence1 \
-    fonts-liberation xdg-utils \
+    fonts-liberation xdg-utils libx11-xcb1 \
     --no-install-recommends && \
     rm -rf /var/lib/apt/lists/*
 
-# Tell Playwright to use system Chromium, skip its own download
-ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
-ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
-
 WORKDIR /app
 
-# Install prod deps first (cached layer)
+# Install all deps (including playwright for browser install)
 COPY package*.json ./
-RUN npm ci --omit=dev
-
-# Install dev deps for TypeScript build
 RUN npm ci
+
+# Download only Chromium (skip Firefox/WebKit)
+RUN npx playwright install chromium
 
 COPY tsconfig.json ./
 COPY src ./src
