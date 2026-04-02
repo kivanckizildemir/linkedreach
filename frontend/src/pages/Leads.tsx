@@ -98,6 +98,31 @@ export function Leads() {
                 : `AI Score All (${unscoredCount})`}
             </button>
           )}
+          {leads.length > 0 && (
+            <button
+              onClick={() => {
+                const headers = ['First Name','Last Name','Title','Company','LinkedIn URL','ICP Flag','ICP Score','Email','Location','Industry']
+                const rows = leads.map(l => [
+                  l.first_name, l.last_name, l.title ?? '', l.company ?? '',
+                  l.linkedin_url, l.icp_flag ?? '', l.icp_score ?? '',
+                  (l as Record<string,unknown>).email ?? '', (l as Record<string,unknown>).location ?? '',
+                  (l as Record<string,unknown>).industry ?? '',
+                ])
+                const csv = [headers, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n')
+                const blob = new Blob([csv], { type: 'text/csv' })
+                const url = URL.createObjectURL(blob)
+                const a = document.createElement('a')
+                a.href = url; a.download = `leads-${new Date().toISOString().split('T')[0]}.csv`
+                a.click(); URL.revokeObjectURL(url)
+              }}
+              className="px-4 py-2 border border-gray-300 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-50 transition-colors flex items-center gap-1.5"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+              </svg>
+              Export CSV
+            </button>
+          )}
           <button
             onClick={() => setShowCsvModal(true)}
             className="px-4 py-2 border border-gray-300 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-50 transition-colors"

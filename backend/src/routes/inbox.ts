@@ -5,6 +5,7 @@ import { requireAuth } from '../middleware/auth'
 import type { ReplyClassification } from '../types'
 import { createSession, closeSession, persistCookies } from '../linkedin/session'
 import { sendMessage } from '../linkedin/actions'
+import { suggestReplies } from '../ai/suggest'
 
 export const inboxRouter = Router()
 
@@ -139,6 +140,58 @@ inboxRouter.patch('/:campaignLeadId', async (req: Request, res: Response) => {
   }
 
   res.json({ data })
+})
+
+// POST /api/inbox/:campaignLeadId/suggest — AI-generated reply suggestions
+inboxRouter.post('/:campaignLeadId/suggest', async (req: Request, res: Response) => {
+  // Verify ownership
+  const { data: cl, error: clErr } = await supabase
+    .from('campaign_leads')
+    .select(`
+      id,
+      lead:leads (first_name, last_name, title, company),
+      campaign:campaigns (user_id)
+    `)
+    .eq('id', req.params.campaignLeadId)
+    .single()
+
+  if (clErr || !cl) {
+    res.status(404).json({ error: 'Conversation not found' })
+    return
+  }
+
+  const campaignUserId = (cl.campaign as { user_id?: string } | null)?.user_id
+  if (campaignUserId !== req.user.id) {
+    res.status(403).json({ error: 'Forbidden' })
+    return
+  }
+
+  const { data: messages, error: msgErr } = await supabase
+    .from('messages')
+    .select('direction, content')
+    .eq('campaign_lead_id', req.params.campaignLeadId)
+    .order('sent_at', { ascending: true })
+
+  if (msgErr) {
+    res.status(500).json({ error: msgErr.message })
+    return
+  }
+
+  const lead = cl.lead as { first_name: string; last_name: string; title?: string | null; company?: string | null } | null
+  if (!lead) {
+    res.status(400).json({ error: 'Lead not found' })
+    return
+  }
+
+  try {
+    const result = await suggestReplies(
+      (messages ?? []) as { direction: 'sent' | 'received'; content: string }[],
+      lead
+    )
+    res.json(result)
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'AI suggestion failed' })
+  }
 })
 
 // POST /api/inbox/:campaignLeadId/reply — send a message via LinkedIn Playwright

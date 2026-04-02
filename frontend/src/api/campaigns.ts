@@ -57,3 +57,46 @@ export async function fetchCampaign(id: string): Promise<Campaign> {
   if (error) throw new Error(error.message)
   return data as Campaign
 }
+
+export interface CampaignLead {
+  id: string
+  status: string
+  reply_classification: string
+  created_at: string
+  lead: {
+    id: string
+    first_name: string
+    last_name: string
+    title: string | null
+    company: string | null
+    linkedin_url: string
+    icp_flag: string | null
+    icp_score: number | null
+  }
+}
+
+export async function fetchCampaignLeads(campaignId: string): Promise<CampaignLead[]> {
+  const res = await apiFetch(`/api/campaigns/${campaignId}/leads`)
+  if (!res.ok) throw new Error(await parseErrorResponse(res))
+  const { data } = await res.json() as { data: CampaignLead[] }
+  return data ?? []
+}
+
+export async function addLeadsToCampaign(campaignId: string, leadIds: string[]): Promise<void> {
+  const res = await apiFetch(`/api/campaigns/${campaignId}/leads`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ lead_ids: leadIds }),
+  })
+  if (!res.ok) throw new Error(await parseErrorResponse(res))
+}
+
+export async function removeCampaignLead(campaignId: string, clId: string): Promise<void> {
+  const res = await apiFetch(`/api/campaigns/${campaignId}/leads/${clId}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(await parseErrorResponse(res))
+}
+
+export async function deleteCampaign(id: string): Promise<void> {
+  const res = await apiFetch(`/api/campaigns/${id}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(await parseErrorResponse(res))
+}

@@ -5,6 +5,7 @@ import {
   fetchThread,
   updateClassification,
   replyToConversation,
+  getSuggestions,
   type ReplyClassification,
 } from '../api/inbox'
 
@@ -49,6 +50,7 @@ export function Inbox() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [replyText, setReplyText] = useState('')
   const [replyError, setReplyError] = useState('')
+  const [showSuggestions, setShowSuggestions] = useState(false)
   const threadEndRef = useRef<HTMLDivElement>(null)
   const queryClient = useQueryClient()
 
@@ -85,12 +87,18 @@ export function Inbox() {
     onSuccess: () => {
       setReplyText('')
       setReplyError('')
+      setShowSuggestions(false)
       void queryClient.invalidateQueries({ queryKey: ['thread', selectedId] })
       void queryClient.invalidateQueries({ queryKey: ['inbox'] })
     },
     onError: (err: Error) => {
       setReplyError(err.message)
     },
+  })
+
+  const suggestionMutation = useMutation({
+    mutationFn: (id: string) => getSuggestions(id),
+    onSuccess: () => setShowSuggestions(true),
   })
 
   return (
@@ -241,6 +249,24 @@ export function Inbox() {
 
             {/* Reply composer */}
             <div className="bg-white border-t border-gray-200 px-4 py-3">
+              {/* AI Suggestions */}
+              {showSuggestions && suggestionMutation.data && (
+                <div className="mb-3">
+                  <p className="text-[10px] font-medium text-gray-400 uppercase tracking-wide mb-1.5">AI Suggestions</p>
+                  <div className="flex flex-col gap-1.5">
+                    {suggestionMutation.data.map((s, i) => (
+                      <button
+                        key={i}
+                        onClick={() => { setReplyText(s); setShowSuggestions(false) }}
+                        className="text-left text-xs px-3 py-2 bg-blue-50 hover:bg-blue-100 text-blue-800 rounded-lg border border-blue-100 transition-colors line-clamp-2"
+                      >
+                        {s}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {replyError && (
                 <p className="text-xs text-red-500 mb-2">{replyError}</p>
               )}
@@ -257,25 +283,42 @@ export function Inbox() {
                   rows={3}
                   className="flex-1 px-3 py-2 text-sm border border-gray-200 rounded-xl resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
-                <button
-                  onClick={() => {
-                    if (replyText.trim() && selectedMsg && !replyMutation.isPending) {
-                      replyMutation.mutate({ id: selectedMsg.campaign_lead_id, msg: replyText.trim() })
-                    }
-                  }}
-                  disabled={!replyText.trim() || replyMutation.isPending}
-                  className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-xl hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shrink-0"
-                >
-                  {replyMutation.isPending ? (
-                    <span className="flex items-center gap-1.5">
-                      <svg className="animate-spin w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
+                <div className="flex flex-col gap-2 shrink-0">
+                  <button
+                    onClick={() => {
+                      if (selectedMsg) suggestionMutation.mutate(selectedMsg.campaign_lead_id)
+                    }}
+                    disabled={suggestionMutation.isPending}
+                    title="Get AI suggestions"
+                    className="px-3 py-2 bg-purple-50 text-purple-700 text-sm font-medium rounded-xl hover:bg-purple-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors border border-purple-200"
+                  >
+                    {suggestionMutation.isPending ? (
+                      <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none">
                         <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeOpacity="0.3"/>
                         <path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" strokeWidth="3" strokeLinecap="round"/>
                       </svg>
-                      Sending…
-                    </span>
-                  ) : 'Send'}
-                </button>
+                    ) : '✨'}
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (replyText.trim() && selectedMsg && !replyMutation.isPending) {
+                        replyMutation.mutate({ id: selectedMsg.campaign_lead_id, msg: replyText.trim() })
+                      }
+                    }}
+                    disabled={!replyText.trim() || replyMutation.isPending}
+                    className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-xl hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    {replyMutation.isPending ? (
+                      <span className="flex items-center gap-1.5">
+                        <svg className="animate-spin w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
+                          <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeOpacity="0.3"/>
+                          <path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" strokeWidth="3" strokeLinecap="round"/>
+                        </svg>
+                        Sending…
+                      </span>
+                    ) : 'Send'}
+                  </button>
+                </div>
               </div>
             </div>
           </>

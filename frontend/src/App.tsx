@@ -5,10 +5,11 @@ import { ProtectedRoute } from './components/ProtectedRoute'
 import { Layout } from './components/Layout'
 import { Dashboard } from './pages/Dashboard'
 import { Campaigns } from './pages/Campaigns'
+import { CampaignDetail } from './pages/CampaignDetail'
 import { Leads } from './pages/Leads'
 import { Inbox } from './pages/Inbox'
 import { Accounts } from './pages/Accounts'
-import { SequenceBuilder } from './pages/SequenceBuilder'
+import { Blacklist } from './pages/Blacklist'
 import { Login } from './pages/Login'
 import { Signup } from './pages/Signup'
 
@@ -36,10 +37,11 @@ function App() {
               <Route element={<Layout />}>
                 <Route path="/" element={<Dashboard />} />
                 <Route path="/campaigns" element={<Campaigns />} />
-                <Route path="/campaigns/:id" element={<SequenceBuilder />} />
+                <Route path="/campaigns/:id" element={<CampaignDetail />} />
                 <Route path="/leads" element={<Leads />} />
                 <Route path="/inbox" element={<Inbox />} />
                 <Route path="/accounts" element={<Accounts />} />
+                <Route path="/blacklist" element={<Blacklist />} />
               </Route>
             </Route>
 

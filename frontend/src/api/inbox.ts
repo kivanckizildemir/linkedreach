@@ -64,6 +64,13 @@ export async function updateClassification(
   if (!res.ok) throw new Error('Failed to update classification')
 }
 
+export async function getSuggestions(campaignLeadId: string): Promise<string[]> {
+  const res = await apiFetch(`/api/inbox/${campaignLeadId}/suggest`, { method: 'POST' })
+  if (!res.ok) throw new Error('Failed to get suggestions')
+  const { suggestions } = await res.json() as { suggestions: string[] }
+  return suggestions ?? []
+}
+
 export async function replyToConversation(
   campaignLeadId: string,
   message: string

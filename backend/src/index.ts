@@ -8,6 +8,7 @@ import { sequencesRouter } from './routes/sequences'
 import { inboxRouter } from './routes/inbox'
 import { templatesRouter } from './routes/templates'
 import { analyticsRouter } from './routes/analytics'
+import { blacklistRouter } from './routes/blacklist'
 import { errorHandler, notFound } from './middleware/errors'
 
 dotenv.config()
@@ -29,6 +30,7 @@ app.use('/api/sequences', sequencesRouter)
 app.use('/api/inbox', inboxRouter)
 app.use('/api/templates', templatesRouter)
 app.use('/api/analytics', analyticsRouter)
+app.use('/api/blacklist', blacklistRouter)
 
 app.use(notFound)
 app.use(errorHandler)
