@@ -91,6 +91,37 @@ export async function getScrapeStatus(jobId: string): Promise<ScrapeStatus> {
   return res.json() as Promise<ScrapeStatus>
 }
 
+export interface LeadNote {
+  id: string
+  lead_id: string
+  user_id: string
+  content: string
+  created_at: string
+}
+
+export async function fetchLeadNotes(leadId: string): Promise<LeadNote[]> {
+  const res = await apiFetch(`/api/message-templates/lead-notes/${leadId}`)
+  if (!res.ok) throw new Error(await parseErrorResponse(res))
+  const { data } = await res.json() as { data: LeadNote[] }
+  return data
+}
+
+export async function addLeadNote(leadId: string, content: string): Promise<LeadNote> {
+  const res = await apiFetch(`/api/message-templates/lead-notes/${leadId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content }),
+  })
+  if (!res.ok) throw new Error(await parseErrorResponse(res))
+  const { data } = await res.json() as { data: LeadNote }
+  return data
+}
+
+export async function deleteLeadNote(noteId: string): Promise<void> {
+  const res = await apiFetch(`/api/message-templates/lead-notes/note/${noteId}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(await parseErrorResponse(res))
+}
+
 export async function fetchLeads(params: {
   icp_flag?: string
   search?: string

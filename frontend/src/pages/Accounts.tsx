@@ -35,6 +35,54 @@ const WARMUP_LIMIT = (day: number) => {
   return Math.min(5 + week * 3, 25)
 }
 
+// Day at which warmup reaches full 25 connections (week 7 = day 43, week 8 = day 50 → 25)
+const WARMUP_MAX_DAY = 50
+
+function WarmupProgress({ day }: { day: number }) {
+  const currentLimit = WARMUP_LIMIT(day)
+  const pct = Math.min((day / WARMUP_MAX_DAY) * 100, 100)
+  const weeksLeft = Math.max(0, Math.ceil((WARMUP_MAX_DAY - day) / 7))
+  return (
+    <div className="min-w-[140px]">
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-xs font-medium text-gray-700">Day {day}</span>
+        <span className="text-xs text-blue-600 font-semibold">{currentLimit}/day limit</span>
+      </div>
+      <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
+        <div
+          className="h-full rounded-full bg-gradient-to-r from-blue-400 to-blue-600 transition-all"
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <p className="text-[10px] text-gray-400 mt-1">
+        {currentLimit >= 25 ? 'Ready to activate' : `~${weeksLeft}w to full activity`}
+      </p>
+    </div>
+  )
+}
+
+function DailyCounter({ value, max, color }: { value: number; max: number; color: 'blue' | 'purple' }) {
+  const pct = Math.min((value / max) * 100, 100)
+  const colorClass = color === 'blue'
+    ? 'bg-blue-500'
+    : 'bg-purple-500'
+  const textClass = color === 'blue' ? 'text-blue-700' : 'text-purple-700'
+  return (
+    <div className="min-w-[80px]">
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-xs text-gray-600">{value}</span>
+        <span className={`text-xs font-medium ${textClass}`}>/ {max}</span>
+      </div>
+      <div className="h-1 bg-gray-100 rounded-full overflow-hidden">
+        <div
+          className={`h-full rounded-full transition-all ${colorClass}`}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+    </div>
+  )
+}
+
 type PageTab = 'accounts' | 'proxies'
 
 export function Accounts() {
@@ -146,10 +194,18 @@ export function Accounts() {
                               {STATUS_LABELS[account.status]}
                             </span>
                           </td>
-                          <td className="px-4 py-3 text-gray-600">{account.daily_connection_count} / {limit}</td>
-                          <td className="px-4 py-3 text-gray-600">{account.daily_message_count} / 100</td>
-                          <td className="px-4 py-3 text-gray-600">
-                            {account.status === 'warming_up' ? `Day ${account.warmup_day}` : '—'}
+                          <td className="px-4 py-3">
+                            <DailyCounter value={account.daily_connection_count} max={limit} color="blue" />
+                          </td>
+                          <td className="px-4 py-3">
+                            <DailyCounter value={account.daily_message_count} max={100} color="purple" />
+                          </td>
+                          <td className="px-4 py-3">
+                            {account.status === 'warming_up' ? (
+                              <WarmupProgress day={account.warmup_day} />
+                            ) : (
+                              <span className="text-gray-400 text-sm">—</span>
+                            )}
                           </td>
                           <td className="px-4 py-3">
                             <div className="flex items-center gap-2">

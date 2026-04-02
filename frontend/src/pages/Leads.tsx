@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { fetchLeads, requalifyLead, qualifyAllLeads, importLeads, startSalesNavImport, getScrapeStatus } from '../api/leads'
-import type { Lead } from '../api/leads'
+import { fetchLeads, requalifyLead, qualifyAllLeads, importLeads, startSalesNavImport, getScrapeStatus, fetchLeadNotes, addLeadNote, deleteLeadNote } from '../api/leads'
+import type { Lead, LeadNote } from '../api/leads'
 import { fetchAccounts } from '../api/accounts'
 import { fetchCampaigns, addLeadsToCampaign } from '../api/campaigns'
 import * as XLSX from 'xlsx'
@@ -59,6 +59,7 @@ export function Leads() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [showAddToCampaign, setShowAddToCampaign] = useState(false)
   const [targetCampaignId, setTargetCampaignId] = useState('')
+  const [notesLead, setNotesLead] = useState<Lead | null>(null)
 
   const { data: leads = [], isLoading } = useQuery({
     queryKey: ['leads', { search, icp_flag: icpFlag }],
@@ -279,28 +280,40 @@ export function Leads() {
                       </td>
                       <td className="px-4 py-3 text-gray-500 capitalize">{lead.source.replace('_', ' ')}</td>
                       <td className="px-4 py-3 text-right">
-                        <button
-                          onClick={() => requalifyMutation.mutate(lead.id)}
-                          disabled={isQueued}
-                          className="text-xs text-gray-400 hover:text-blue-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1 ml-auto"
-                          title="Re-qualify with AI"
-                        >
-                          {isQueued ? (
-                            <>
-                              <svg className="animate-spin w-3 h-3" viewBox="0 0 24 24" fill="none">
-                                <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="60" strokeDashoffset="20" />
-                              </svg>
-                              Queuing…
-                            </>
-                          ) : (
-                            <>
-                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                <path d="M9 12l2 2 4-4" /><circle cx="12" cy="12" r="10" />
-                              </svg>
-                              AI Score
-                            </>
-                          )}
-                        </button>
+                        <div className="flex items-center justify-end gap-3">
+                          <button
+                            onClick={() => setNotesLead(lead)}
+                            className="text-xs text-gray-400 hover:text-amber-600 transition-colors flex items-center gap-1"
+                            title="View / add notes"
+                          >
+                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                            </svg>
+                            Notes
+                          </button>
+                          <button
+                            onClick={() => requalifyMutation.mutate(lead.id)}
+                            disabled={isQueued}
+                            className="text-xs text-gray-400 hover:text-blue-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
+                            title="Re-qualify with AI"
+                          >
+                            {isQueued ? (
+                              <>
+                                <svg className="animate-spin w-3 h-3" viewBox="0 0 24 24" fill="none">
+                                  <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="60" strokeDashoffset="20" />
+                                </svg>
+                                Queuing…
+                              </>
+                            ) : (
+                              <>
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                  <path d="M9 12l2 2 4-4" /><circle cx="12" cy="12" r="10" />
+                                </svg>
+                                AI Score
+                              </>
+                            )}
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   )
@@ -335,6 +348,15 @@ export function Leads() {
             setShowImportModal(false)
             setTimeout(() => queryClient.invalidateQueries({ queryKey: ['leads'] }), 3000)
           }}
+        />
+      )}
+
+      {/* Lead Notes Drawer */}
+      {notesLead && (
+        <NotesDrawer
+          lead={notesLead}
+          onClose={() => setNotesLead(null)}
+          queryClient={queryClient}
         />
       )}
 
@@ -444,6 +466,128 @@ function parseSheet(rows: Record<string, string>[]): ParsedLead[] {
     })
   }
   return leads
+}
+
+// ── Lead Notes Drawer ────────────────────────────────────────────────────────
+
+function NotesDrawer({
+  lead,
+  onClose,
+  queryClient,
+}: {
+  lead: Lead
+  onClose: () => void
+  queryClient: ReturnType<typeof useQueryClient>
+}) {
+  const [noteText, setNoteText] = useState('')
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  const { data: notes = [], isLoading } = useQuery({
+    queryKey: ['lead-notes', lead.id],
+    queryFn: () => fetchLeadNotes(lead.id),
+  })
+
+  const addMutation = useMutation({
+    mutationFn: () => addLeadNote(lead.id, noteText.trim()),
+    onSuccess: () => {
+      setNoteText('')
+      void queryClient.invalidateQueries({ queryKey: ['lead-notes', lead.id] })
+    },
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: (noteId: string) => deleteLeadNote(noteId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['lead-notes', lead.id] })
+    },
+  })
+
+  function formatDate(iso: string) {
+    return new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+  }
+
+  return (
+    <>
+      {/* Backdrop */}
+      <div className="fixed inset-0 bg-black/30 z-40" onClick={onClose} />
+
+      {/* Drawer */}
+      <div className="fixed top-0 right-0 h-full w-full max-w-md bg-white shadow-2xl z-50 flex flex-col">
+        {/* Header */}
+        <div className="flex items-start justify-between px-6 py-5 border-b border-gray-200">
+          <div>
+            <h2 className="text-base font-semibold text-gray-900">{lead.first_name} {lead.last_name}</h2>
+            <p className="text-sm text-gray-500 mt-0.5">
+              {[lead.title, lead.company].filter(Boolean).join(' · ') || 'No title / company'}
+            </p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors mt-0.5">
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Notes list */}
+        <div className="flex-1 overflow-y-auto px-6 py-4 space-y-3">
+          {isLoading ? (
+            <p className="text-sm text-gray-400 text-center py-8">Loading notes…</p>
+          ) : notes.length === 0 ? (
+            <div className="text-center py-10">
+              <svg className="w-10 h-10 text-gray-200 mx-auto mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+              </svg>
+              <p className="text-sm text-gray-400">No notes yet</p>
+              <p className="text-xs text-gray-300 mt-1">Add your first note below</p>
+            </div>
+          ) : (
+            notes.map((note: LeadNote) => (
+              <div key={note.id} className="group bg-amber-50 border border-amber-100 rounded-xl p-4">
+                <p className="text-sm text-gray-800 leading-relaxed whitespace-pre-wrap">{note.content}</p>
+                <div className="flex items-center justify-between mt-2">
+                  <span className="text-xs text-gray-400">{formatDate(note.created_at)}</span>
+                  <button
+                    onClick={() => deleteMutation.mutate(note.id)}
+                    disabled={deleteMutation.isPending}
+                    className="opacity-0 group-hover:opacity-100 text-xs text-red-400 hover:text-red-600 transition-all"
+                  >
+                    Delete
+                  </button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+
+        {/* Add note */}
+        <div className="border-t border-gray-200 px-6 py-4">
+          <textarea
+            ref={textareaRef}
+            value={noteText}
+            onChange={e => setNoteText(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && noteText.trim()) {
+                e.preventDefault()
+                addMutation.mutate()
+              }
+            }}
+            placeholder="Add a note… (Cmd+Enter to save)"
+            rows={3}
+            className="w-full px-3.5 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-amber-400 resize-none"
+          />
+          <div className="flex justify-end mt-2">
+            <button
+              onClick={() => addMutation.mutate()}
+              disabled={!noteText.trim() || addMutation.isPending}
+              className="px-4 py-2 bg-amber-500 text-white text-sm font-medium rounded-lg hover:bg-amber-600 disabled:opacity-50 transition-colors"
+            >
+              {addMutation.isPending ? 'Saving…' : 'Save Note'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </>
+  )
 }
 
 function CsvImportModal({
