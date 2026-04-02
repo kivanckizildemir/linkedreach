@@ -384,6 +384,36 @@ async function runLogin(key: string, email: string, password: string): Promise<v
   }
 }
 
+/** Returns a base64 PNG screenshot of the current browser page for debugging */
+export async function getSessionScreenshot(sessionKey: string): Promise<string | null> {
+  const session = sessions.get(sessionKey)
+  if (!session?.page) return null
+  try {
+    const buf = await session.page.screenshot({ type: 'png', fullPage: false })
+    return buf.toString('base64')
+  } catch {
+    return null
+  }
+}
+
+/** Returns the page URL and visible text for debugging */
+export async function getSessionPageInfo(sessionKey: string): Promise<{ url: string; text: string; buttons: string[] } | null> {
+  const session = sessions.get(sessionKey)
+  if (!session?.page) return null
+  try {
+    const url = session.page.url()
+    const text = await session.page.evaluate(() => document.body.innerText.substring(0, 2000))
+    const buttons = await session.page.evaluate(() =>
+      Array.from(document.querySelectorAll('button, a[role="button"], input[type="submit"]'))
+        .map(el => (el as HTMLElement).textContent?.trim())
+        .filter(Boolean)
+    ) as string[]
+    return { url, text, buttons }
+  } catch {
+    return null
+  }
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /** Returns a session_key immediately — all browser work is in the background */

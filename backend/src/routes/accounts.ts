@@ -3,7 +3,7 @@ import type { Request, Response } from 'express'
 import { supabase } from '../lib/supabase'
 import { requireAuth } from '../middleware/auth'
 import type { AccountStatus } from '../types'
-import { startLogin, submitVerificationCode, getLoginStatus } from '../linkedin/login'
+import { startLogin, submitVerificationCode, getLoginStatus, getSessionScreenshot, getSessionPageInfo } from '../linkedin/login'
 // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-explicit-any
 const { chromium } = require('playwright-extra') as any
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -157,6 +157,22 @@ accountsRouter.post('/:id/connect', async (req: Request, res: Response) => {
 accountsRouter.get('/:id/connect-status/:sessionKey', async (req: Request, res: Response) => {
   const result = getLoginStatus(String(req.params.sessionKey))
   res.json(result)
+})
+
+// GET /api/accounts/:id/connect-debug/:sessionKey — page info for debugging
+accountsRouter.get('/:id/connect-debug/:sessionKey', async (req: Request, res: Response) => {
+  const info = await getSessionPageInfo(String(req.params.sessionKey))
+  if (!info) { res.status(404).json({ error: 'Session not found or no page' }); return }
+  res.json(info)
+})
+
+// GET /api/accounts/:id/connect-screenshot/:sessionKey — screenshot for debugging
+accountsRouter.get('/:id/connect-screenshot/:sessionKey', async (req: Request, res: Response) => {
+  const png = await getSessionScreenshot(String(req.params.sessionKey))
+  if (!png) { res.status(404).json({ error: 'Session not found or no page' }); return }
+  const buf = Buffer.from(png, 'base64')
+  res.setHeader('Content-Type', 'image/png')
+  res.send(buf)
 })
 
 // POST /api/accounts/:id/connect-verify — submit 2FA code
