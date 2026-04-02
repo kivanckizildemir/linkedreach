@@ -1,18 +1,21 @@
-# Use the official Playwright image — Chromium + all system deps pre-installed
-# This is the main reason deploys were slow/flaky: installing Chromium on every build
-FROM mcr.microsoft.com/playwright:v1.44.0-jammy
+FROM node:20-slim
 
 WORKDIR /app
 
-# Install Node dependencies
+# Install all deps (including playwright for browser install)
 COPY package*.json ./
 RUN npm ci
+
+# Download Chromium + all system deps. Retry up to 3 times on network failure.
+RUN npx playwright install chromium --with-deps || \
+    npx playwright install chromium --with-deps || \
+    npx playwright install chromium --with-deps
 
 COPY tsconfig.json ./
 COPY src ./src
 RUN npm run build
 
-# Strip dev dependencies to keep image lean
+# Strip dev dependencies
 RUN npm prune --omit=dev
 
 EXPOSE 3001
