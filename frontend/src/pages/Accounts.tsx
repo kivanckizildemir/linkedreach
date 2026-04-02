@@ -568,7 +568,7 @@ function BrowserLoginModal({
   type Tab  = 'signin' | 'import'
   type Step = 'form' | 'loading' | 'push' | 'verify' | 'done' | 'error'
 
-  const [tab, setTab]         = useState<Tab>('import')
+  const [tab, setTab]         = useState<Tab>('signin')
   const [step, setStep]       = useState<Step>('form')
   const [email, setEmail]     = useState('')
   const [password, setPassword] = useState('')
@@ -638,16 +638,10 @@ function BrowserLoginModal({
     e.preventDefault()
     setImportError('')
     const raw = cookieJson.trim()
-    if (!raw) { setImportError('Paste your li_at value or cookie JSON first.'); return }
-
-    // Accept plain li_at value (not JSON) — wrap it automatically
+    if (!raw) { setImportError('Paste your cookies JSON first.'); return }
     let parsed: unknown
-    if (!raw.startsWith('[') && !raw.startsWith('{')) {
-      parsed = [{ name: 'li_at', value: raw, domain: '.linkedin.com', path: '/' }]
-    } else {
-      try { parsed = JSON.parse(raw) }
-      catch { setImportError('Invalid JSON — copy the full output from Cookie Editor.'); return }
-    }
+    try { parsed = JSON.parse(raw) }
+    catch { setImportError('Invalid JSON — copy the full output from Cookie Editor.'); return }
 
     type C = { name: string; value: string; domain?: string; path?: string; httpOnly?: boolean; secure?: boolean; sameSite?: string; expirationDate?: number; expires?: number }
     const arr = (Array.isArray(parsed) ? parsed : [parsed]) as C[]
@@ -771,9 +765,6 @@ function BrowserLoginModal({
             {/* Sign In tab */}
             {tab === 'signin' && (
               <form onSubmit={handleSignIn} className="space-y-4">
-                <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-800">
-                  ⚠️ <span className="font-semibold">May show a CAPTCHA.</span> LinkedIn sometimes blocks server-based logins. If it fails, use the <button type="button" className="underline font-semibold" onClick={() => setTab('import')}>Paste Cookies</button> tab instead.
-                </div>
                 <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 text-xs text-blue-800">
                   <span className="font-semibold">Infinite Login:</span> add your 2FA secret key below and we'll never ask for a verification code again.
                 </div>
@@ -817,27 +808,20 @@ function BrowserLoginModal({
             {/* Paste Cookies tab */}
             {tab === 'import' && (
               <form onSubmit={handleImport} className="space-y-4">
-                <div className="bg-green-50 border border-green-200 rounded-xl p-4 text-xs text-green-800 space-y-1.5">
-                  <p className="font-semibold text-green-900">✓ Most reliable method</p>
-                  <p className="font-medium text-green-800">Option A — paste just the <code className="bg-green-100 px-1 rounded font-mono">li_at</code> value:</p>
-                  <ol className="list-decimal list-inside space-y-0.5">
-                    <li>Open <strong>linkedin.com</strong> in Chrome while logged in</li>
-                    <li>Press <strong>F12</strong> → Application → Cookies → linkedin.com</li>
-                    <li>Find <code className="bg-green-100 px-1 rounded font-mono">li_at</code> → copy its <strong>Value</strong></li>
-                    <li>Paste it below</li>
-                  </ol>
-                  <p className="font-medium text-green-800 pt-1">Option B — full JSON via Cookie Editor extension:</p>
-                  <ol className="list-decimal list-inside space-y-0.5">
-                    <li>Install <strong>Cookie Editor</strong> for Chrome</li>
-                    <li>On linkedin.com → Cookie Editor → <strong>Export (JSON)</strong></li>
+                <div className="bg-gray-50 rounded-xl p-4 text-xs text-gray-600 space-y-1.5">
+                  <p className="font-medium text-gray-700">Export cookies from your browser:</p>
+                  <ol className="list-decimal list-inside space-y-1">
+                    <li>Install <strong>Cookie Editor</strong> extension for Chrome</li>
+                    <li>Go to <strong>linkedin.com</strong> while logged in</li>
+                    <li>Click Cookie Editor → <strong>Export (JSON)</strong></li>
                     <li>Paste below</li>
                   </ol>
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-gray-700 mb-1.5">li_at value <span className="text-gray-400 font-normal">— or full Cookie Editor JSON</span></label>
+                  <label className="block text-xs font-medium text-gray-700 mb-1.5">Cookie JSON</label>
                   <textarea required value={cookieJson} onChange={e => setCookieJson(e.target.value)}
-                    placeholder={'Paste li_at value (AQE...) or full JSON cookie export'}
-                    rows={4}
+                    placeholder={'[{"name":"li_at","value":"AQE..."}]'}
+                    rows={5}
                     className="w-full px-3 py-2.5 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono resize-none" />
                 </div>
                 {importError && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg p-3">{importError}</p>}
