@@ -14,6 +14,7 @@ import { activityLogRouter } from './routes/activityLog'
 import { labelsRouter } from './routes/labels'
 import { settingsRouter } from './routes/settings'
 import { errorHandler, notFound } from './middleware/errors'
+import { testProxyRaw } from './linkedin/login'
 
 dotenv.config()
 
@@ -25,6 +26,17 @@ app.use(express.json())
 
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok' })
+})
+
+// Unauthenticated proxy diagnostic — raw TCP CONNECT to BrightData
+app.get('/api/proxy-diag/:accountId', async (req, res) => {
+  const result = await testProxyRaw(String(req.params.accountId))
+  const ok = result.includes('200')
+  res.json({
+    proxyResult: result,
+    ok,
+    proxyUrl: process.env.BRIGHTDATA_PROXY_URL ? process.env.BRIGHTDATA_PROXY_URL.replace(/:([^:@]+)@/, ':***@') : 'NOT SET',
+  })
 })
 
 app.use('/api/accounts', accountsRouter)
