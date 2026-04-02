@@ -1,21 +1,17 @@
-FROM node:20-slim
+# Base image: node:20-slim + Chromium pre-installed (built by GitHub Actions).
+# No browser download on every deploy — builds take ~30s instead of ~3min.
+# Source: ghcr.io/kivanckizildemir/linkedreach-base:latest (public package)
+FROM ghcr.io/kivanckizildemir/linkedreach-base:latest
 
 WORKDIR /app
 
-# Install all deps (including playwright for browser install)
 COPY package*.json ./
 RUN npm ci
-
-# Download Chromium + all system deps. Retry up to 3 times on network failure.
-RUN npx playwright install chromium --with-deps || \
-    npx playwright install chromium --with-deps || \
-    npx playwright install chromium --with-deps
 
 COPY tsconfig.json ./
 COPY src ./src
 RUN npm run build
 
-# Strip dev dependencies
 RUN npm prune --omit=dev
 
 EXPOSE 3001

@@ -107,8 +107,10 @@ async function resolveProxy(accountId: string): Promise<
     const username = baseUsername && country
       ? `${baseUsername}-country-${country.toLowerCase()}`
       : baseUsername
+    // BrightData port 33335 is the SSL endpoint — must use https://
+    const protocol = port === '33335' ? 'https' : (url.protocol.replace(':', '') || 'http')
     return {
-      server:   `http://${host}:${port}`,
+      server:   `${protocol}://${host}:${port}`,
       username,
       password: decodeURIComponent(url.password) || undefined,
     }
