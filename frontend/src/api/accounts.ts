@@ -1,0 +1,159 @@
+import { supabase } from '../lib/supabase'
+import { apiFetch, parseErrorResponse } from '../lib/fetchJson'
+
+export interface LinkedInAccount {
+  id: string
+  user_id: string
+  linkedin_email: string
+  status: 'active' | 'paused' | 'banned' | 'warming_up'
+  daily_connection_count: number
+  daily_message_count: number
+  warmup_day: number
+  last_active_at: string | null
+  has_premium: boolean
+  inmail_credits: number
+  created_at: string
+  updated_at: string
+}
+
+export async function fetchAccounts(): Promise<LinkedInAccount[]> {
+  const { data, error } = await supabase
+    .from('linkedin_accounts')
+    .select('*')
+    .order('created_at', { ascending: false })
+  if (error) throw new Error(error.message)
+  return (data ?? []) as LinkedInAccount[]
+}
+
+export async function createAccount(linkedin_email: string): Promise<LinkedInAccount> {
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) throw new Error('Not authenticated')
+  const { data, error } = await supabase
+    .from('linkedin_accounts')
+    .insert({ linkedin_email, status: 'warming_up', warmup_day: 1, user_id: user.id })
+    .select()
+    .single()
+  if (error) throw new Error(error.message)
+  return data as LinkedInAccount
+}
+
+export async function updateAccount(
+  id: string,
+  updates: Partial<Pick<LinkedInAccount, 'status'>> & { proxy_id?: string | null; cookies?: string; status?: LinkedInAccount['status'] }
+): Promise<LinkedInAccount> {
+  const res = await apiFetch(`/api/accounts/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(updates),
+  })
+  if (!res.ok) throw new Error(await parseErrorResponse(res))
+  const { data } = await res.json() as { data: LinkedInAccount }
+  return data
+}
+
+export async function deleteAccount(id: string): Promise<void> {
+  const res = await apiFetch(`/api/accounts/${id}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(await parseErrorResponse(res))
+}
+
+// ── Proxies ───────────────────────────────────────────────────────────────────
+
+export interface Proxy {
+  id: string
+  proxy_url: string
+  assigned_account_id: string | null
+  is_available: boolean
+  created_at: string
+}
+
+export async function fetchProxies(): Promise<Proxy[]> {
+  const { data, error } = await supabase
+    .from('proxies')
+    .select('*')
+    .order('created_at', { ascending: false })
+  if (error) throw new Error(error.message)
+  return (data ?? []) as Proxy[]
+}
+
+export async function addProxy(proxy_url: string): Promise<Proxy> {
+  const { data, error } = await supabase
+    .from('proxies')
+    .insert({ proxy_url, is_available: true })
+    .select()
+    .single()
+  if (error) throw new Error(error.message)
+  return data as Proxy
+}
+
+export async function deleteProxy(id: string): Promise<void> {
+  const { error } = await supabase.from('proxies').delete().eq('id', id)
+  if (error) throw new Error(error.message)
+}
+
+export type ConnectResult =
+  | { status: 'starting'; session_key: string }
+
+export type ConnectStatusResult =
+  | { status: 'starting' }
+  | { status: 'pending_push';       hint: string }
+  | { status: 'needs_verification'; hint: string }
+  | { status: 'success' }
+  | { status: 'error';   message: string }
+  | { status: 'not_found' }
+
+export async function getConnectStatus(accountId: string, sessionKey: string): Promise<ConnectStatusResult> {
+  const res = await apiFetch(`/api/accounts/${accountId}/connect-status/${sessionKey}`)
+  if (!res.ok) throw new Error(await parseErrorResponse(res))
+  return res.json() as Promise<ConnectStatusResult>
+}
+
+export async function connectAccount(
+  accountId:   string,
+  email:       string,
+  password:    string,
+  totp_secret?: string
+): Promise<ConnectResult> {
+  const res = await apiFetch(`/api/accounts/${accountId}/connect`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password, totp_secret }),
+  })
+  if (!res.ok) throw new Error(await parseErrorResponse(res))
+  return res.json() as Promise<ConnectResult>
+}
+
+export async function verifyConnectCode(
+  accountId: string,
+  sessionKey: string,
+  code: string
+): Promise<{ status: 'success' } | { status: 'error'; message: string }> {
+  const res = await apiFetch(`/api/accounts/${accountId}/connect-verify`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_key: sessionKey, code }),
+  })
+  if (!res.ok) throw new Error(await parseErrorResponse(res))
+  return res.json() as Promise<{ status: 'success' } | { status: 'error'; message: string }>
+}
+
+export async function loginBrowser(accountId: string): Promise<{ message: string }> {
+  const res = await apiFetch(`/api/accounts/${accountId}/login-browser`, { method: 'POST' })
+  if (!res.ok) {
+    const ct = res.headers.get('content-type') ?? ''
+    if (ct.includes('application/json')) {
+      const body = await res.json() as { error?: string; message?: string }
+      // Surface NO_DISPLAY as a recognisable error code
+      if (body.error === 'NO_DISPLAY') throw new Error('NO_DISPLAY')
+      throw new Error(body.message ?? body.error ?? `Request failed (${res.status})`)
+    }
+    throw new Error(await parseErrorResponse(res))
+  }
+  return res.json() as Promise<{ message: string }>
+}
+
+export async function assignProxy(accountId: string, proxyId: string | null): Promise<void> {
+  await updateAccount(accountId, { proxy_id: proxyId })
+  if (proxyId) {
+    await supabase.from('proxies').update({ assigned_account_id: accountId, is_available: false }).eq('id', proxyId)
+  }
+}

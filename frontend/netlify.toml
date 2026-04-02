@@ -1,0 +1,7 @@
+[build]
+  publish = "dist"
+  # Generates _redirects at build time so BACKEND_URL env var is baked in
+  command = "node -e \"const fs=require('fs');fs.writeFileSync('public/_redirects','/api/* '+process.env.BACKEND_URL+'/api/:splat 200\\n/* /index.html 200')\" && npm run build"
+
+[build.environment]
+  NODE_VERSION = "20"

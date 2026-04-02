@@ -1,0 +1,52 @@
+plugins = []
+headers = []
+
+[functions]
+
+[functions."*"]
+
+[build]
+publish = "/Users/kivanckizildemir/linkedreach/frontend/dist"
+publishOrigin = "config"
+commandOrigin = "config"
+base = "/Users/kivanckizildemir/linkedreach/frontend"
+command = "node -e \"const fs=require('fs');fs.writeFileSync('public/_redirects','/api/* '+process.env.BACKEND_URL+'/api/:splat 200\\n/* /index.html 200')\" && npm run build"
+
+[build.environment]
+NODE_VERSION = "20"
+
+[build.processing]
+
+[build.processing.css]
+
+[build.processing.html]
+
+[build.processing.images]
+
+[build.processing.js]
+
+[build.services]
+
+[[redirects]]
+from = "/api/*"
+to = "https://api-production-5994.up.railway.app/api/:splat"
+status = 200.0
+force = false
+
+[redirects.query]
+
+[redirects.conditions]
+
+[redirects.headers]
+
+[[redirects]]
+from = "/*"
+to = "/index.html"
+status = 200.0
+force = false
+
+[redirects.query]
+
+[redirects.conditions]
+
+[redirects.headers]
