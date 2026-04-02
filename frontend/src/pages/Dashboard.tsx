@@ -1,6 +1,66 @@
 import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '../lib/fetchJson'
 
+interface TodayResponse {
+  today: {
+    connections_sent: number
+    messages_sent: number
+    replies_received: number
+    total: number
+  }
+  by_account: Array<{
+    account_id: string
+    email: string
+    connections: number
+    messages: number
+    replies: number
+    total: number
+  }>
+  recent_activity: Array<{
+    id: string
+    action: string
+    details: Record<string, unknown> | null
+    account_id: string | null
+    created_at: string
+  }>
+}
+
+async function fetchTodayAnalytics(): Promise<TodayResponse> {
+  const res = await apiFetch('/api/analytics/today')
+  if (!res.ok) throw new Error('Failed to fetch today analytics')
+  return res.json() as Promise<TodayResponse>
+}
+
+const ACTION_LABELS: Record<string, string> = {
+  connection_sent:   'Connection sent',
+  message_sent:      'Message sent',
+  reply_received:    'Reply received',
+  profile_viewed:    'Profile viewed',
+  unsubscribed:      'Unsubscribed',
+  account_paused:    'Account paused',
+  qualification_done:'Lead qualified',
+}
+
+const ACTION_COLORS: Record<string, string> = {
+  connection_sent:    'text-blue-600',
+  message_sent:       'text-purple-600',
+  reply_received:     'text-green-600',
+  profile_viewed:     'text-gray-400',
+  unsubscribed:       'text-red-500',
+  account_paused:     'text-orange-500',
+  qualification_done: 'text-indigo-600',
+}
+
+function timeAgo(iso: string) {
+  const diff = Date.now() - new Date(iso).getTime()
+  const mins = Math.floor(diff / 60000)
+  if (mins < 1) return 'just now'
+  if (mins < 60) return `${mins}m ago`
+  const hrs = Math.floor(mins / 60)
+  if (hrs < 24) return `${hrs}h ago`
+  return `${Math.floor(hrs / 24)}d ago`
+}
+
 interface AnalyticsResponse {
   overview: {
     active_campaigns:  number
@@ -84,6 +144,12 @@ export function Dashboard() {
     refetchInterval: 60_000,
   })
 
+  const { data: todayData } = useQuery({
+    queryKey: ['analytics-today'],
+    queryFn: fetchTodayAnalytics,
+    refetchInterval: 30_000,
+  })
+
   const ov = data?.overview
 
   return (
@@ -109,6 +175,73 @@ export function Dashboard() {
           )}
           sub="replies / connections"
         />
+      </div>
+
+      {/* Today's Activity */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Today summary */}
+        <div className="bg-white rounded-xl border border-gray-200 p-5">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-sm font-semibold text-gray-900">Today&apos;s Activity</h2>
+            <span className="text-xs text-gray-400">{new Date().toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })}</span>
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            {[
+              { label: 'Connections', value: todayData?.today.connections_sent ?? 0, color: 'text-blue-600', bg: 'bg-blue-50' },
+              { label: 'Messages',    value: todayData?.today.messages_sent    ?? 0, color: 'text-purple-600', bg: 'bg-purple-50' },
+              { label: 'Replies',     value: todayData?.today.replies_received ?? 0, color: 'text-green-600',  bg: 'bg-green-50' },
+            ].map(({ label, value, color, bg }) => (
+              <div key={label} className={`${bg} rounded-xl px-4 py-3 text-center`}>
+                <p className={`text-2xl font-bold ${color}`}>{value}</p>
+                <p className="text-xs text-gray-500 mt-1">{label}</p>
+              </div>
+            ))}
+          </div>
+          {(todayData?.by_account ?? []).length > 0 && (
+            <div className="mt-4 space-y-2">
+              <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">By Account</p>
+              {todayData!.by_account.map(acc => (
+                <div key={acc.account_id} className="flex items-center justify-between text-xs">
+                  <span className="text-gray-600 truncate max-w-[150px]">{acc.email}</span>
+                  <div className="flex items-center gap-3 shrink-0">
+                    {acc.connections > 0 && <span className="text-blue-600">{acc.connections} conn</span>}
+                    {acc.messages > 0    && <span className="text-purple-600">{acc.messages} msg</span>}
+                    {acc.replies > 0     && <span className="text-green-600">{acc.replies} rep</span>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          {(todayData?.today.total ?? 0) === 0 && (
+            <p className="mt-4 text-sm text-gray-400 italic text-center">No activity today yet</p>
+          )}
+        </div>
+
+        {/* Recent activity feed */}
+        <div className="bg-white rounded-xl border border-gray-200 p-5">
+          <h2 className="text-sm font-semibold text-gray-900 mb-4">Recent Activity</h2>
+          {(todayData?.recent_activity ?? []).length === 0 ? (
+            <p className="text-sm text-gray-400 italic">No activity logged yet</p>
+          ) : (
+            <div className="space-y-2.5 max-h-48 overflow-y-auto pr-1">
+              {todayData!.recent_activity.map(entry => {
+                const label = ACTION_LABELS[entry.action] ?? entry.action.replace(/_/g, ' ')
+                const color = ACTION_COLORS[entry.action] ?? 'text-gray-600'
+                const details = entry.details as Record<string, string> | null
+                const leadName = details?.lead_name ?? details?.name ?? null
+                return (
+                  <div key={entry.id} className="flex items-start justify-between gap-3">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className={`text-xs font-medium ${color} shrink-0`}>{label}</span>
+                      {leadName && <span className="text-xs text-gray-400 truncate">{leadName}</span>}
+                    </div>
+                    <span className="text-[10px] text-gray-300 shrink-0">{timeAgo(entry.created_at)}</span>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

@@ -96,3 +96,59 @@ analyticsRouter.get('/', async (req: Request, res: Response) => {
     campaigns: campaignStats,
   })
 })
+
+// GET /api/analytics/today — today's activity summary + recent feed
+analyticsRouter.get('/today', async (req: Request, res: Response) => {
+  const userId = req.user.id
+  const todayStart = new Date()
+  todayStart.setHours(0, 0, 0, 0)
+  const todayISO = todayStart.toISOString()
+
+  const [activityRes, accountsRes, recentActivityRes] = await Promise.all([
+    // Today's activity grouped by account (from activity_log)
+    supabase
+      .from('activity_log')
+      .select('action, account_id, created_at')
+      .eq('user_id', userId)
+      .gte('created_at', todayISO),
+    // Account info for display
+    supabase
+      .from('linkedin_accounts')
+      .select('id, linkedin_email')
+      .eq('user_id', userId),
+    // Recent activity feed (last 20)
+    supabase
+      .from('activity_log')
+      .select('id, action, details, account_id, created_at')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+      .limit(20),
+  ])
+
+  const todayActions = activityRes.data ?? []
+  const accounts = (accountsRes.data ?? []) as Array<{ id: string; linkedin_email: string }>
+  const recentActivity = recentActivityRes.data ?? []
+
+  // Overall today totals
+  const today = {
+    connections_sent: todayActions.filter(a => a.action === 'connection_sent').length,
+    messages_sent:    todayActions.filter(a => a.action === 'message_sent').length,
+    replies_received: todayActions.filter(a => a.action === 'reply_received').length,
+    total:            todayActions.length,
+  }
+
+  // Per-account breakdown
+  const by_account = accounts.map(acc => {
+    const accActions = todayActions.filter(a => a.account_id === acc.id)
+    return {
+      account_id:   acc.id,
+      email:        acc.linkedin_email,
+      connections:  accActions.filter(a => a.action === 'connection_sent').length,
+      messages:     accActions.filter(a => a.action === 'message_sent').length,
+      replies:      accActions.filter(a => a.action === 'reply_received').length,
+      total:        accActions.length,
+    }
+  }).filter(a => a.total > 0)
+
+  res.json({ today, by_account, recent_activity: recentActivity })
+})
