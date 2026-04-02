@@ -9,6 +9,10 @@ export interface Campaign {
   icp_config: Record<string, unknown>
   daily_connection_limit: number
   daily_message_limit: number
+  schedule_start_hour: number
+  schedule_end_hour: number
+  schedule_days: number[]
+  schedule_timezone: string
   created_at: string
   updated_at: string
 }
@@ -36,7 +40,7 @@ export async function createCampaign(name: string): Promise<Campaign> {
 
 export async function updateCampaign(
   id: string,
-  updates: Partial<Pick<Campaign, 'name' | 'status' | 'icp_config' | 'daily_connection_limit' | 'daily_message_limit'>>
+  updates: Partial<Pick<Campaign, 'name' | 'status' | 'icp_config' | 'daily_connection_limit' | 'daily_message_limit' | 'schedule_start_hour' | 'schedule_end_hour' | 'schedule_days' | 'schedule_timezone'>>
 ): Promise<Campaign> {
   const res = await apiFetch(`/api/campaigns/${id}`, {
     method: 'PATCH',

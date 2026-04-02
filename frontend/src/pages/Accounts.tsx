@@ -15,6 +15,7 @@ import {
   verifyConnectCode,
   type LinkedInAccount,
 } from '../api/accounts'
+import { fetchActivity, ACTION_LABELS, ACTION_COLORS } from '../api/activity'
 
 const STATUS_COLORS: Record<LinkedInAccount['status'], string> = {
   active:     'bg-green-100 text-green-700',
@@ -83,7 +84,7 @@ function DailyCounter({ value, max, color }: { value: number; max: number; color
   )
 }
 
-type PageTab = 'accounts' | 'proxies'
+type PageTab = 'accounts' | 'proxies' | 'activity'
 
 export function Accounts() {
   const [tab, setTab] = useState<PageTab>('accounts')
@@ -135,18 +136,22 @@ export function Accounts() {
 
       {/* Tabs */}
       <div className="mt-6 flex gap-1 border-b border-gray-200">
-        {(['accounts', 'proxies'] as const).map(t => (
+        {([
+          ['accounts', 'LinkedIn Accounts'],
+          ['proxies', 'Proxies'],
+          ['activity', 'Activity Log'],
+        ] as const).map(([t, label]) => (
           <button
             key={t}
             onClick={() => setTab(t)}
             className={[
-              'px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors capitalize',
+              'px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors',
               tab === t
                 ? 'border-blue-600 text-blue-600'
                 : 'border-transparent text-gray-500 hover:text-gray-700',
             ].join(' ')}
           >
-            {t === 'accounts' ? 'LinkedIn Accounts' : 'Proxies'}
+            {label}
           </button>
         ))}
       </div>
@@ -274,6 +279,8 @@ export function Accounts() {
       )}
 
       {tab === 'proxies' && <ProxiesPanel accounts={accounts} />}
+
+      {tab === 'activity' && <ActivityPanel />}
 
       {showAddAccount && (
         <AddAccountModal
@@ -879,6 +886,79 @@ function AddAccountModal({
             </button>
           </div>
         </form>
+      </div>
+    </div>
+  )
+}
+
+// ── Activity Log Panel ────────────────────────────────────────────────────────
+
+function ActivityPanel() {
+  const [accountFilter, setAccountFilter] = useState('')
+
+  const { data: accounts = [] } = useQuery({
+    queryKey: ['accounts'],
+    queryFn: () => import('../api/accounts').then(m => m.fetchAccounts()),
+  })
+
+  const { data: activity = [], isLoading } = useQuery({
+    queryKey: ['activity', accountFilter],
+    queryFn: () => fetchActivity(accountFilter || undefined),
+    refetchInterval: 30_000,
+  })
+
+  function timeAgo(dateStr: string): string {
+    const diff = Date.now() - new Date(dateStr).getTime()
+    const mins = Math.floor(diff / 60000)
+    if (mins < 1) return 'just now'
+    if (mins < 60) return `${mins}m ago`
+    const hrs = Math.floor(mins / 60)
+    if (hrs < 24) return `${hrs}h ago`
+    return `${Math.floor(hrs / 24)}d ago`
+  }
+
+  return (
+    <div className="mt-4 space-y-3">
+      <div className="flex items-center gap-3">
+        <select
+          value={accountFilter}
+          onChange={e => setAccountFilter(e.target.value)}
+          className="px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
+        >
+          <option value="">All accounts</option>
+          {accounts.map(acc => (
+            <option key={acc.id} value={acc.id}>{acc.linkedin_email}</option>
+          ))}
+        </select>
+        <span className="text-xs text-gray-400">Auto-refreshes every 30s</span>
+      </div>
+
+      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+        {isLoading ? (
+          <div className="py-16 text-center text-sm text-gray-400">Loading…</div>
+        ) : activity.length === 0 ? (
+          <div className="py-16 text-center">
+            <p className="text-sm text-gray-500">No activity yet</p>
+            <p className="text-xs text-gray-400 mt-1">Actions will appear here as campaigns run</p>
+          </div>
+        ) : (
+          <div className="divide-y divide-gray-50">
+            {activity.map(entry => (
+              <div key={entry.id} className="flex items-start gap-4 px-5 py-3.5 hover:bg-gray-50 transition-colors">
+                <span className={`mt-0.5 text-[10px] font-semibold px-2 py-0.5 rounded-full shrink-0 ${ACTION_COLORS[entry.action] ?? 'bg-gray-100 text-gray-500'}`}>
+                  {entry.action.replace(/_/g, ' ')}
+                </span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm text-gray-800">{ACTION_LABELS[entry.action] ?? entry.action.replace(/_/g, ' ')}</p>
+                  {entry.detail && (
+                    <p className="text-xs text-gray-400 mt-0.5 truncate">{entry.detail}</p>
+                  )}
+                </div>
+                <span className="text-xs text-gray-400 shrink-0 tabular-nums">{timeAgo(entry.created_at)}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   )

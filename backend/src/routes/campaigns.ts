@@ -54,11 +54,19 @@ campaignsRouter.post('/', async (req: Request, res: Response) => {
     icp_config,
     daily_connection_limit,
     daily_message_limit,
+    schedule_start_hour,
+    schedule_end_hour,
+    schedule_days,
+    schedule_timezone,
   } = req.body as {
     name: string
     icp_config?: Record<string, unknown>
     daily_connection_limit?: number
     daily_message_limit?: number
+    schedule_start_hour?: number
+    schedule_end_hour?: number
+    schedule_days?: number[]
+    schedule_timezone?: string
   }
 
   if (!name) {
@@ -75,6 +83,10 @@ campaignsRouter.post('/', async (req: Request, res: Response) => {
       icp_config: icp_config ?? {},
       daily_connection_limit: daily_connection_limit ?? 25,
       daily_message_limit: daily_message_limit ?? 100,
+      schedule_start_hour: schedule_start_hour ?? 9,
+      schedule_end_hour: schedule_end_hour ?? 17,
+      schedule_days: schedule_days ?? [1, 2, 3, 4, 5],
+      schedule_timezone: schedule_timezone ?? 'UTC',
     })
     .select()
     .single()
@@ -95,6 +107,10 @@ campaignsRouter.patch('/:id', async (req: Request, res: Response) => {
     'icp_config',
     'daily_connection_limit',
     'daily_message_limit',
+    'schedule_start_hour',
+    'schedule_end_hour',
+    'schedule_days',
+    'schedule_timezone',
   ] as const
   type AllowedKey = (typeof allowed)[number]
 

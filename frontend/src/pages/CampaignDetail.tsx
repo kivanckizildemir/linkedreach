@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
@@ -8,6 +8,7 @@ import {
   removeCampaignLead,
   deleteCampaign,
   addLeadsToCampaign,
+  type Campaign,
   type CampaignLead,
 } from '../api/campaigns'
 import { apiFetch } from '../lib/fetchJson'
@@ -108,6 +109,13 @@ export function CampaignDetail() {
     mutationFn: () => deleteCampaign(id!),
     onSuccess: () => navigate('/campaigns'),
   })
+
+  const scheduleMutation = useMutation({
+    mutationFn: (updates: Parameters<typeof updateCampaign>[1]) => updateCampaign(id!, updates),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['campaign', id] }),
+  })
+
+  const [showSchedule, setShowSchedule] = useState(false)
 
   if (campaignLoading) {
     return <div className="p-8 text-sm text-gray-400">Loading…</div>
@@ -227,6 +235,33 @@ export function CampaignDetail() {
             )}
           </div>
         ))}
+      </div>
+
+      {/* Schedule panel */}
+      <div className="bg-white rounded-xl border border-gray-200">
+        <button
+          className="w-full px-5 py-4 flex items-center justify-between text-sm font-semibold text-gray-900 hover:bg-gray-50 transition-colors rounded-xl"
+          onClick={() => setShowSchedule(v => !v)}
+        >
+          <div className="flex items-center gap-2">
+            <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            Schedule
+            <span className="text-xs font-normal text-gray-400 ml-1">
+              {DAY_NAMES.filter((_, i) => (campaign.schedule_days ?? [1,2,3,4,5]).includes(i)).join(', ')}
+              {' · '}
+              {formatHour(campaign.schedule_start_hour ?? 9)}–{formatHour(campaign.schedule_end_hour ?? 17)}
+              {' · '}{campaign.schedule_timezone ?? 'UTC'}
+            </span>
+          </div>
+          <svg className={`w-4 h-4 text-gray-400 transition-transform ${showSchedule ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+        {showSchedule && (
+          <ScheduleEditor campaign={campaign} onSave={updates => scheduleMutation.mutate(updates)} saving={scheduleMutation.isPending} />
+        )}
       </div>
 
       {/* Leads table */}
@@ -391,6 +426,141 @@ export function CampaignDetail() {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+// ── Schedule helpers ──────────────────────────────────────────────────────────
+
+const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+
+function formatHour(h: number): string {
+  if (h === 0) return '12am'
+  if (h < 12) return `${h}am`
+  if (h === 12) return '12pm'
+  return `${h - 12}pm`
+}
+
+// Common IANA timezones
+const TIMEZONES = [
+  'UTC',
+  'America/New_York',
+  'America/Chicago',
+  'America/Denver',
+  'America/Los_Angeles',
+  'America/Vancouver',
+  'America/Toronto',
+  'America/Sao_Paulo',
+  'Europe/London',
+  'Europe/Paris',
+  'Europe/Berlin',
+  'Europe/Amsterdam',
+  'Europe/Madrid',
+  'Europe/Rome',
+  'Europe/Warsaw',
+  'Europe/Istanbul',
+  'Asia/Dubai',
+  'Asia/Kolkata',
+  'Asia/Singapore',
+  'Asia/Tokyo',
+  'Asia/Seoul',
+  'Asia/Shanghai',
+  'Australia/Sydney',
+  'Pacific/Auckland',
+]
+
+function ScheduleEditor({
+  campaign,
+  onSave,
+  saving,
+}: {
+  campaign: Campaign
+  onSave: (updates: Partial<Campaign>) => void
+  saving: boolean
+}) {
+  const [days, setDays] = useState<number[]>(campaign.schedule_days ?? [1,2,3,4,5])
+  const [startHour, setStartHour] = useState(campaign.schedule_start_hour ?? 9)
+  const [endHour, setEndHour] = useState(campaign.schedule_end_hour ?? 17)
+  const [timezone, setTimezone] = useState(campaign.schedule_timezone ?? 'UTC')
+
+  const toggleDay = useCallback((d: number) => {
+    setDays(prev => prev.includes(d) ? prev.filter(x => x !== d) : [...prev, d].sort())
+  }, [])
+
+  return (
+    <div className="px-5 pb-5 border-t border-gray-100 pt-4 space-y-5">
+      {/* Days of week */}
+      <div>
+        <label className="block text-xs font-medium text-gray-500 mb-2">Active Days</label>
+        <div className="flex gap-2">
+          {DAY_NAMES.map((name, i) => (
+            <button
+              key={i}
+              onClick={() => toggleDay(i)}
+              className={[
+                'w-10 h-10 rounded-full text-xs font-semibold transition-colors',
+                days.includes(i)
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-gray-100 text-gray-500 hover:bg-gray-200',
+              ].join(' ')}
+            >
+              {name}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Time window */}
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="block text-xs font-medium text-gray-500 mb-1.5">Start Time</label>
+          <select
+            value={startHour}
+            onChange={e => setStartHour(Number(e.target.value))}
+            className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            {Array.from({ length: 24 }, (_, i) => (
+              <option key={i} value={i}>{formatHour(i)}</option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-500 mb-1.5">End Time</label>
+          <select
+            value={endHour}
+            onChange={e => setEndHour(Number(e.target.value))}
+            className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            {Array.from({ length: 24 }, (_, i) => (
+              <option key={i} value={i} disabled={i <= startHour}>{formatHour(i)}</option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      {/* Timezone */}
+      <div>
+        <label className="block text-xs font-medium text-gray-500 mb-1.5">Timezone</label>
+        <select
+          value={timezone}
+          onChange={e => setTimezone(e.target.value)}
+          className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+        >
+          {TIMEZONES.map(tz => (
+            <option key={tz} value={tz}>{tz}</option>
+          ))}
+        </select>
+      </div>
+
+      <div className="flex justify-end">
+        <button
+          onClick={() => onSave({ schedule_days: days, schedule_start_hour: startHour, schedule_end_hour: endHour, schedule_timezone: timezone })}
+          disabled={saving || days.length === 0}
+          className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-60 transition-colors"
+        >
+          {saving ? 'Saving…' : 'Save Schedule'}
+        </button>
+      </div>
     </div>
   )
 }
