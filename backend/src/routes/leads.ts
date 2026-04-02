@@ -443,6 +443,29 @@ leadsRouter.get('/:id/campaigns', async (req: Request, res: Response) => {
   res.json({ data: data ?? [] })
 })
 
+// POST /api/leads/bulk-delete — delete multiple leads by IDs
+leadsRouter.post('/bulk-delete', async (req: Request, res: Response) => {
+  const { ids } = req.body as { ids: string[] }
+
+  if (!Array.isArray(ids) || ids.length === 0) {
+    res.status(400).json({ error: 'ids array is required' })
+    return
+  }
+
+  const { error, count } = await supabase
+    .from('leads')
+    .delete({ count: 'exact' })
+    .in('id', ids)
+    .eq('user_id', req.user.id)
+
+  if (error) {
+    res.status(500).json({ error: error.message })
+    return
+  }
+
+  res.json({ deleted: count ?? 0 })
+})
+
 // DELETE /api/leads/:id
 leadsRouter.delete('/:id', async (req: Request, res: Response) => {
   const { error } = await supabase

@@ -143,6 +143,16 @@ export async function fetchLeadCampaigns(leadId: string): Promise<LeadCampaignMe
   return data
 }
 
+export async function bulkDeleteLeads(ids: string[]): Promise<{ deleted: number }> {
+  const res = await apiFetch('/api/leads/bulk-delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids }),
+  })
+  if (!res.ok) throw new Error(await parseErrorResponse(res))
+  return res.json() as Promise<{ deleted: number }>
+}
+
 export async function fetchLeads(params: {
   icp_flag?: string
   search?: string

@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { fetchLeads, requalifyLead, qualifyAllLeads, importLeads, startSalesNavImport, getScrapeStatus, fetchLeadNotes, addLeadNote, deleteLeadNote, personaliseOpeningLine, fetchLeadCampaigns } from '../api/leads'
+import { fetchLeads, requalifyLead, qualifyAllLeads, importLeads, startSalesNavImport, getScrapeStatus, fetchLeadNotes, addLeadNote, deleteLeadNote, personaliseOpeningLine, fetchLeadCampaigns, bulkDeleteLeads } from '../api/leads'
 import type { Lead, LeadNote, LeadCampaignMembership } from '../api/leads'
 import { fetchLabels, fetchLeadLabels, assignLabel, removeLabel, createLabel, type LeadLabel } from '../api/labels'
 import { fetchAccounts } from '../api/accounts'
@@ -115,6 +115,14 @@ export function Leads() {
     },
   })
 
+  const bulkDeleteMutation = useMutation({
+    mutationFn: () => bulkDeleteLeads([...selectedIds]),
+    onSuccess: () => {
+      setSelectedIds(new Set())
+      void queryClient.invalidateQueries({ queryKey: ['leads'] })
+    },
+  })
+
   return (
     <div className="p-8">
       <div className="flex items-center justify-between">
@@ -216,6 +224,17 @@ export function Leads() {
             className="px-3 py-1.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors"
           >
             + Add to Campaign
+          </button>
+          <button
+            onClick={() => {
+              if (confirm(`Delete ${selectedIds.size} lead${selectedIds.size !== 1 ? 's' : ''}? This cannot be undone.`)) {
+                bulkDeleteMutation.mutate()
+              }
+            }}
+            disabled={bulkDeleteMutation.isPending}
+            className="px-3 py-1.5 bg-red-50 text-red-700 border border-red-200 text-sm font-medium rounded-lg hover:bg-red-100 transition-colors disabled:opacity-50"
+          >
+            {bulkDeleteMutation.isPending ? 'Deleting…' : '✕ Delete'}
           </button>
           <button
             onClick={() => setSelectedIds(new Set())}

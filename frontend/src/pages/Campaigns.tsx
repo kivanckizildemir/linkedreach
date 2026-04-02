@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { useForm } from 'react-hook-form'
-import { fetchCampaigns, createCampaign } from '../api/campaigns'
+import { fetchCampaigns, createCampaign, updateCampaign, deleteCampaign } from '../api/campaigns'
 import type { Campaign } from '../api/campaigns'
 import { apiFetch } from '../lib/fetchJson'
 
@@ -53,13 +53,38 @@ export function Campaigns() {
 
   const filtered = filter === 'all' ? campaigns : campaigns.filter(c => c.status === filter)
 
-  const mutation = useMutation({
+  const createMutation = useMutation({
     mutationFn: createCampaign,
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['campaigns'] })
       void queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] })
       setShowModal(false)
     },
+  })
+
+  // Keep old alias for the modal
+  const mutation = createMutation
+
+  const statusMutation = useMutation({
+    mutationFn: ({ id, status }: { id: string; status: Campaign['status'] }) =>
+      updateCampaign(id, { status }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['campaigns'] })
+      void queryClient.invalidateQueries({ queryKey: ['analytics'] })
+    },
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: deleteCampaign,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['campaigns'] })
+      void queryClient.invalidateQueries({ queryKey: ['analytics'] })
+    },
+  })
+
+  const duplicateMutation = useMutation({
+    mutationFn: (c: Campaign) => createCampaign(c.name + ' (copy)'),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['campaigns'] }),
   })
 
   return (
@@ -109,10 +134,13 @@ export function Campaigns() {
             {filtered.map(c => (
               <div
                 key={c.id}
-                onClick={() => navigate(`/campaigns/${c.id}`)}
-                className="px-6 py-4 flex items-center justify-between hover:bg-gray-50 transition-colors cursor-pointer group"
+                className="px-6 py-4 flex items-center justify-between hover:bg-gray-50 transition-colors group"
               >
-                <div className="flex-1 min-w-0">
+                {/* Clickable main area */}
+                <div
+                  className="flex-1 min-w-0 cursor-pointer"
+                  onClick={() => navigate(`/campaigns/${c.id}`)}
+                >
                   <div className="flex items-center gap-2.5">
                     <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full shrink-0 ${STATUS_COLORS[c.status]}`}>
                       {c.status}
@@ -139,7 +167,65 @@ export function Campaigns() {
                     </p>
                   )}
                 </div>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-gray-300 group-hover:text-gray-400 shrink-0 ml-4 transition-colors">
+
+                {/* Quick actions — visible on hover */}
+                <div className="flex items-center gap-1.5 ml-4 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                  {c.status === 'active' && (
+                    <button
+                      onClick={e => { e.stopPropagation(); statusMutation.mutate({ id: c.id, status: 'paused' }) }}
+                      disabled={statusMutation.isPending}
+                      title="Pause campaign"
+                      className="px-2.5 py-1.5 text-xs font-medium text-yellow-700 bg-yellow-50 border border-yellow-200 rounded-lg hover:bg-yellow-100 transition-colors"
+                    >
+                      ⏸ Pause
+                    </button>
+                  )}
+                  {c.status === 'paused' && (
+                    <button
+                      onClick={e => { e.stopPropagation(); statusMutation.mutate({ id: c.id, status: 'active' }) }}
+                      disabled={statusMutation.isPending}
+                      title="Resume campaign"
+                      className="px-2.5 py-1.5 text-xs font-medium text-green-700 bg-green-50 border border-green-200 rounded-lg hover:bg-green-100 transition-colors"
+                    >
+                      ▶ Resume
+                    </button>
+                  )}
+                  {c.status === 'draft' && (
+                    <button
+                      onClick={e => { e.stopPropagation(); statusMutation.mutate({ id: c.id, status: 'active' }) }}
+                      disabled={statusMutation.isPending}
+                      title="Activate campaign"
+                      className="px-2.5 py-1.5 text-xs font-medium text-green-700 bg-green-50 border border-green-200 rounded-lg hover:bg-green-100 transition-colors"
+                    >
+                      ▶ Activate
+                    </button>
+                  )}
+                  <button
+                    onClick={e => { e.stopPropagation(); duplicateMutation.mutate(c) }}
+                    disabled={duplicateMutation.isPending}
+                    title="Duplicate campaign"
+                    className="px-2.5 py-1.5 text-xs font-medium text-gray-600 bg-gray-50 border border-gray-200 rounded-lg hover:bg-gray-100 transition-colors"
+                  >
+                    ⧉ Copy
+                  </button>
+                  <button
+                    onClick={e => {
+                      e.stopPropagation()
+                      if (confirm(`Delete "${c.name}"? This cannot be undone.`)) {
+                        deleteMutation.mutate(c.id)
+                      }
+                    }}
+                    disabled={deleteMutation.isPending}
+                    title="Delete campaign"
+                    className="px-2.5 py-1.5 text-xs font-medium text-red-600 bg-red-50 border border-red-200 rounded-lg hover:bg-red-100 transition-colors"
+                  >
+                    ✕ Delete
+                  </button>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-gray-300 ml-1 transition-colors">
+                    <path d="M9 18l6-6-6-6" />
+                  </svg>
+                </div>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-gray-200 group-hover:opacity-0 shrink-0 ml-4 transition-opacity absolute right-6">
                   <path d="M9 18l6-6-6-6" />
                 </svg>
               </div>
