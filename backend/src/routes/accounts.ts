@@ -3,7 +3,7 @@ import type { Request, Response } from 'express'
 import { supabase } from '../lib/supabase'
 import { requireAuth } from '../middleware/auth'
 import type { AccountStatus } from '../types'
-import { startLogin, submitVerificationCode, getLoginStatus, getSessionScreenshot, getSessionPageInfo, testProxyRaw } from '../linkedin/login'
+import { startLogin, submitVerificationCode, getLoginStatus, getSessionScreenshot, getSessionPageInfo, interactWithPage, testProxyRaw } from '../linkedin/login'
 // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-explicit-any
 const { chromium } = require('playwright-extra') as any
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -173,6 +173,29 @@ accountsRouter.get('/:id/connect-screenshot/:sessionKey', async (req: Request, r
   const buf = Buffer.from(png, 'base64')
   res.setHeader('Content-Type', 'image/png')
   res.send(buf)
+})
+
+// POST /api/accounts/:id/connect-interact/:sessionKey — relay click/type/key to live browser
+accountsRouter.post('/:id/connect-interact/:sessionKey', async (req: Request, res: Response) => {
+  // Verify account belongs to user
+  const { error: accountErr } = await supabase
+    .from('linkedin_accounts')
+    .select('id')
+    .eq('id', req.params.id)
+    .eq('user_id', req.user.id)
+    .single()
+  if (accountErr) { res.status(404).json({ error: 'Account not found' }); return }
+
+  const { action } = req.body as {
+    action?: { type: string; x?: number; y?: number; text?: string; key?: string }
+  }
+  if (!action?.type) { res.status(400).json({ error: 'action.type is required' }); return }
+
+  const result = await interactWithPage(
+    String(req.params.sessionKey),
+    action as Parameters<typeof interactWithPage>[1]
+  )
+  res.json(result)
 })
 
 // POST /api/accounts/:id/connect-verify — submit 2FA code

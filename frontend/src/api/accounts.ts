@@ -103,6 +103,23 @@ export async function verifyConnectCode(
   return res.json() as Promise<{ status: 'success' } | { status: 'error'; message: string }>
 }
 
+export async function interactWithSession(
+  accountId: string,
+  sessionKey: string,
+  action:
+    | { type: 'click'; x: number; y: number }
+    | { type: 'type';  text: string }
+    | { type: 'key';   key: string }
+): Promise<{ ok: boolean; error?: string }> {
+  const res = await apiFetch(`/api/accounts/${accountId}/connect-interact/${sessionKey}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action }),
+  })
+  if (!res.ok) throw new Error(await parseErrorResponse(res))
+  return res.json() as Promise<{ ok: boolean; error?: string }>
+}
+
 export async function loginBrowser(accountId: string): Promise<{ message: string }> {
   const res = await apiFetch(`/api/accounts/${accountId}/login-browser`, { method: 'POST' })
   if (!res.ok) {

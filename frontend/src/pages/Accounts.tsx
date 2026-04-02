@@ -9,6 +9,7 @@ import {
   connectAccount,
   getConnectStatus,
   verifyConnectCode,
+  interactWithSession,
   type LinkedInAccount,
 } from '../api/accounts'
 import {
@@ -763,6 +764,10 @@ function SetSessionModal({
   )
 }
 
+// BROWSER_VIEWPORT_* must match the context dimensions set in login.ts
+const BROWSER_W = 1280
+const BROWSER_H = 800
+
 function PushStep({
   accountId,
   sessionKey,
@@ -774,108 +779,153 @@ function PushStep({
   hint: string
   onCancel: () => void
 }) {
-  const [screenshotUrl, setScreenshotUrl] = useState<string | null>(null)
+  const [screenshotUrl, setScreenshotUrl]     = useState<string | null>(null)
   const [screenshotLoading, setScreenshotLoading] = useState(false)
+  const [keyboardFocused, setKeyboardFocused] = useState(false)
+  const [interacting, setInteracting]         = useState(false)
   const screenshotRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const imgRef        = useRef<HTMLImageElement | null>(null)
+  const keyInputRef   = useRef<HTMLInputElement | null>(null)
 
-  const isSecurityCheck = hint.toLowerCase().includes('security') ||
+  const isSecurityCheck =
+    hint.toLowerCase().includes('security') ||
     hint.toLowerCase().includes('verification') ||
     hint.toLowerCase().includes('verify') ||
     hint.toLowerCase().includes('check')
 
-  function startScreenshotPolling() {
-    if (screenshotRef.current) return
-    fetchScreenshot()
-    screenshotRef.current = setInterval(fetchScreenshot, 5000)
-  }
+  // ── Screenshot polling ────────────────────────────────────────────────────
 
-  function stopScreenshotPolling() {
-    if (screenshotRef.current) { clearInterval(screenshotRef.current); screenshotRef.current = null }
-  }
-
-  async function fetchScreenshot() {
+  const fetchScreenshot = useRef(async () => {
     if (!sessionKey) return
     setScreenshotLoading(true)
     try {
       const res = await apiFetch(`/api/accounts/${accountId}/connect-screenshot/${sessionKey}`)
       if (res.ok) {
         const blob = await res.blob()
-        const url = URL.createObjectURL(blob)
+        const url  = URL.createObjectURL(blob)
         setScreenshotUrl(prev => { if (prev) URL.revokeObjectURL(prev); return url })
       }
     } catch { /* ignore */ }
     finally { setScreenshotLoading(false) }
+  }).current
+
+  useEffect(() => {
+    if (!sessionKey) return
+    void fetchScreenshot()
+    screenshotRef.current = setInterval(() => { void fetchScreenshot() }, 2000)
+    return () => { if (screenshotRef.current) { clearInterval(screenshotRef.current); screenshotRef.current = null } }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionKey])
+
+  // ── Interaction helpers ───────────────────────────────────────────────────
+
+  async function sendInteraction(action: Parameters<typeof interactWithSession>[2]) {
+    if (interacting) return
+    setInteracting(true)
+    try { await interactWithSession(accountId, sessionKey, action) }
+    catch { /* ignore */ }
+    finally { setInteracting(false) }
   }
 
-  // Auto-start screenshot polling when security check detected
-  useEffect(() => {
-    if (isSecurityCheck && sessionKey) startScreenshotPolling()
-    return () => stopScreenshotPolling()
-  }, [isSecurityCheck, sessionKey])
+  function handleScreenshotClick(e: React.MouseEvent<HTMLImageElement>) {
+    const img  = imgRef.current
+    if (!img) return
+    const rect = img.getBoundingClientRect()
+    const x    = Math.round(((e.clientX - rect.left) / rect.width)  * BROWSER_W)
+    const y    = Math.round(((e.clientY - rect.top)  / rect.height) * BROWSER_H)
+    void sendInteraction({ type: 'click', x, y })
+    // Focus the keyboard relay input after clicking
+    keyInputRef.current?.focus()
+  }
+
+  function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    e.preventDefault()
+    const key = e.key
+    if (key === 'Backspace' || key === 'Enter' || key === 'Tab' ||
+        key === 'ArrowLeft' || key === 'ArrowRight' || key === 'ArrowUp' || key === 'ArrowDown' ||
+        key === 'Delete' || key === 'Home' || key === 'End' || key === 'Escape') {
+      void sendInteraction({ type: 'key', key })
+    } else if (key.length === 1) {
+      void sendInteraction({ type: 'type', text: key })
+    }
+  }
+
+  // ── Render ────────────────────────────────────────────────────────────────
 
   return (
     <div className="space-y-3">
-      <div className={`border rounded-xl p-4 space-y-2 ${isSecurityCheck ? 'bg-amber-50 border-amber-200' : 'bg-blue-50 border-blue-200'}`}>
-        <div className="flex items-center gap-2">
-          <svg className={`w-4 h-4 animate-spin flex-shrink-0 ${isSecurityCheck ? 'text-amber-600' : 'text-blue-600'}`} fill="none" viewBox="0 0 24 24">
-            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-          </svg>
+      {/* Status banner */}
+      <div className={`border rounded-xl px-4 py-3 flex items-center gap-2 ${isSecurityCheck ? 'bg-amber-50 border-amber-200' : 'bg-blue-50 border-blue-200'}`}>
+        <svg className={`w-4 h-4 animate-spin flex-shrink-0 ${isSecurityCheck ? 'text-amber-500' : 'text-blue-500'}`} fill="none" viewBox="0 0 24 24">
+          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+        </svg>
+        <div className="min-w-0">
           <p className={`text-sm font-medium ${isSecurityCheck ? 'text-amber-900' : 'text-blue-900'}`}>
-            {isSecurityCheck ? 'LinkedIn security challenge detected' : 'Signing in…'}
+            {isSecurityCheck ? 'Security challenge — interact below' : 'Signing in…'}
           </p>
+          {hint && hint !== 'Signing in to LinkedIn…' && (
+            <p className={`text-xs mt-0.5 truncate ${isSecurityCheck ? 'text-amber-700' : 'text-blue-700'}`}>{hint}</p>
+          )}
         </div>
-        {hint && hint !== 'Signing in to LinkedIn…' && (
-          <p className={`text-xs mt-1 ${isSecurityCheck ? 'text-amber-700' : 'text-blue-700'}`}>{hint}</p>
-        )}
-        {isSecurityCheck && (
-          <p className="text-xs text-amber-600 mt-1">
-            LinkedIn is showing a security challenge on the headless browser. View the screenshot below to see what it requires.
-          </p>
-        )}
+        <span className="ml-auto text-[10px] text-gray-400 whitespace-nowrap">
+          {screenshotLoading ? 'updating…' : 'live'}
+        </span>
       </div>
 
-      {/* Screenshot viewer */}
-      <div className="border border-gray-200 rounded-xl overflow-hidden bg-gray-50">
-        <div className="flex items-center justify-between px-3 py-2 border-b border-gray-200 bg-white">
-          <span className="text-xs font-medium text-gray-600">Browser view (live)</span>
-          <button
-            onClick={() => { if (!screenshotRef.current) startScreenshotPolling(); else fetchScreenshot() }}
-            className="text-xs text-blue-600 hover:underline flex items-center gap-1"
-          >
-            {screenshotLoading ? 'Refreshing…' : '↻ Refresh'}
-          </button>
+      {/* Interactive screenshot */}
+      <div className="border border-gray-200 rounded-xl overflow-hidden bg-gray-900">
+        <div className="flex items-center justify-between px-3 py-1.5 bg-gray-800">
+          <span className="text-[11px] text-gray-400 font-mono">linkedin.com</span>
+          <span className={`text-[10px] px-1.5 py-0.5 rounded ${keyboardFocused ? 'bg-green-600 text-white' : 'bg-gray-600 text-gray-300'}`}>
+            {keyboardFocused ? 'keyboard active' : 'click to type'}
+          </span>
         </div>
+
         {screenshotUrl ? (
-          <img src={screenshotUrl} alt="Browser screenshot" className="w-full" />
+          <div className="relative">
+            <img
+              ref={imgRef}
+              src={screenshotUrl}
+              alt="Live browser"
+              className="w-full block cursor-crosshair select-none"
+              draggable={false}
+              onClick={handleScreenshotClick}
+            />
+            {interacting && (
+              <div className="absolute inset-0 bg-white/10 pointer-events-none" />
+            )}
+          </div>
         ) : (
-          <div className="h-32 flex items-center justify-center">
-            <button
-              onClick={startScreenshotPolling}
-              className="text-xs text-blue-600 hover:underline"
-            >
-              {screenshotLoading ? 'Loading…' : 'Load screenshot'}
-            </button>
+          <div className="h-40 flex items-center justify-center">
+            <p className="text-xs text-gray-500">{screenshotLoading ? 'Loading…' : 'Waiting for browser…'}</p>
           </div>
         )}
-      </div>
 
-      {isSecurityCheck && (
-        <div className="bg-gray-50 border border-gray-200 rounded-xl p-3 text-xs text-gray-600 space-y-1">
-          <p className="font-medium text-gray-700">What to do:</p>
-          <ol className="list-decimal list-inside space-y-1">
-            <li>If LinkedIn sent a verification code to your email/phone — enter it below after it arrives</li>
-            <li>If it's an image puzzle (CAPTCHA) — cancel, then use <strong>Set Session</strong> to paste your li_at cookie instead</li>
-          </ol>
+        {/* Invisible keyboard relay input — focused by clicking on screenshot */}
+        <div className="px-3 py-2 bg-gray-800 border-t border-gray-700">
+          <input
+            ref={keyInputRef}
+            type="text"
+            value=""
+            readOnly
+            onFocus={() => setKeyboardFocused(true)}
+            onBlur={() => setKeyboardFocused(false)}
+            onKeyDown={handleKeyDown}
+            placeholder={keyboardFocused ? 'Typing goes to the browser…' : 'Click the browser image above, then type here'}
+            className="w-full bg-gray-700 text-gray-200 text-xs px-2.5 py-1.5 rounded outline-none placeholder:text-gray-500 focus:ring-1 focus:ring-green-500 cursor-text"
+          />
         </div>
-      )}
-
-      <div className="flex gap-2">
-        <button type="button" onClick={onCancel}
-          className="flex-1 py-2 border border-gray-200 text-sm text-gray-600 rounded-lg hover:bg-gray-50">
-          Cancel
-        </button>
       </div>
+
+      <p className="text-[11px] text-gray-400 text-center">
+        Click anywhere on the browser image to interact · keyboard input is relayed in real-time
+      </p>
+
+      <button type="button" onClick={onCancel}
+        className="w-full py-2 border border-gray-200 text-sm text-gray-600 rounded-lg hover:bg-gray-50">
+        Cancel
+      </button>
     </div>
   )
 }

@@ -511,6 +511,33 @@ async function runLogin(key: string, email: string, password: string): Promise<v
   }
 }
 
+/**
+ * Relay an interaction (click / type / key) to the live browser page.
+ * Used by the frontend's interactive screenshot UI.
+ */
+export async function interactWithPage(
+  sessionKey: string,
+  action:
+    | { type: 'click'; x: number; y: number }
+    | { type: 'type';  text: string }
+    | { type: 'key';   key: string }
+): Promise<{ ok: boolean; error?: string }> {
+  const session = sessions.get(sessionKey)
+  if (!session?.page) return { ok: false, error: 'Session not found or no active page' }
+  try {
+    if (action.type === 'click') {
+      await session.page.mouse.click(action.x, action.y)
+    } else if (action.type === 'type') {
+      await session.page.keyboard.type(action.text)
+    } else if (action.type === 'key') {
+      await session.page.keyboard.press(action.key as Parameters<typeof session.page.keyboard.press>[0])
+    }
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Unknown error' }
+  }
+}
+
 /** Returns a base64 PNG screenshot of the current browser page for debugging */
 export async function getSessionScreenshot(sessionKey: string): Promise<string | null> {
   const session = sessions.get(sessionKey)
