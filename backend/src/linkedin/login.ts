@@ -133,7 +133,7 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     }) as Browser
 
     const context = await browser.newContext({
-      proxy:             proxy,
+      proxy:             proxy ?? undefined,
       userAgent:
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
         '(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
@@ -309,6 +309,24 @@ async function runLogin(key: string, email: string, password: string): Promise<v
             }
           } catch { /* keep polling */ }
         }
+
+        // Click any intermediate "Continue" / "Send code" buttons on security check pages
+        try {
+          const continueBtn = await page.$(
+            'button:has-text("Continue"), button:has-text("Send verification code"), ' +
+            'button:has-text("Send a verification code"), button:has-text("Request a verification code"), ' +
+            'button:has-text("Send code"), button:has-text("Get a verification code"), ' +
+            'button[data-litms-control-urn="challenge|primary-action"], ' +
+            'button.primary-action-new'
+          )
+          if (continueBtn) {
+            await continueBtn.click()
+            await DELAY(2000)
+            // Update hint after clicking
+            const hintEl2 = await page.$('.secondary-action, .challenge-main-content p, h1, h2')
+            if (hintEl2) session.hint = (await hintEl2.innerText()).trim()
+          }
+        } catch { /* ok */ }
 
         // Did LinkedIn switch to PIN after push confirmation?
         const nowHasPin = !!(await page.$(
