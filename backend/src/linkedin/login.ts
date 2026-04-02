@@ -249,6 +249,9 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       if (hintEl) hint = (await hintEl.innerText()).trim()
     } catch { /* ok */ }
 
+    // Store the original challenge URL so we can return to it if needed
+    const challengeUrl = page.url()
+
     session.status = 'pending_push'
     session.hint   = hint || 'Check your phone and tap "Yes, it\'s me" on the LinkedIn notification.'
 
@@ -285,8 +288,8 @@ async function runLogin(key: string, email: string, password: string): Promise<v
           }
         }
 
-        // Every ~14s navigate to feed to force cookie issuance after push approval
-        if (pollCount % 7 === 0) {
+        // Every ~20s navigate to feed to force cookie issuance after push approval
+        if (pollCount % 10 === 0) {
           try {
             await page.goto('https://www.linkedin.com/feed/', {
               waitUntil: 'domcontentloaded',
@@ -300,12 +303,14 @@ async function runLogin(key: string, email: string, password: string): Promise<v
               await browser.close()
               return
             }
+            // If redirected away from feed, go back to the original challenge page
             const feedUrl = page.url()
-            if (feedUrl.includes('login') || feedUrl.includes('challenge') || feedUrl.includes('checkpoint')) {
-              await page.goto('https://www.linkedin.com/checkpoint/lg/login-submit', {
+            if (feedUrl.includes('login') || feedUrl.includes('challenge') || feedUrl.includes('checkpoint') || feedUrl.includes('not-found') || feedUrl.includes('404')) {
+              await page.goto(challengeUrl, {
                 waitUntil: 'domcontentloaded',
                 timeout:   10_000,
               }).catch(() => {})
+              await DELAY(1_000)
             }
           } catch { /* keep polling */ }
         }
