@@ -6,6 +6,8 @@ import type { ReplyClassification } from '../types'
 import { createSession, closeSession, persistCookies } from '../linkedin/session'
 import { sendMessage } from '../linkedin/actions'
 import { suggestReplies } from '../ai/suggest'
+import { handleUnsubscribe } from '../ai/unsubscribe'
+import { classifyReply } from '../ai/classify'
 
 export const inboxRouter = Router()
 
@@ -140,6 +142,85 @@ inboxRouter.patch('/:campaignLeadId', async (req: Request, res: Response) => {
   }
 
   res.json({ data })
+})
+
+// POST /api/inbox/:campaignLeadId/receive — called by workers when a new LinkedIn reply arrives
+inboxRouter.post('/:campaignLeadId/receive', async (req: Request, res: Response) => {
+  const { content, linkedin_message_id } = req.body as {
+    content?: string
+    linkedin_message_id?: string
+  }
+
+  if (!content?.trim()) {
+    res.status(400).json({ error: 'content is required' })
+    return
+  }
+
+  // Verify ownership
+  const { data: cl, error: clErr } = await supabase
+    .from('campaign_leads')
+    .select(`
+      id, lead_id,
+      campaign:campaigns (user_id)
+    `)
+    .eq('id', req.params.campaignLeadId)
+    .single()
+
+  if (clErr || !cl) {
+    res.status(404).json({ error: 'Conversation not found' })
+    return
+  }
+
+  const campaignUserId = (cl.campaign as { user_id?: string } | null)?.user_id
+  if (campaignUserId !== req.user.id) {
+    res.status(403).json({ error: 'Forbidden' })
+    return
+  }
+
+  // Save the received message
+  const { data: msg, error: msgErr } = await supabase
+    .from('messages')
+    .insert({
+      campaign_lead_id: req.params.campaignLeadId,
+      direction: 'received',
+      content: content.trim(),
+      linkedin_message_id: linkedin_message_id ?? null,
+      sent_at: new Date().toISOString(),
+    })
+    .select()
+    .single()
+
+  if (msgErr) {
+    res.status(500).json({ error: msgErr.message })
+    return
+  }
+
+  // Update campaign_lead status → replied
+  await supabase
+    .from('campaign_leads')
+    .update({ status: 'replied' })
+    .eq('id', req.params.campaignLeadId)
+    .in('status', ['messaged', 'connected']) // only advance if not already further
+
+  // Run unsubscribe detection (fire-and-forget)
+  handleUnsubscribe({
+    userId: req.user.id,
+    leadId: String(cl.lead_id),
+    campaignLeadId: String(req.params.campaignLeadId),
+    messageContent: content.trim(),
+  }).catch(console.error)
+
+  // Auto-classify the reply with AI (fire-and-forget)
+  classifyReply(content.trim()).then(async result => {
+    if (result.classification !== 'none') {
+      await supabase
+        .from('campaign_leads')
+        .update({ reply_classification: result.classification })
+        .eq('id', req.params.campaignLeadId)
+    }
+  }).catch(console.error)
+
+  res.status(201).json({ data: msg })
 })
 
 // POST /api/inbox/:campaignLeadId/suggest — AI-generated reply suggestions

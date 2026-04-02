@@ -8,6 +8,7 @@ import {
   getSuggestions,
   type ReplyClassification,
 } from '../api/inbox'
+import { fetchCampaigns } from '../api/campaigns'
 
 const FILTERS: { label: string; value: string }[] = [
   { label: 'All',          value: '' },
@@ -47,6 +48,7 @@ function timeAgo(dateStr: string): string {
 
 export function Inbox() {
   const [filter, setFilter] = useState('')
+  const [campaignFilter, setCampaignFilter] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [replyText, setReplyText] = useState('')
   const [replyError, setReplyError] = useState('')
@@ -54,9 +56,14 @@ export function Inbox() {
   const threadEndRef = useRef<HTMLDivElement>(null)
   const queryClient = useQueryClient()
 
+  const { data: campaigns = [] } = useQuery({
+    queryKey: ['campaigns'],
+    queryFn: fetchCampaigns,
+  })
+
   const { data: messages = [], isLoading } = useQuery({
-    queryKey: ['inbox', filter],
-    queryFn: () => fetchInbox(filter || undefined),
+    queryKey: ['inbox', filter, campaignFilter],
+    queryFn: () => fetchInbox(filter || undefined, campaignFilter || undefined),
   })
 
   const selectedMsg = messages.find(m => m.campaign_lead_id === selectedId)
@@ -107,6 +114,18 @@ export function Inbox() {
       <div className="w-80 shrink-0 border-r border-gray-200 bg-white flex flex-col">
         <div className="px-4 py-4 border-b border-gray-200">
           <h1 className="text-lg font-bold text-gray-900">Inbox</h1>
+          {campaigns.length > 0 && (
+            <select
+              value={campaignFilter}
+              onChange={e => { setCampaignFilter(e.target.value); setSelectedId(null) }}
+              className="mt-2 w-full px-2.5 py-1.5 border border-gray-200 rounded-lg text-xs text-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="">All campaigns</option>
+              {campaigns.map(c => (
+                <option key={c.id} value={c.id}>{c.name}</option>
+              ))}
+            </select>
+          )}
           <div className="mt-3 flex flex-wrap gap-1.5">
             {FILTERS.map(({ label, value }) => (
               <button

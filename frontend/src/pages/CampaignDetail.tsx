@@ -263,6 +263,11 @@ export function CampaignDetail() {
         ))}
       </div>
 
+      {/* Funnel chart */}
+      {total > 0 && (
+        <FunnelChart total={total} sent={sent} connected={connected} messaged={messaged} replied={replied} converted={converted} />
+      )}
+
       {/* Schedule panel */}
       <div className="bg-white rounded-xl border border-gray-200">
         <button
@@ -452,6 +457,59 @@ export function CampaignDetail() {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+// ── Funnel Chart ──────────────────────────────────────────────────────────────
+
+function FunnelChart({
+  total, sent, connected, messaged, replied, converted,
+}: {
+  total: number; sent: number; connected: number; messaged: number; replied: number; converted: number
+}) {
+  const stages = [
+    { label: 'Total',     value: total,     color: '#e2e8f0', text: '#64748b' },
+    { label: 'Req. Sent', value: sent,      color: '#bfdbfe', text: '#1d4ed8' },
+    { label: 'Connected', value: connected, color: '#a5f3fc', text: '#0e7490' },
+    { label: 'Messaged',  value: messaged,  color: '#c4b5fd', text: '#6d28d9' },
+    { label: 'Replied',   value: replied,   color: '#bbf7d0', text: '#15803d' },
+    { label: 'Converted', value: converted, color: '#6ee7b7', text: '#065f46' },
+  ]
+
+  const max = total || 1
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 p-5">
+      <h2 className="text-sm font-semibold text-gray-900 mb-4">Conversion Funnel</h2>
+      <div className="space-y-2">
+        {stages.map((stage, i) => {
+          const pct = Math.round((stage.value / max) * 100)
+          const dropPct = i > 0 && stages[i-1].value > 0
+            ? Math.round((stage.value / stages[i-1].value) * 100)
+            : null
+          return (
+            <div key={stage.label} className="flex items-center gap-3">
+              <span className="text-xs text-gray-500 w-20 shrink-0 text-right">{stage.label}</span>
+              <div className="flex-1 h-7 bg-gray-50 rounded-lg overflow-hidden relative">
+                <div
+                  className="h-full rounded-lg transition-all duration-500 flex items-center pl-3"
+                  style={{ width: `${Math.max(pct, 2)}%`, background: stage.color }}
+                >
+                  <span className="text-xs font-semibold" style={{ color: stage.text }}>
+                    {stage.value}
+                  </span>
+                </div>
+              </div>
+              <div className="w-20 shrink-0 text-xs text-gray-400 tabular-nums">
+                {pct}%{dropPct !== null && dropPct < 100 && (
+                  <span className="ml-1 text-gray-300">(↓{dropPct}%)</span>
+                )}
+              </div>
+            </div>
+          )
+        })}
+      </div>
     </div>
   )
 }
