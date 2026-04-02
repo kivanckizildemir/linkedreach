@@ -168,15 +168,16 @@ export function Accounts() {
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Connections Today</th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Messages Today</th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Warmup Day</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Proxy Country</th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
                   {isLoading ? (
-                    <tr><td colSpan={6} className="px-4 py-16 text-center text-gray-400">Loading…</td></tr>
+                    <tr><td colSpan={7} className="px-4 py-16 text-center text-gray-400">Loading…</td></tr>
                   ) : accounts.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="px-4 py-16 text-center">
+                      <td colSpan={7} className="px-4 py-16 text-center">
                         <p className="text-gray-900 font-medium">No accounts connected</p>
                         <p className="mt-1 text-sm text-gray-500">Add a LinkedIn account to start running campaigns.</p>
                       </td>
@@ -211,6 +212,26 @@ export function Accounts() {
                             ) : (
                               <span className="text-gray-400 text-sm">—</span>
                             )}
+                          </td>
+                          <td className="px-4 py-3">
+                            <select
+                              value={account.proxy_country ?? ''}
+                              onChange={e => updateMutation.mutate({ id: account.id, updates: { proxy_country: e.target.value || null } })}
+                              className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            >
+                              <option value="">🌍 Any</option>
+                              <option value="us">🇺🇸 US</option>
+                              <option value="gb">🇬🇧 UK</option>
+                              <option value="de">🇩🇪 Germany</option>
+                              <option value="fr">🇫🇷 France</option>
+                              <option value="nl">🇳🇱 Netherlands</option>
+                              <option value="ca">🇨🇦 Canada</option>
+                              <option value="au">🇦🇺 Australia</option>
+                              <option value="sg">🇸🇬 Singapore</option>
+                              <option value="in">🇮🇳 India</option>
+                              <option value="ae">🇦🇪 UAE</option>
+                              <option value="tr">🇹🇷 Turkey</option>
+                            </select>
                           </td>
                           <td className="px-4 py-3">
                             <div className="flex items-center gap-2">

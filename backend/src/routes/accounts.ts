@@ -82,7 +82,7 @@ accountsRouter.post('/', async (req: Request, res: Response) => {
 
 // PATCH /api/accounts/:id
 accountsRouter.patch('/:id', async (req: Request, res: Response) => {
-  const allowed = ['status', 'proxy_id', 'cookies', 'warmup_day'] as const
+  const allowed = ['status', 'proxy_id', 'cookies', 'warmup_day', 'proxy_country'] as const
   type AllowedKey = (typeof allowed)[number]
 
   const updates: Partial<Record<AllowedKey, unknown>> = {}

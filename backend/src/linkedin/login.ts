@@ -77,7 +77,7 @@ async function resolveProxy(accountId: string): Promise<
 
   const { data: account } = await supabase
     .from('linkedin_accounts')
-    .select('proxy_id')
+    .select('proxy_id, proxy_country')
     .eq('id', accountId)
     .single()
 
@@ -101,9 +101,15 @@ async function resolveProxy(accountId: string): Promise<
     const url = new URL(BD_PROXY_URL)
     const host = url.hostname
     const port = url.port
+    // Append country targeting to BrightData username if set (e.g. -country-us)
+    const baseUsername = decodeURIComponent(url.username) || undefined
+    const country = (account as { proxy_country?: string } | null)?.proxy_country
+    const username = baseUsername && country
+      ? `${baseUsername}-country-${country.toLowerCase()}`
+      : baseUsername
     return {
       server:   `http://${host}:${port}`,
-      username: decodeURIComponent(url.username) || undefined,
+      username,
       password: decodeURIComponent(url.password) || undefined,
     }
   }

@@ -12,6 +12,7 @@ export interface LinkedInAccount {
   last_active_at: string | null
   has_premium: boolean
   inmail_credits: number
+  proxy_country: string | null
   created_at: string
   updated_at: string
 }
@@ -39,7 +40,7 @@ export async function createAccount(linkedin_email: string): Promise<LinkedInAcc
 
 export async function updateAccount(
   id: string,
-  updates: Partial<Pick<LinkedInAccount, 'status'>> & { proxy_id?: string | null; cookies?: string; status?: LinkedInAccount['status'] }
+  updates: Partial<Pick<LinkedInAccount, 'status' | 'proxy_country'>> & { proxy_id?: string | null; cookies?: string; status?: LinkedInAccount['status'] }
 ): Promise<LinkedInAccount> {
   const res = await apiFetch(`/api/accounts/${id}`, {
     method: 'PATCH',
