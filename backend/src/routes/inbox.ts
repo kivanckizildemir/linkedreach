@@ -177,7 +177,7 @@ inboxRouter.post('/:campaignLeadId/suggest', async (req: Request, res: Response)
     return
   }
 
-  const lead = cl.lead as { first_name: string; last_name: string; title?: string | null; company?: string | null } | null
+  const lead = (cl.lead as unknown) as { first_name: string; last_name: string; title?: string | null; company?: string | null } | null
   if (!lead) {
     res.status(400).json({ error: 'Lead not found' })
     return
