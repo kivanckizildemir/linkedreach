@@ -414,6 +414,35 @@ leadsRouter.post('/:id/personalise', async (req: Request, res: Response) => {
   }
 })
 
+// GET /api/leads/:id/campaigns — list campaigns this lead is enrolled in
+leadsRouter.get('/:id/campaigns', async (req: Request, res: Response) => {
+  // Verify lead belongs to user
+  const { data: lead, error: leadErr } = await supabase
+    .from('leads')
+    .select('id')
+    .eq('id', req.params.id)
+    .eq('user_id', req.user.id)
+    .single()
+
+  if (leadErr || !lead) {
+    res.status(404).json({ error: 'Lead not found' })
+    return
+  }
+
+  const { data, error } = await supabase
+    .from('campaign_leads')
+    .select('id, status, reply_classification, created_at, campaign:campaigns(id, name, status)')
+    .eq('lead_id', req.params.id)
+    .order('created_at', { ascending: false })
+
+  if (error) {
+    res.status(500).json({ error: error.message })
+    return
+  }
+
+  res.json({ data: data ?? [] })
+})
+
 // DELETE /api/leads/:id
 leadsRouter.delete('/:id', async (req: Request, res: Response) => {
   const { error } = await supabase

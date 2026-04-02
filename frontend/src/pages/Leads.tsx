@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { fetchLeads, requalifyLead, qualifyAllLeads, importLeads, startSalesNavImport, getScrapeStatus, fetchLeadNotes, addLeadNote, deleteLeadNote, personaliseOpeningLine } from '../api/leads'
-import type { Lead, LeadNote } from '../api/leads'
+import { fetchLeads, requalifyLead, qualifyAllLeads, importLeads, startSalesNavImport, getScrapeStatus, fetchLeadNotes, addLeadNote, deleteLeadNote, personaliseOpeningLine, fetchLeadCampaigns } from '../api/leads'
+import type { Lead, LeadNote, LeadCampaignMembership } from '../api/leads'
 import { fetchLabels, fetchLeadLabels, assignLabel, removeLabel, createLabel, type LeadLabel } from '../api/labels'
 import { fetchAccounts } from '../api/accounts'
 import { fetchCampaigns, addLeadsToCampaign } from '../api/campaigns'
@@ -63,6 +63,7 @@ export function Leads() {
   const [notesLead, setNotesLead] = useState<Lead | null>(null)
   const [labelsLead, setLabelsLead] = useState<Lead | null>(null)
   const [showManageLabels, setShowManageLabels] = useState(false)
+  const [detailLead, setDetailLead] = useState<Lead | null>(null)
 
   const { data: leads = [], isLoading } = useQuery({
     queryKey: ['leads', { search, icp_flag: icpFlag }],
@@ -280,7 +281,12 @@ export function Leads() {
                         />
                       </td>
                       <td className="px-4 py-3 font-medium text-gray-900 whitespace-nowrap">
-                        {lead.first_name} {lead.last_name}
+                        <button
+                          onClick={() => setDetailLead(lead)}
+                          className="text-left hover:text-blue-600 hover:underline transition-colors"
+                        >
+                          {lead.first_name} {lead.last_name}
+                        </button>
                       </td>
                       <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{lead.title ?? '—'}</td>
                       <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{lead.company ?? '—'}</td>
@@ -398,6 +404,17 @@ export function Leads() {
             setShowImportModal(false)
             setTimeout(() => queryClient.invalidateQueries({ queryKey: ['leads'] }), 3000)
           }}
+        />
+      )}
+
+      {/* Lead Detail Drawer */}
+      {detailLead && (
+        <LeadDetailDrawer
+          lead={detailLead}
+          allLabels={labels}
+          onClose={() => setDetailLead(null)}
+          onOpenNotes={(lead) => { setDetailLead(null); setNotesLead(lead) }}
+          queryClient={queryClient}
         />
       )}
 
@@ -1206,5 +1223,277 @@ function SalesNavImportModal({
         )}
       </div>
     </div>
+  )
+}
+
+// ── Lead Detail Drawer ───────────────────────────────────────────────────────
+
+const CL_STATUS_COLORS: Record<string, string> = {
+  pending:          'bg-gray-100 text-gray-600',
+  connection_sent:  'bg-blue-100 text-blue-700',
+  connected:        'bg-green-100 text-green-700',
+  messaged:         'bg-purple-100 text-purple-700',
+  replied:          'bg-teal-100 text-teal-700',
+  converted:        'bg-emerald-100 text-emerald-700',
+  stopped:          'bg-red-100 text-red-600',
+}
+
+const CL_CLASS_COLORS: Record<string, string> = {
+  interested:   'bg-green-50 text-green-700 border border-green-200',
+  not_now:      'bg-yellow-50 text-yellow-700 border border-yellow-200',
+  wrong_person: 'bg-gray-50 text-gray-600 border border-gray-200',
+  referral:     'bg-blue-50 text-blue-700 border border-blue-200',
+  negative:     'bg-red-50 text-red-700 border border-red-200',
+  none:         'bg-gray-50 text-gray-500 border border-gray-200',
+}
+
+function LeadDetailDrawer({
+  lead,
+  allLabels,
+  onClose,
+  onOpenNotes,
+  queryClient,
+}: {
+  lead: Lead
+  allLabels: LeadLabel[]
+  onClose: () => void
+  onOpenNotes: (lead: Lead) => void
+  queryClient: ReturnType<typeof useQueryClient>
+}) {
+  const [noteText, setNoteText] = useState('')
+
+  const { data: campaigns = [], isLoading: campaignsLoading } = useQuery({
+    queryKey: ['lead-campaigns', lead.id],
+    queryFn: () => fetchLeadCampaigns(lead.id),
+  })
+
+  const { data: notes = [] } = useQuery({
+    queryKey: ['lead-notes', lead.id],
+    queryFn: () => fetchLeadNotes(lead.id),
+    staleTime: 30_000,
+  })
+
+  const personaliseMutation = useMutation({
+    mutationFn: () => personaliseOpeningLine(lead.id),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['leads'] }),
+  })
+
+  const addNoteMutation = useMutation({
+    mutationFn: () => addLeadNote(lead.id, noteText.trim()),
+    onSuccess: () => {
+      setNoteText('')
+      void queryClient.invalidateQueries({ queryKey: ['lead-notes', lead.id] })
+    },
+  })
+
+  const initials = `${lead.first_name[0] ?? ''}${lead.last_name[0] ?? ''}`.toUpperCase()
+  const reasoning = lead.raw_data?.ai_reasoning
+  const openingLine = lead.raw_data?.opening_line
+  const scoreColor = (lead.icp_score ?? 0) >= 75 ? '#EF4444' : (lead.icp_score ?? 0) >= 50 ? '#F97316' : (lead.icp_score ?? 0) >= 25 ? '#3B82F6' : '#9CA3AF'
+
+  return (
+    <>
+      <div className="fixed inset-0 bg-black/30 z-40" onClick={onClose} />
+      <div className="fixed top-0 right-0 h-full w-full max-w-lg bg-white shadow-2xl z-50 flex flex-col overflow-hidden">
+
+        {/* Header */}
+        <div className="flex items-start justify-between px-6 py-5 border-b border-gray-100 bg-gradient-to-r from-slate-50 to-white shrink-0">
+          <div className="flex items-center gap-4">
+            <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center text-white font-bold text-lg shrink-0">
+              {initials}
+            </div>
+            <div>
+              <h2 className="text-lg font-bold text-gray-900">{lead.first_name} {lead.last_name}</h2>
+              <p className="text-sm text-gray-500 mt-0.5">
+                {[lead.title, lead.company].filter(Boolean).join(' · ') || 'No title or company'}
+              </p>
+              {lead.linkedin_url && (
+                <a
+                  href={lead.linkedin_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-xs text-blue-500 hover:text-blue-700 hover:underline mt-0.5 inline-flex items-center gap-1"
+                >
+                  <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M19 0h-14c-2.761 0-5 2.239-5 5v14c0 2.761 2.239 5 5 5h14c2.762 0 5-2.239 5-5v-14c0-2.761-2.238-5-5-5zm-11 19h-3v-11h3v11zm-1.5-12.268c-.966 0-1.75-.79-1.75-1.764s.784-1.764 1.75-1.764 1.75.79 1.75 1.764-.783 1.764-1.75 1.764zm13.5 12.268h-3v-5.604c0-3.368-4-3.113-4 0v5.604h-3v-11h3v1.765c1.396-2.586 7-2.777 7 2.476v6.759z"/>
+                  </svg>
+                  LinkedIn Profile ↗
+                </a>
+              )}
+            </div>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors shrink-0">
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Scrollable body */}
+        <div className="flex-1 overflow-y-auto divide-y divide-gray-100">
+
+          {/* ICP Score */}
+          <div className="px-6 py-4">
+            <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-3">ICP Score</p>
+            {lead.icp_score != null ? (
+              <div className="space-y-2">
+                <div className="flex items-center gap-3">
+                  <div className="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden">
+                    <div className="h-full rounded-full transition-all" style={{ width: `${lead.icp_score}%`, background: scoreColor }} />
+                  </div>
+                  <span className="text-lg font-bold tabular-nums" style={{ color: scoreColor }}>{lead.icp_score}</span>
+                  {lead.icp_flag && (
+                    <span className={`text-xs font-medium px-2.5 py-1 rounded-full border ${FLAG_COLORS[lead.icp_flag]}`}>
+                      {FLAG_ICONS[lead.icp_flag]} {lead.icp_flag}
+                    </span>
+                  )}
+                </div>
+                {reasoning && (
+                  <p className="text-xs text-gray-500 leading-relaxed bg-gray-50 rounded-xl px-3.5 py-2.5">{reasoning}</p>
+                )}
+              </div>
+            ) : (
+              <p className="text-sm text-gray-400 italic">Not scored yet</p>
+            )}
+          </div>
+
+          {/* Profile details */}
+          <div className="px-6 py-4">
+            <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-3">Profile</p>
+            <div className="grid grid-cols-2 gap-x-6 gap-y-2.5">
+              {([
+                { label: 'Industry', value: lead.industry },
+                { label: 'Location', value: lead.location },
+                { label: 'Source',   value: lead.source?.replace(/_/g, ' ') },
+                { label: 'Added',    value: new Date(lead.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) },
+              ] as { label: string; value: string | null | undefined }[]).map(({ label, value }) => value ? (
+                <div key={label}>
+                  <p className="text-[10px] text-gray-400 uppercase tracking-wide">{label}</p>
+                  <p className="text-sm text-gray-700 mt-0.5 capitalize">{value}</p>
+                </div>
+              ) : null)}
+            </div>
+          </div>
+
+          {/* AI Opening Line */}
+          <div className="px-6 py-4">
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">AI Opening Line</p>
+              <button
+                onClick={() => personaliseMutation.mutate()}
+                disabled={personaliseMutation.isPending}
+                className="text-[10px] text-purple-600 hover:text-purple-800 font-medium flex items-center gap-1 disabled:opacity-50"
+              >
+                {personaliseMutation.isPending ? (
+                  <svg className="animate-spin w-3 h-3" viewBox="0 0 24 24" fill="none">
+                    <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="60" strokeDashoffset="20" />
+                  </svg>
+                ) : '✨'}
+                {openingLine ? 'Regenerate' : 'Generate'}
+              </button>
+            </div>
+            {openingLine ? (
+              <p className="text-sm text-gray-700 leading-relaxed bg-purple-50 border border-purple-100 rounded-xl px-3.5 py-2.5 italic">
+                &ldquo;{openingLine}&rdquo;
+              </p>
+            ) : (
+              <p className="text-sm text-gray-400 italic">No opening line yet. Click Generate to create one with AI.</p>
+            )}
+          </div>
+
+          {/* Labels */}
+          <div className="px-6 py-4">
+            <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-3">Labels</p>
+            <LeadLabelCell leadId={lead.id} allLabels={allLabels} queryClient={queryClient} />
+          </div>
+
+          {/* Notes */}
+          <div className="px-6 py-4">
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">
+                Notes {notes.length > 0 && `(${notes.length})`}
+              </p>
+              {notes.length > 0 && (
+                <button onClick={() => onOpenNotes(lead)} className="text-[10px] text-amber-600 hover:text-amber-800 font-medium">
+                  View all →
+                </button>
+              )}
+            </div>
+            <div className="flex gap-2 mb-3">
+              <input
+                type="text"
+                value={noteText}
+                onChange={e => setNoteText(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter' && noteText.trim()) addNoteMutation.mutate() }}
+                placeholder="Quick note… (Enter to save)"
+                className="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-amber-400"
+              />
+              <button
+                onClick={() => addNoteMutation.mutate()}
+                disabled={!noteText.trim() || addNoteMutation.isPending}
+                className="px-3 py-2 bg-amber-500 text-white text-xs font-medium rounded-lg hover:bg-amber-600 disabled:opacity-50 transition-colors"
+              >
+                {addNoteMutation.isPending ? '…' : 'Add'}
+              </button>
+            </div>
+            {notes.length === 0 ? (
+              <p className="text-sm text-gray-400 italic">No notes yet</p>
+            ) : (
+              <div className="space-y-2">
+                {(notes as LeadNote[]).slice(0, 2).map(n => (
+                  <div key={n.id} className="bg-amber-50 border border-amber-100 rounded-lg px-3 py-2">
+                    <p className="text-xs text-gray-700 line-clamp-2">{n.content}</p>
+                    <p className="text-[10px] text-gray-400 mt-1">
+                      {new Date(n.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
+                    </p>
+                  </div>
+                ))}
+                {notes.length > 2 && (
+                  <button onClick={() => onOpenNotes(lead)} className="text-xs text-amber-600 hover:underline">
+                    +{notes.length - 2} more note{notes.length - 2 !== 1 ? 's' : ''}…
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Campaign membership */}
+          <div className="px-6 py-4">
+            <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-3">
+              Campaigns {campaigns.length > 0 && `(${campaigns.length})`}
+            </p>
+            {campaignsLoading ? (
+              <p className="text-xs text-gray-400">Loading…</p>
+            ) : campaigns.length === 0 ? (
+              <p className="text-sm text-gray-400 italic">Not in any campaign yet</p>
+            ) : (
+              <div className="space-y-2">
+                {(campaigns as LeadCampaignMembership[]).map(cl => (
+                  <div key={cl.id} className="flex items-start justify-between gap-3 p-3 bg-gray-50 rounded-xl border border-gray-100">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-gray-800 truncate">{cl.campaign.name}</p>
+                      <p className="text-[10px] text-gray-400 mt-0.5">
+                        Added {new Date(cl.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+                      </p>
+                    </div>
+                    <div className="flex flex-col items-end gap-1.5 shrink-0">
+                      <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${CL_STATUS_COLORS[cl.status] ?? 'bg-gray-100 text-gray-600'}`}>
+                        {cl.status.replace(/_/g, ' ')}
+                      </span>
+                      {cl.reply_classification && cl.reply_classification !== 'none' && (
+                        <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${CL_CLASS_COLORS[cl.reply_classification] ?? ''}`}>
+                          {cl.reply_classification.replace(/_/g, ' ')}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+        </div>
+      </div>
+    </>
   )
 }

@@ -128,6 +128,21 @@ export async function deleteLeadNote(noteId: string): Promise<void> {
   if (!res.ok) throw new Error(await parseErrorResponse(res))
 }
 
+export interface LeadCampaignMembership {
+  id: string
+  status: string
+  reply_classification: string | null
+  created_at: string
+  campaign: { id: string; name: string; status: string }
+}
+
+export async function fetchLeadCampaigns(leadId: string): Promise<LeadCampaignMembership[]> {
+  const res = await apiFetch(`/api/leads/${leadId}/campaigns`)
+  if (!res.ok) throw new Error(await parseErrorResponse(res))
+  const { data } = await res.json() as { data: LeadCampaignMembership[] }
+  return data
+}
+
 export async function fetchLeads(params: {
   icp_flag?: string
   search?: string
