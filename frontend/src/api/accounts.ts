@@ -57,40 +57,6 @@ export async function deleteAccount(id: string): Promise<void> {
   if (!res.ok) throw new Error(await parseErrorResponse(res))
 }
 
-// ── Proxies ───────────────────────────────────────────────────────────────────
-
-export interface Proxy {
-  id: string
-  proxy_url: string
-  assigned_account_id: string | null
-  is_available: boolean
-  created_at: string
-}
-
-export async function fetchProxies(): Promise<Proxy[]> {
-  const { data, error } = await supabase
-    .from('proxies')
-    .select('*')
-    .order('created_at', { ascending: false })
-  if (error) throw new Error(error.message)
-  return (data ?? []) as Proxy[]
-}
-
-export async function addProxy(proxy_url: string): Promise<Proxy> {
-  const { data, error } = await supabase
-    .from('proxies')
-    .insert({ proxy_url, is_available: true })
-    .select()
-    .single()
-  if (error) throw new Error(error.message)
-  return data as Proxy
-}
-
-export async function deleteProxy(id: string): Promise<void> {
-  const { error } = await supabase.from('proxies').delete().eq('id', id)
-  if (error) throw new Error(error.message)
-}
-
 export type ConnectResult =
   | { status: 'starting'; session_key: string }
 
@@ -152,9 +118,3 @@ export async function loginBrowser(accountId: string): Promise<{ message: string
   return res.json() as Promise<{ message: string }>
 }
 
-export async function assignProxy(accountId: string, proxyId: string | null): Promise<void> {
-  await updateAccount(accountId, { proxy_id: proxyId })
-  if (proxyId) {
-    await supabase.from('proxies').update({ assigned_account_id: accountId, is_available: false }).eq('id', proxyId)
-  }
-}

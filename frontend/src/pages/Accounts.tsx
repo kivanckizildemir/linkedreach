@@ -6,15 +6,21 @@ import {
   createAccount,
   updateAccount,
   deleteAccount,
-  fetchProxies,
-  addProxy,
-  deleteProxy,
-  assignProxy,
   connectAccount,
   getConnectStatus,
   verifyConnectCode,
   type LinkedInAccount,
 } from '../api/accounts'
+import {
+  fetchProxies,
+  addProxy,
+  bulkImportProxies,
+  updateProxyLabel,
+  assignProxy,
+  testProxy,
+  deleteProxy,
+  type Proxy,
+} from '../api/proxies'
 import { fetchActivity, ACTION_LABELS, ACTION_COLORS } from '../api/activity'
 
 const STATUS_COLORS: Record<LinkedInAccount['status'], string> = {
@@ -339,6 +345,8 @@ export function Accounts() {
 
 function ProxiesPanel({ accounts }: { accounts: LinkedInAccount[] }) {
   const [showAdd, setShowAdd] = useState(false)
+  const [testResults, setTestResults] = useState<Record<string, { ok: boolean; result: string; loading: boolean }>>({})
+  const [editingLabel, setEditingLabel] = useState<Record<string, string>>({})
   const queryClient = useQueryClient()
 
   const { data: proxies = [], isLoading } = useQuery({
@@ -347,7 +355,16 @@ function ProxiesPanel({ accounts }: { accounts: LinkedInAccount[] }) {
   })
 
   const addMutation = useMutation({
-    mutationFn: addProxy,
+    mutationFn: ({ proxy_url, label }: { proxy_url: string; label?: string }) => addProxy(proxy_url, label),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['proxies'] })
+      setShowAdd(false)
+    },
+  })
+
+  const bulkMutation = useMutation({
+    mutationFn: ({ lines, label_prefix }: { lines: string; label_prefix?: string }) =>
+      bulkImportProxies(lines, label_prefix),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['proxies'] })
       setShowAdd(false)
@@ -356,29 +373,56 @@ function ProxiesPanel({ accounts }: { accounts: LinkedInAccount[] }) {
 
   const deleteMutation = useMutation({
     mutationFn: deleteProxy,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['proxies'] }),
-  })
-
-  const assignMutation = useMutation({
-    mutationFn: ({ accountId, proxyId }: { accountId: string; proxyId: string | null }) =>
-      assignProxy(accountId, proxyId),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['proxies'] })
       void queryClient.invalidateQueries({ queryKey: ['accounts'] })
     },
   })
 
+  const assignMutation = useMutation({
+    mutationFn: ({ proxyId, accountId }: { proxyId: string; accountId: string | null }) =>
+      assignProxy(proxyId, accountId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['proxies'] })
+      void queryClient.invalidateQueries({ queryKey: ['accounts'] })
+    },
+  })
+
+  const labelMutation = useMutation({
+    mutationFn: ({ id, label }: { id: string; label: string }) => updateProxyLabel(id, label),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['proxies'] }),
+  })
+
+  async function handleTest(proxy: Proxy) {
+    setTestResults(r => ({ ...r, [proxy.id]: { ok: false, result: '', loading: true } }))
+    try {
+      const result = await testProxy(proxy.id)
+      setTestResults(r => ({ ...r, [proxy.id]: { ...result, loading: false } }))
+    } catch (e) {
+      setTestResults(r => ({ ...r, [proxy.id]: { ok: false, result: (e as Error).message, loading: false } }))
+    }
+  }
+
+  const unassignedAccounts = accounts.filter(a => !proxies.some(p => p.assigned_account_id === a.id))
+
   return (
-    <div className="mt-4">
-      <div className="flex items-center justify-between mb-4">
-        <p className="text-sm text-gray-600">
-          Assign one residential proxy per LinkedIn account to avoid IP-based detection.
-        </p>
+    <div className="mt-4 space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-sm text-gray-600">
+            One dedicated static IP per LinkedIn account — same IP every session, no rotation.
+          </p>
+          {unassignedAccounts.length > 0 && (
+            <p className="text-xs text-amber-600 mt-1">
+              {unassignedAccounts.length} account{unassignedAccounts.length > 1 ? 's have' : ' has'} no proxy assigned.
+            </p>
+          )}
+        </div>
         <button
           onClick={() => setShowAdd(true)}
           className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors"
         >
-          Add Proxy
+          Add Proxies
         </button>
       </div>
 
@@ -386,61 +430,93 @@ function ProxiesPanel({ accounts }: { accounts: LinkedInAccount[] }) {
         <table className="w-full text-sm">
           <thead className="bg-gray-50 border-b border-gray-200">
             <tr>
-              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Proxy URL</th>
+              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Label / URL</th>
               <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
               <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Assigned Account</th>
+              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Test</th>
               <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
             {isLoading ? (
-              <tr><td colSpan={4} className="px-4 py-12 text-center text-gray-400">Loading…</td></tr>
+              <tr><td colSpan={5} className="px-4 py-12 text-center text-gray-400">Loading…</td></tr>
             ) : proxies.length === 0 ? (
               <tr>
-                <td colSpan={4} className="px-4 py-12 text-center">
+                <td colSpan={5} className="px-4 py-16 text-center">
                   <p className="text-gray-900 font-medium">No proxies added</p>
-                  <p className="mt-1 text-sm text-gray-500">Add a residential proxy to assign to an account.</p>
+                  <p className="mt-1 text-sm text-gray-500">
+                    Add static residential proxies from IPRoyal, Rayobyte, or similar — one per LinkedIn account.
+                  </p>
                 </td>
               </tr>
             ) : (
               proxies.map(proxy => {
-                // Mask credentials for display
-                let displayUrl = proxy.proxy_url
-                try {
-                  const u = new URL(proxy.proxy_url)
-                  if (u.password) u.password = '••••'
-                  displayUrl = u.toString()
-                } catch { /* leave as-is */ }
+                const testResult = testResults[proxy.id]
+                const assignedAccount = accounts.find(a => a.id === proxy.assigned_account_id)
+                const labelVal = editingLabel[proxy.id] ?? proxy.label ?? ''
 
                 return (
-                  <tr key={proxy.id} className="hover:bg-gray-50">
-                    <td className="px-4 py-3 font-mono text-xs text-gray-700 max-w-xs truncate">{displayUrl}</td>
+                  <tr key={proxy.id} className="hover:bg-gray-50 transition-colors">
+                    <td className="px-4 py-3 max-w-[220px]">
+                      <input
+                        value={labelVal}
+                        onChange={e => setEditingLabel(prev => ({ ...prev, [proxy.id]: e.target.value }))}
+                        onBlur={() => {
+                          if (labelVal !== proxy.label) {
+                            labelMutation.mutate({ id: proxy.id, label: labelVal })
+                          }
+                          setEditingLabel(prev => { const n = { ...prev }; delete n[proxy.id]; return n })
+                        }}
+                        placeholder="Add label…"
+                        className="text-xs font-medium text-gray-800 bg-transparent border-b border-transparent hover:border-gray-300 focus:border-blue-500 focus:outline-none w-full pb-0.5 mb-1"
+                      />
+                      <p className="font-mono text-[10px] text-gray-400 truncate">{proxy.proxy_url}</p>
+                    </td>
                     <td className="px-4 py-3">
-                      <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${proxy.is_available ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>
+                      <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${proxy.is_available ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'}`}>
                         {proxy.is_available ? 'Available' : 'In use'}
                       </span>
                     </td>
                     <td className="px-4 py-3">
                       <select
                         value={proxy.assigned_account_id ?? ''}
-                        onChange={e =>
-                          assignMutation.mutate({
-                            accountId: e.target.value || (proxy.assigned_account_id ?? ''),
-                            proxyId: e.target.value ? proxy.id : null,
-                          })
-                        }
-                        className="text-xs border border-gray-200 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        onChange={e => assignMutation.mutate({ proxyId: proxy.id, accountId: e.target.value || null })}
+                        className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-1 focus:ring-blue-500 max-w-[180px]"
                       >
                         <option value="">— unassigned —</option>
                         {accounts.map(a => (
                           <option key={a.id} value={a.id}>{a.linkedin_email}</option>
                         ))}
                       </select>
+                      {assignedAccount && (
+                        <p className="text-[10px] text-gray-400 mt-0.5 ml-0.5">
+                          {STATUS_LABELS[assignedAccount.status]}
+                        </p>
+                      )}
+                    </td>
+                    <td className="px-4 py-3">
+                      {testResult ? (
+                        <div className="flex items-center gap-1.5">
+                          <span className={`inline-block w-2 h-2 rounded-full flex-shrink-0 ${testResult.loading ? 'bg-yellow-400 animate-pulse' : testResult.ok ? 'bg-green-500' : 'bg-red-500'}`} />
+                          <span className="text-[10px] text-gray-500 font-mono truncate max-w-[100px]">
+                            {testResult.loading ? 'Testing…' : testResult.result}
+                          </span>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => void handleTest(proxy)}
+                          className="text-xs text-blue-600 hover:underline"
+                        >
+                          Test
+                        </button>
+                      )}
                     </td>
                     <td className="px-4 py-3">
                       <button
                         onClick={() => {
-                          if (confirm('Remove this proxy?')) deleteMutation.mutate(proxy.id)
+                          if (confirm('Remove this proxy? It will be unassigned from any account.')) {
+                            deleteMutation.mutate(proxy.id)
+                          }
                         }}
                         className="text-xs text-red-600 hover:underline"
                       >
@@ -456,37 +532,146 @@ function ProxiesPanel({ accounts }: { accounts: LinkedInAccount[] }) {
       </div>
 
       {showAdd && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6 space-y-4">
-            <h2 className="text-base font-semibold text-gray-900">Add Proxy</h2>
-            <p className="text-sm text-gray-500">Enter a proxy URL in the format <code className="bg-gray-100 px-1 rounded text-xs">protocol://user:pass@host:port</code></p>
-            <form onSubmit={e => {
-              e.preventDefault()
-              const url = (e.currentTarget.elements.namedItem('proxy_url') as HTMLInputElement).value.trim()
-              if (url) addMutation.mutate(url)
-            }} className="space-y-3">
-              <input
-                name="proxy_url"
-                type="text"
-                placeholder="socks5://user:pass@host:1080"
-                autoFocus
-                className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-              {addMutation.isError && (
-                <p className="text-sm text-red-600">{(addMutation.error as Error).message}</p>
-              )}
-              <div className="flex gap-3">
-                <button type="button" onClick={() => setShowAdd(false)}
-                  className="flex-1 py-2 border border-gray-200 text-sm font-medium rounded-xl hover:bg-gray-50">Cancel</button>
-                <button type="submit" disabled={addMutation.isPending}
-                  className="flex-1 py-2 bg-blue-600 text-white text-sm font-semibold rounded-xl hover:bg-blue-700 disabled:opacity-60">
-                  {addMutation.isPending ? 'Adding…' : 'Add Proxy'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+        <AddProxyModal
+          onClose={() => setShowAdd(false)}
+          onAdd={(proxy_url, label) => addMutation.mutate({ proxy_url, label })}
+          onBulk={(lines, label_prefix) => bulkMutation.mutate({ lines, label_prefix })}
+          isLoading={addMutation.isPending || bulkMutation.isPending}
+          error={addMutation.error?.message ?? bulkMutation.error?.message ?? null}
+          bulkResult={bulkMutation.data ?? null}
+        />
       )}
+    </div>
+  )
+}
+
+function AddProxyModal({
+  onClose,
+  onAdd,
+  onBulk,
+  isLoading,
+  error,
+  bulkResult,
+}: {
+  onClose: () => void
+  onAdd: (proxy_url: string, label?: string) => void
+  onBulk: (lines: string, label_prefix?: string) => void
+  isLoading: boolean
+  error: string | null
+  bulkResult: { imported: number; skipped: number; invalid: string[] } | null
+}) {
+  const [mode, setMode] = useState<'single' | 'bulk'>('single')
+  const [proxyUrl, setProxyUrl] = useState('')
+  const [label, setLabel] = useState('')
+  const [bulkLines, setBulkLines] = useState('')
+  const [labelPrefix, setLabelPrefix] = useState('')
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    if (mode === 'single') {
+      if (proxyUrl.trim()) onAdd(proxyUrl.trim(), label.trim() || undefined)
+    } else {
+      if (bulkLines.trim()) onBulk(bulkLines.trim(), labelPrefix.trim() || undefined)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg p-6 space-y-4">
+        <div className="flex items-center justify-between">
+          <h2 className="text-base font-semibold text-gray-900">Add Proxies</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-lg leading-none">✕</button>
+        </div>
+
+        {/* Mode toggle */}
+        <div className="flex gap-1 p-1 bg-gray-100 rounded-lg">
+          {(['single', 'bulk'] as const).map(m => (
+            <button
+              key={m}
+              onClick={() => setMode(m)}
+              className={[
+                'flex-1 py-1.5 text-xs font-medium rounded-md transition-colors',
+                mode === m ? 'bg-white shadow text-gray-900' : 'text-gray-500 hover:text-gray-700',
+              ].join(' ')}
+            >
+              {m === 'single' ? 'Single Proxy' : 'Bulk Import'}
+            </button>
+          ))}
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-3">
+          {mode === 'single' ? (
+            <>
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Label (optional)</label>
+                <input
+                  value={label}
+                  onChange={e => setLabel(e.target.value)}
+                  placeholder="e.g. US East 1"
+                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Proxy URL</label>
+                <input
+                  value={proxyUrl}
+                  onChange={e => setProxyUrl(e.target.value)}
+                  placeholder="http://user:pass@host:port"
+                  autoFocus
+                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                <p className="text-[10px] text-gray-400 mt-1">Supports http://, https://, socks5://</p>
+              </div>
+            </>
+          ) : (
+            <>
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Label prefix (optional)</label>
+                <input
+                  value={labelPrefix}
+                  onChange={e => setLabelPrefix(e.target.value)}
+                  placeholder="e.g. IPRoyal US → IPRoyal US 1, IPRoyal US 2…"
+                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Proxy URLs (one per line)</label>
+                <textarea
+                  value={bulkLines}
+                  onChange={e => setBulkLines(e.target.value)}
+                  placeholder={`http://user1:pass1@host1:port\nhttp://user2:pass2@host2:port\n…`}
+                  rows={6}
+                  autoFocus
+                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                />
+                <p className="text-[10px] text-gray-400 mt-1">
+                  Paste the list you get from IPRoyal / Rayobyte / Smartproxy export.
+                </p>
+              </div>
+            </>
+          )}
+
+          {error && <p className="text-xs text-red-600">{error}</p>}
+
+          {bulkResult && (
+            <div className="bg-green-50 border border-green-200 rounded-lg p-3 text-xs text-green-800">
+              Imported <strong>{bulkResult.imported}</strong> proxies.
+              {bulkResult.skipped > 0 && <span className="text-amber-700"> {bulkResult.skipped} skipped (invalid).</span>}
+            </div>
+          )}
+
+          <div className="flex gap-3 pt-1">
+            <button type="button" onClick={onClose}
+              className="flex-1 py-2 border border-gray-200 text-sm font-medium rounded-xl hover:bg-gray-50">
+              Cancel
+            </button>
+            <button type="submit" disabled={isLoading}
+              className="flex-1 py-2 bg-blue-600 text-white text-sm font-semibold rounded-xl hover:bg-blue-700 disabled:opacity-60">
+              {isLoading ? 'Importing…' : mode === 'single' ? 'Add Proxy' : 'Import All'}
+            </button>
+          </div>
+        </form>
+      </div>
     </div>
   )
 }

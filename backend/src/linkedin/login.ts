@@ -8,6 +8,11 @@
  * Status lifecycle:
  *   starting → pending_push | needs_verification | success | error
  *
+ * Browser strategy (checked in order):
+ *   1. BRIGHTDATA_BROWSER_URL set → connectOverCDP to BrightData Scraping Browser
+ *      (BrightData runs Chromium on a residential IP — no local browser, no 403)
+ *   2. Fallback → local Chromium launch with BRIGHTDATA_PROXY_URL / per-account proxy
+ *
  * If totp_secret is stored on the account, 2FA codes are generated
  * automatically via otplib — no user interaction required (Infinite Login).
  */
@@ -20,6 +25,7 @@ const speakeasy = require('speakeasy') as {
 }
 import { supabase } from '../lib/supabase'
 
+// playwright-extra + stealth used for local-Chromium fallback only
 // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-explicit-any
 const { chromium } = require('playwright-extra') as any
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -68,7 +74,43 @@ async function saveCookies(context: BrowserContext, accountId: string): Promise<
     .eq('id', accountId)
 }
 
-/** Resolve proxy settings for an account from DB or env fallback */
+// ── Browser configuration helpers ────────────────────────────────────────────
+
+/**
+ * Returns a BrightData Scraping Browser CDP WebSocket URL if BRIGHTDATA_BROWSER_URL
+ * is configured. Country targeting is appended to the username if the account has
+ * proxy_country set.
+ *
+ * Format: wss://brd-customer-{ID}-zone-{ZONE}:{PASSWORD}@brd.superproxy.io:9222
+ */
+async function resolveBrowserEndpoint(accountId: string): Promise<string | null> {
+  if (process.env.DISABLE_PROXY === 'true') return null
+  const browserUrl = process.env.BRIGHTDATA_BROWSER_URL
+  if (!browserUrl) return null
+
+  try {
+    const { data: account } = await supabase
+      .from('linkedin_accounts')
+      .select('proxy_country')
+      .eq('id', accountId)
+      .single()
+
+    const country = (account as { proxy_country?: string } | null)?.proxy_country
+    const url = new URL(browserUrl)
+
+    if (country) {
+      // BrightData country targeting: append -country-XX to username
+      const baseUser = decodeURIComponent(url.username)
+      url.username = encodeURIComponent(`${baseUser}-country-${country.toLowerCase()}`)
+    }
+
+    return url.toString()
+  } catch {
+    return null
+  }
+}
+
+/** Resolve local-proxy settings for an account from DB or env fallback */
 async function resolveProxy(accountId: string): Promise<
   { server: string; username?: string; password?: string } | undefined
 > {
@@ -123,9 +165,15 @@ async function resolveProxy(accountId: string): Promise<
 
 /**
  * Raw TCP test: send HTTP CONNECT to the proxy and return the response line.
- * Tells us exactly what BrightData says (200 = OK, 407 = bad creds, etc.)
+ * Only meaningful when using BRIGHTDATA_PROXY_URL (local-proxy mode).
+ * Returns an informational message when Scraping Browser mode is active.
  */
 export async function testProxyRaw(accountId: string): Promise<string> {
+  // Scraping Browser uses WebSocket, not CONNECT tunnel — no raw test needed
+  if (process.env.BRIGHTDATA_BROWSER_URL && process.env.DISABLE_PROXY !== 'true') {
+    return 'SCRAPING_BROWSER_MODE — no CONNECT tunnel; BrightData runs the browser on a residential IP'
+  }
+
   const proxy = await resolveProxy(accountId)
   if (!proxy) return 'NO_PROXY_CONFIGURED'
 
@@ -152,6 +200,8 @@ export async function testProxyRaw(accountId: string): Promise<string> {
   })
 }
 
+// ── Login runner ──────────────────────────────────────────────────────────────
+
 /** Runs entirely in the background — never awaited by the HTTP handler */
 async function runLogin(key: string, email: string, password: string): Promise<void> {
   const session = sessions.get(key)
@@ -159,40 +209,59 @@ async function runLogin(key: string, email: string, password: string): Promise<v
 
   let browser: Browser | undefined
   try {
-    const proxy = await resolveProxy(session.accountId)
+    const browserEndpoint = await resolveBrowserEndpoint(session.accountId)
 
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
-    browser = await chromium.launch({
-      headless: true,
-      // Pass proxy at launch level — more reliable than context level
-      ...(proxy ? { proxy } : {}),
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-blink-features=AutomationControlled',
-        '--ignore-certificate-errors',
-        '--ignore-certificate-errors-spki-list',
-      ],
-    }) as Browser
+    let context: BrowserContext
 
-    const context = await browser.newContext({
-      proxy:             proxy ?? undefined,
-      userAgent:
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
-        '(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-      viewport:          { width: 1280, height: 800 },
-      locale:            'en-US',
-      ignoreHTTPSErrors: true,
-    })
+    if (browserEndpoint) {
+      // ── Strategy 1: BrightData Scraping Browser via CDP ──────────────────
+      // BrightData runs Chromium on a residential IP on their infrastructure.
+      // Railway just opens a WebSocket — no tunnel, no 403.
+      const { chromium: pw } = await import('playwright')
+      browser = await pw.connectOverCDP(browserEndpoint) as unknown as Browser
 
-    await context.addInitScript(() => {
-      Object.defineProperty(navigator, 'webdriver', { get: () => undefined })
-      Object.defineProperty(navigator, 'plugins',   { get: () => [1, 2, 3, 4, 5] })
-      Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] })
-      // @ts-ignore
-      window.chrome = { runtime: {} }
-    })
+      // Use the existing default context BrightData provides, or create one
+      const existingContexts = browser.contexts()
+      context = existingContexts.length > 0
+        ? existingContexts[0]
+        : await browser.newContext({ locale: 'en-US', viewport: { width: 1280, height: 800 } })
+
+    } else {
+      // ── Strategy 2: Local Chromium launch with proxy (dev / fallback) ─────
+      const proxy = await resolveProxy(session.accountId)
+
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+      browser = await chromium.launch({
+        headless: true,
+        ...(proxy ? { proxy } : {}),
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-blink-features=AutomationControlled',
+          '--ignore-certificate-errors',
+          '--ignore-certificate-errors-spki-list',
+        ],
+      }) as Browser
+
+      context = await browser.newContext({
+        proxy:             proxy ?? undefined,
+        userAgent:
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+          '(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        viewport:          { width: 1280, height: 800 },
+        locale:            'en-US',
+        ignoreHTTPSErrors: true,
+      })
+
+      await context.addInitScript(() => {
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined })
+        Object.defineProperty(navigator, 'plugins',   { get: () => [1, 2, 3, 4, 5] })
+        Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] })
+        // @ts-ignore
+        window.chrome = { runtime: {} }
+      })
+    }
 
     const page = await context.newPage()
     session.browser = browser

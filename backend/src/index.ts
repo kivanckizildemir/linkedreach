@@ -13,6 +13,7 @@ import { messageTemplatesRouter } from './routes/messageTemplates'
 import { activityLogRouter } from './routes/activityLog'
 import { labelsRouter } from './routes/labels'
 import { settingsRouter } from './routes/settings'
+import { proxiesRouter } from './routes/proxies'
 import { errorHandler, notFound } from './middleware/errors'
 import { testProxyRaw } from './linkedin/login'
 
@@ -62,6 +63,7 @@ app.use('/api/message-templates', messageTemplatesRouter)
 app.use('/api/activity', activityLogRouter)
 app.use('/api/labels', labelsRouter)
 app.use('/api/settings', settingsRouter)
+app.use('/api/proxies', proxiesRouter)
 
 app.use(notFound)
 app.use(errorHandler)
