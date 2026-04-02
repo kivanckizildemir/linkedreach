@@ -28,6 +28,17 @@ app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok' })
 })
 
+// Get Railway's outbound IP
+app.get('/api/my-ip', async (_req, res) => {
+  try {
+    const r = await fetch('https://api.ipify.org?format=json')
+    const data = await r.json() as { ip: string }
+    res.json(data)
+  } catch (e) {
+    res.json({ error: String(e) })
+  }
+})
+
 // Unauthenticated proxy diagnostic — raw TCP CONNECT to BrightData
 app.get('/api/proxy-diag/:accountId', async (req, res) => {
   const result = await testProxyRaw(String(req.params.accountId))
