@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '../lib/fetchJson'
+import { fetchLeads, type Lead } from '../api/leads'
 
 interface MessageTemplate {
   id: string
@@ -39,12 +40,26 @@ const SAMPLE_LEAD = {
   opening_line: 'Congrats on the recent Series B — impressive growth trajectory!',
 }
 
-function previewTemplate(body: string): string {
+type PreviewData = typeof SAMPLE_LEAD
+
+function previewTemplate(body: string, data: PreviewData = SAMPLE_LEAD): string {
   let preview = body
-  for (const [key, val] of Object.entries(SAMPLE_LEAD)) {
+  for (const [key, val] of Object.entries(data)) {
     preview = preview.replaceAll(`{{${key}}}`, val)
   }
   return preview
+}
+
+function leadToPreviewData(lead: Lead): PreviewData {
+  return {
+    first_name: lead.first_name,
+    last_name: lead.last_name,
+    full_name: `${lead.first_name} ${lead.last_name}`,
+    company: lead.company ?? '',
+    title: lead.title ?? '',
+    industry: lead.industry ?? '',
+    opening_line: SAMPLE_LEAD.opening_line,
+  }
 }
 
 async function fetchTemplates(type?: string): Promise<MessageTemplate[]> {
@@ -93,7 +108,18 @@ export function Templates() {
   const [form, setForm] = useState(EMPTY_FORM)
   const [formError, setFormError] = useState('')
   const [previewMode, setPreviewMode] = useState(false)
+  const [previewLeadId, setPreviewLeadId] = useState<string>('')
   const queryClient = useQueryClient()
+
+  const { data: leadsForPreview = [] } = useQuery({
+    queryKey: ['leads-preview'],
+    queryFn: () => fetchLeads(),
+    enabled: previewMode,
+    staleTime: 120_000,
+  })
+
+  const selectedPreviewLead = leadsForPreview.find(l => l.id === previewLeadId)
+  const previewData = selectedPreviewLead ? leadToPreviewData(selectedPreviewLead) : SAMPLE_LEAD
 
   const { data: templates = [], isLoading } = useQuery({
     queryKey: ['message-templates', typeFilter],
@@ -306,9 +332,26 @@ export function Templates() {
                   </span>
                 </div>
                 {previewMode ? (
+                  <>
+                    <div className="mb-2 flex items-center gap-2">
+                      <select
+                        value={previewLeadId}
+                        onChange={e => setPreviewLeadId(e.target.value)}
+                        className="flex-1 px-2.5 py-1.5 border border-gray-200 rounded-lg text-xs text-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      >
+                        <option value="">Sample lead (Sarah Chen)</option>
+                        {leadsForPreview.map(l => (
+                          <option key={l.id} value={l.id}>
+                            {l.first_name} {l.last_name}{l.company ? ` · ${l.company}` : ''}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
                   <div className="w-full px-4 py-3 border border-blue-200 rounded-xl text-sm text-gray-800 bg-blue-50 min-h-[160px] whitespace-pre-wrap leading-relaxed">
-                    {previewTemplate(form.body) || <span className="text-gray-400 italic">Preview will appear here…</span>}
+                    {previewTemplate(form.body, previewData) || <span className="text-gray-400 italic">Preview will appear here…</span>}
                   </div>
+                  </>
+
                 ) : (
                   <textarea
                     value={form.body}

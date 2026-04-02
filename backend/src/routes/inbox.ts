@@ -13,6 +13,46 @@ export const inboxRouter = Router()
 
 inboxRouter.use(requireAuth)
 
+// GET /api/inbox/unread-count — total unread received messages
+inboxRouter.get('/unread-count', async (req: Request, res: Response) => {
+  const { count, error } = await supabase
+    .from('messages')
+    .select(`
+      id,
+      campaign_lead:campaign_leads!inner (
+        campaign:campaigns!inner (user_id)
+      )
+    `, { count: 'exact', head: true })
+    .eq('direction', 'received')
+    .eq('is_read', false)
+    .eq('campaign_lead.campaign.user_id', req.user.id)
+
+  if (error) { res.status(500).json({ error: error.message }); return }
+  res.json({ count: count ?? 0 })
+})
+
+// POST /api/inbox/:campaignLeadId/mark-read — mark all messages in thread as read
+inboxRouter.post('/:campaignLeadId/mark-read', async (req: Request, res: Response) => {
+  // Verify ownership
+  const { data: cl } = await supabase
+    .from('campaign_leads')
+    .select('id, campaign:campaigns (user_id)')
+    .eq('id', req.params.campaignLeadId)
+    .single()
+
+  if (!cl || (cl.campaign as { user_id?: string } | null)?.user_id !== req.user.id) {
+    res.status(403).json({ error: 'Forbidden' }); return
+  }
+
+  await supabase
+    .from('messages')
+    .update({ is_read: true })
+    .eq('campaign_lead_id', req.params.campaignLeadId)
+    .eq('direction', 'received')
+
+  res.json({ ok: true })
+})
+
 // GET /api/inbox — all received messages across the user's campaigns
 // Joins campaign_leads → campaigns to enforce ownership
 inboxRouter.get('/', async (req: Request, res: Response) => {

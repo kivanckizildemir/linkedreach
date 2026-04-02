@@ -1,19 +1,27 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
+import { useQuery } from '@tanstack/react-query'
 import { useAuth } from '../contexts/AuthContext'
-
-const navItems = [
-  { to: '/', label: 'Dashboard', icon: DashboardIcon, end: true },
-  { to: '/campaigns', label: 'Campaigns', icon: CampaignIcon },
-  { to: '/leads', label: 'Leads', icon: LeadsIcon },
-  { to: '/inbox', label: 'Inbox', icon: InboxIcon },
-  { to: '/accounts', label: 'Accounts', icon: AccountsIcon },
-  { to: '/templates', label: 'Templates', icon: TemplatesIcon },
-  { to: '/blacklist', label: 'Blacklist', icon: BlacklistIcon },
-]
+import { fetchUnreadCount } from '../api/inbox'
 
 export function Layout() {
   const { user, signOut } = useAuth()
   const navigate = useNavigate()
+
+  const { data: unreadCount = 0 } = useQuery({
+    queryKey: ['inbox-unread'],
+    queryFn: fetchUnreadCount,
+    refetchInterval: 30_000,
+  })
+
+  const navItems = [
+    { to: '/', label: 'Dashboard', icon: DashboardIcon, end: true },
+    { to: '/campaigns', label: 'Campaigns', icon: CampaignIcon },
+    { to: '/leads', label: 'Leads', icon: LeadsIcon },
+    { to: '/inbox', label: 'Inbox', icon: InboxIcon, badge: unreadCount > 0 ? unreadCount : undefined },
+    { to: '/accounts', label: 'Accounts', icon: AccountsIcon },
+    { to: '/templates', label: 'Templates', icon: TemplatesIcon },
+    { to: '/blacklist', label: 'Blacklist', icon: BlacklistIcon },
+  ]
 
   async function handleSignOut() {
     await signOut()
@@ -28,7 +36,7 @@ export function Layout() {
         </div>
 
         <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
-          {navItems.map(({ to, label, icon: Icon, end }) => (
+          {navItems.map(({ to, label, icon: Icon, end, badge }) => (
             <NavLink
               key={to}
               to={to}
@@ -43,7 +51,12 @@ export function Layout() {
               }
             >
               <Icon />
-              {label}
+              <span className="flex-1">{label}</span>
+              {badge !== undefined && (
+                <span className="ml-auto min-w-[18px] h-[18px] px-1 bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center">
+                  {badge > 99 ? '99+' : badge}
+                </span>
+              )}
             </NavLink>
           ))}
         </nav>

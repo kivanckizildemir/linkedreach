@@ -72,6 +72,17 @@ export async function getSuggestions(campaignLeadId: string): Promise<string[]> 
   return suggestions ?? []
 }
 
+export async function fetchUnreadCount(): Promise<number> {
+  const res = await apiFetch('/api/inbox/unread-count')
+  if (!res.ok) return 0
+  const { count } = await res.json() as { count: number }
+  return count ?? 0
+}
+
+export async function markThreadRead(campaignLeadId: string): Promise<void> {
+  await apiFetch(`/api/inbox/${campaignLeadId}/mark-read`, { method: 'POST' })
+}
+
 export async function replyToConversation(
   campaignLeadId: string,
   message: string

@@ -6,6 +6,7 @@ import {
   updateClassification,
   replyToConversation,
   getSuggestions,
+  markThreadRead,
   type ReplyClassification,
 } from '../api/inbox'
 import { fetchCampaigns } from '../api/campaigns'
@@ -70,7 +71,15 @@ export function Inbox() {
 
   const { data: thread = [], isLoading: threadLoading } = useQuery({
     queryKey: ['thread', selectedId],
-    queryFn: () => fetchThread(selectedId!),
+    queryFn: async () => {
+      const data = await fetchThread(selectedId!)
+      // Mark as read when thread is opened
+      markThreadRead(selectedId!).then(() => {
+        void queryClient.invalidateQueries({ queryKey: ['inbox-unread'] })
+        void queryClient.invalidateQueries({ queryKey: ['inbox'] })
+      }).catch(() => {/* ignore */})
+      return data
+    },
     enabled: !!selectedId,
   })
 
