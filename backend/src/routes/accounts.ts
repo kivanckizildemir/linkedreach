@@ -3,7 +3,7 @@ import type { Request, Response } from 'express'
 import { supabase } from '../lib/supabase'
 import { requireAuth } from '../middleware/auth'
 import type { AccountStatus } from '../types'
-import { startLogin, submitVerificationCode, getLoginStatus, getSessionScreenshot, getSessionPageInfo } from '../linkedin/login'
+import { startLogin, submitVerificationCode, getLoginStatus, getSessionScreenshot, getSessionPageInfo, testProxyRaw } from '../linkedin/login'
 // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-explicit-any
 const { chromium } = require('playwright-extra') as any
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -286,6 +286,13 @@ accountsRouter.post('/:id/login-browser', async (req: Request, res: Response) =>
     if (browser) await browser.close().catch(() => {})
     res.status(500).json({ error: err instanceof Error ? err.message : 'Unknown error' })
   }
+})
+
+// GET /api/accounts/:id/proxy-test — raw TCP test against BrightData proxy
+accountsRouter.get('/:id/proxy-test', async (req: Request, res: Response) => {
+  const result = await testProxyRaw(String(req.params.id))
+  const ok = result.includes('200')
+  res.json({ result, ok, hint: ok ? 'Proxy authenticated OK' : 'Proxy auth failed or unreachable — check BrightData credentials' })
 })
 
 // DELETE /api/accounts/:id

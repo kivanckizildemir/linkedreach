@@ -13,6 +13,7 @@
  */
 
 import type { Browser, BrowserContext, Page } from 'playwright'
+import * as net from 'net'
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const speakeasy = require('speakeasy') as {
   totp: (opts: { secret: string; encoding: string }) => string
@@ -120,6 +121,37 @@ async function resolveProxy(accountId: string): Promise<
   return undefined
 }
 
+/**
+ * Raw TCP test: send HTTP CONNECT to the proxy and return the response line.
+ * Tells us exactly what BrightData says (200 = OK, 407 = bad creds, etc.)
+ */
+export async function testProxyRaw(accountId: string): Promise<string> {
+  const proxy = await resolveProxy(accountId)
+  if (!proxy) return 'NO_PROXY_CONFIGURED'
+
+  const serverUrl = new URL(proxy.server)
+  const host = serverUrl.hostname
+  const port = parseInt(serverUrl.port || '22225', 10)
+
+  return new Promise((resolve) => {
+    const socket = net.createConnection({ host, port }, () => {
+      const auth = proxy.username && proxy.password
+        ? `Proxy-Authorization: Basic ${Buffer.from(`${proxy.username}:${proxy.password}`).toString('base64')}\r\n`
+        : ''
+      socket.write(
+        `CONNECT linkedin.com:443 HTTP/1.1\r\nHost: linkedin.com:443\r\n${auth}\r\n`
+      )
+    })
+    socket.setTimeout(8000)
+    socket.on('data', (d) => {
+      resolve(d.toString().split('\r\n')[0])
+      socket.destroy()
+    })
+    socket.on('timeout', () => { resolve('TIMEOUT connecting to proxy'); socket.destroy() })
+    socket.on('error', (e) => resolve(`TCP_ERROR: ${e.message}`))
+  })
+}
+
 /** Runs entirely in the background — never awaited by the HTTP handler */
 async function runLogin(key: string, email: string, password: string): Promise<void> {
   const session = sessions.get(key)
@@ -132,12 +164,15 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
     browser = await chromium.launch({
       headless: true,
+      // Pass proxy at launch level — more reliable than context level
+      ...(proxy ? { proxy } : {}),
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
         '--disable-blink-features=AutomationControlled',
         '--ignore-certificate-errors',
+        '--ignore-certificate-errors-spki-list',
       ],
     }) as Browser
 
