@@ -378,6 +378,42 @@ leadsRouter.patch('/:id', async (req: Request, res: Response) => {
   res.json({ data })
 })
 
+// POST /api/leads/:id/personalise — generate AI opening line for this lead
+leadsRouter.post('/:id/personalise', async (req: Request, res: Response) => {
+  const { data: lead, error } = await supabase
+    .from('leads')
+    .select('id, first_name, last_name, title, company, industry, raw_data')
+    .eq('id', req.params.id)
+    .eq('user_id', req.user.id)
+    .single()
+
+  if (error || !lead) {
+    res.status(404).json({ error: 'Lead not found' }); return
+  }
+
+  try {
+    const { personaliseOpeningLine } = await import('../ai/personalise')
+    const result = await personaliseOpeningLine({
+      first_name: lead.first_name,
+      last_name: lead.last_name,
+      title: lead.title ?? null,
+      company: lead.company ?? null,
+      industry: lead.industry ?? null,
+    })
+
+    // Save opening line into raw_data
+    const currentRaw = (lead.raw_data as Record<string, unknown> | null) ?? {}
+    await supabase
+      .from('leads')
+      .update({ raw_data: { ...currentRaw, opening_line: result.opening_line } })
+      .eq('id', lead.id)
+
+    res.json({ opening_line: result.opening_line })
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'AI failed' })
+  }
+})
+
 // DELETE /api/leads/:id
 leadsRouter.delete('/:id', async (req: Request, res: Response) => {
   const { error } = await supabase

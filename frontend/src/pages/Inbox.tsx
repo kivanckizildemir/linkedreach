@@ -50,6 +50,7 @@ function timeAgo(dateStr: string): string {
 export function Inbox() {
   const [filter, setFilter] = useState('')
   const [campaignFilter, setCampaignFilter] = useState('')
+  const [inboxSearch, setInboxSearch] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [replyText, setReplyText] = useState('')
   const [replyError, setReplyError] = useState('')
@@ -135,6 +136,13 @@ export function Inbox() {
               ))}
             </select>
           )}
+          <input
+            type="text"
+            value={inboxSearch}
+            onChange={e => setInboxSearch(e.target.value)}
+            placeholder="Search by name or company…"
+            className="mt-2 w-full px-2.5 py-1.5 border border-gray-200 rounded-lg text-xs text-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
           <div className="mt-3 flex flex-wrap gap-1.5">
             {FILTERS.map(({ label, value }) => (
               <button
@@ -162,7 +170,12 @@ export function Inbox() {
               <p className="mt-1 text-xs text-gray-400">Replies from your campaigns will appear here</p>
             </div>
           ) : (
-            messages.map(msg => {
+            messages.filter(msg => {
+              if (!inboxSearch) return true
+              const q = inboxSearch.toLowerCase()
+              const l = msg.campaign_lead.lead
+              return `${l.first_name} ${l.last_name} ${l.company ?? ''}`.toLowerCase().includes(q)
+            }).map(msg => {
               const lead = msg.campaign_lead.lead
               const cls = msg.campaign_lead.reply_classification
               const isSelected = msg.campaign_lead_id === selectedId

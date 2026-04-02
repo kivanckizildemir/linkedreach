@@ -13,10 +13,16 @@ export interface Lead {
   location: string | null
   icp_score: number | null
   icp_flag: 'hot' | 'warm' | 'cold' | 'disqualified' | null
-  raw_data: { ai_reasoning?: string; ai_qualified_at?: string } | null
+  raw_data: { ai_reasoning?: string; ai_qualified_at?: string; opening_line?: string } | null
   source: 'excel_import' | 'chrome_extension' | 'manual'
   created_at: string
   updated_at: string
+}
+
+export async function personaliseOpeningLine(id: string): Promise<{ opening_line: string }> {
+  const res = await apiFetch(`/api/leads/${id}/personalise`, { method: 'POST' })
+  if (!res.ok) throw new Error(await parseErrorResponse(res))
+  return res.json() as Promise<{ opening_line: string }>
 }
 
 export async function requalifyLead(id: string): Promise<void> {

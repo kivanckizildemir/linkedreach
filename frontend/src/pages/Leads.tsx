@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { fetchLeads, requalifyLead, qualifyAllLeads, importLeads, startSalesNavImport, getScrapeStatus, fetchLeadNotes, addLeadNote, deleteLeadNote } from '../api/leads'
+import { fetchLeads, requalifyLead, qualifyAllLeads, importLeads, startSalesNavImport, getScrapeStatus, fetchLeadNotes, addLeadNote, deleteLeadNote, personaliseOpeningLine } from '../api/leads'
 import type { Lead, LeadNote } from '../api/leads'
 import { fetchLabels, fetchLeadLabels, assignLabel, removeLabel, createLabel, type LeadLabel } from '../api/labels'
 import { fetchAccounts } from '../api/accounts'
@@ -73,6 +73,13 @@ export function Leads() {
     mutationFn: requalifyLead,
     onSuccess: () => {
       setTimeout(() => queryClient.invalidateQueries({ queryKey: ['leads'] }), 4000)
+    },
+  })
+
+  const personaliseMutation = useMutation({
+    mutationFn: personaliseOpeningLine,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['leads'] })
     },
   })
 
@@ -256,6 +263,7 @@ export function Leads() {
                 leads.map(lead => {
                   const isQueued = requalifyMutation.isPending && requalifyMutation.variables === lead.id
                   const reasoning = lead.raw_data?.ai_reasoning
+                  const openingLine = lead.raw_data?.opening_line
                   return (
                     <tr key={lead.id} className={`hover:bg-gray-50 transition-colors ${selectedIds.has(lead.id) ? 'bg-blue-50' : ''}`}>
                       <td className="px-4 py-3 w-8">
@@ -302,6 +310,27 @@ export function Leads() {
                       <td className="px-4 py-3 text-gray-500 capitalize">{lead.source.replace('_', ' ')}</td>
                       <td className="px-4 py-3 text-right">
                         <div className="flex items-center justify-end gap-3">
+                          {openingLine && (
+                            <span
+                              className="text-[10px] text-purple-500 max-w-[140px] truncate italic cursor-help"
+                              title={openingLine}
+                            >
+                              ✨ {openingLine}
+                            </span>
+                          )}
+                          <button
+                            onClick={() => personaliseMutation.mutate(lead.id)}
+                            disabled={personaliseMutation.isPending && personaliseMutation.variables === lead.id}
+                            className="text-xs text-gray-400 hover:text-purple-600 transition-colors flex items-center gap-1 shrink-0"
+                            title="Generate personalised opening line with AI"
+                          >
+                            {personaliseMutation.isPending && personaliseMutation.variables === lead.id ? (
+                              <svg className="animate-spin w-3 h-3" viewBox="0 0 24 24" fill="none">
+                                <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="60" strokeDashoffset="20" />
+                              </svg>
+                            ) : '✨'}
+                            Line
+                          </button>
                           <button
                             onClick={() => setNotesLead(lead)}
                             className="text-xs text-gray-400 hover:text-amber-600 transition-colors flex items-center gap-1"
