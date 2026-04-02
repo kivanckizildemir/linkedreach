@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   fetchInbox,
   fetchThread,
   updateClassification,
+  replyToConversation,
   type ReplyClassification,
 } from '../api/inbox'
 
@@ -46,6 +47,9 @@ function timeAgo(dateStr: string): string {
 export function Inbox() {
   const [filter, setFilter] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [replyText, setReplyText] = useState('')
+  const [replyError, setReplyError] = useState('')
+  const threadEndRef = useRef<HTMLDivElement>(null)
   const queryClient = useQueryClient()
 
   const { data: messages = [], isLoading } = useQuery({
@@ -61,12 +65,31 @@ export function Inbox() {
     enabled: !!selectedId,
   })
 
+  // Scroll to bottom when thread loads or updates
+  useEffect(() => {
+    threadEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [thread.length])
+
   const classifyMutation = useMutation({
     mutationFn: ({ id, cls }: { id: string; cls: ReplyClassification }) =>
       updateClassification(id, cls),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['inbox'] })
       void queryClient.invalidateQueries({ queryKey: ['thread', selectedId] })
+    },
+  })
+
+  const replyMutation = useMutation({
+    mutationFn: ({ id, msg }: { id: string; msg: string }) =>
+      replyToConversation(id, msg),
+    onSuccess: () => {
+      setReplyText('')
+      setReplyError('')
+      void queryClient.invalidateQueries({ queryKey: ['thread', selectedId] })
+      void queryClient.invalidateQueries({ queryKey: ['inbox'] })
+    },
+    onError: (err: Error) => {
+      setReplyError(err.message)
     },
   })
 
@@ -213,13 +236,47 @@ export function Inbox() {
                   </div>
                 ))
               )}
+              <div ref={threadEndRef} />
             </div>
 
-            {/* Reply notice */}
-            <div className="bg-white border-t border-gray-200 px-6 py-3">
-              <p className="text-xs text-gray-400 text-center">
-                Reply directly on LinkedIn — messages sync automatically when the inbox poller runs
-              </p>
+            {/* Reply composer */}
+            <div className="bg-white border-t border-gray-200 px-4 py-3">
+              {replyError && (
+                <p className="text-xs text-red-500 mb-2">{replyError}</p>
+              )}
+              <div className="flex gap-2 items-end">
+                <textarea
+                  value={replyText}
+                  onChange={e => { setReplyText(e.target.value); setReplyError('') }}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && replyText.trim() && !replyMutation.isPending) {
+                      replyMutation.mutate({ id: selectedMsg!.campaign_lead_id, msg: replyText.trim() })
+                    }
+                  }}
+                  placeholder="Type a reply… (⌘+Enter to send)"
+                  rows={3}
+                  className="flex-1 px-3 py-2 text-sm border border-gray-200 rounded-xl resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                <button
+                  onClick={() => {
+                    if (replyText.trim() && selectedMsg && !replyMutation.isPending) {
+                      replyMutation.mutate({ id: selectedMsg.campaign_lead_id, msg: replyText.trim() })
+                    }
+                  }}
+                  disabled={!replyText.trim() || replyMutation.isPending}
+                  className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-xl hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shrink-0"
+                >
+                  {replyMutation.isPending ? (
+                    <span className="flex items-center gap-1.5">
+                      <svg className="animate-spin w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
+                        <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeOpacity="0.3"/>
+                        <path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" strokeWidth="3" strokeLinecap="round"/>
+                      </svg>
+                      Sending…
+                    </span>
+                  ) : 'Send'}
+                </button>
+              </div>
             </div>
           </>
         )}

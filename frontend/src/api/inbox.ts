@@ -63,3 +63,18 @@ export async function updateClassification(
   })
   if (!res.ok) throw new Error('Failed to update classification')
 }
+
+export async function replyToConversation(
+  campaignLeadId: string,
+  message: string
+): Promise<void> {
+  const res = await apiFetch(`/api/inbox/${campaignLeadId}/reply`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message }),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({})) as { error?: string }
+    throw new Error(body.error ?? 'Failed to send message')
+  }
+}

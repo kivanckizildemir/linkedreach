@@ -3,6 +3,8 @@ import type { Request, Response } from 'express'
 import { supabase } from '../lib/supabase'
 import { requireAuth } from '../middleware/auth'
 import type { ReplyClassification } from '../types'
+import { createSession, closeSession, persistCookies } from '../linkedin/session'
+import { sendMessage } from '../linkedin/actions'
 
 export const inboxRouter = Router()
 
@@ -137,4 +139,83 @@ inboxRouter.patch('/:campaignLeadId', async (req: Request, res: Response) => {
   }
 
   res.json({ data })
+})
+
+// POST /api/inbox/:campaignLeadId/reply — send a message via LinkedIn Playwright
+inboxRouter.post('/:campaignLeadId/reply', async (req: Request, res: Response) => {
+  const { message } = req.body as { message?: string }
+
+  if (!message?.trim()) {
+    res.status(400).json({ error: 'message is required' })
+    return
+  }
+
+  // Verify ownership and get details
+  const { data: cl, error: clErr } = await supabase
+    .from('campaign_leads')
+    .select(`
+      id,
+      account_id,
+      lead:leads (linkedin_url),
+      campaign:campaigns (user_id)
+    `)
+    .eq('id', req.params.campaignLeadId)
+    .single()
+
+  if (clErr || !cl) {
+    res.status(404).json({ error: 'Conversation not found' })
+    return
+  }
+
+  const campaignUserId = (cl.campaign as { user_id?: string } | null)?.user_id
+  if (campaignUserId !== req.user.id) {
+    res.status(403).json({ error: 'Forbidden' })
+    return
+  }
+
+  const accountId = cl.account_id as string
+  const linkedinUrl = (cl.lead as { linkedin_url?: string } | null)?.linkedin_url
+  if (!linkedinUrl) {
+    res.status(400).json({ error: 'Lead has no LinkedIn URL' })
+    return
+  }
+
+  // Get account record
+  const { data: account, error: accErr } = await supabase
+    .from('linkedin_accounts')
+    .select('*')
+    .eq('id', accountId)
+    .single()
+
+  if (accErr || !account) {
+    res.status(404).json({ error: 'LinkedIn account not found' })
+    return
+  }
+
+  let browser: import('playwright').Browser | undefined
+
+  try {
+    const { browser: br, context, page } = await createSession(
+      account as { id: string; cookies: string; proxy_id: string | null; status: string }
+    )
+    browser = br
+
+    await sendMessage(page, linkedinUrl, accountId, message.trim())
+
+    // Save sent message to DB
+    await supabase.from('messages').insert({
+      campaign_lead_id: req.params.campaignLeadId,
+      direction: 'sent',
+      content: message.trim(),
+      sent_at: new Date().toISOString(),
+    })
+
+    await persistCookies(context, accountId)
+    await closeSession(browser)
+
+    res.json({ status: 'sent' })
+  } catch (err) {
+    await browser?.close().catch(() => {})
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to send message' })
+  }
 })
