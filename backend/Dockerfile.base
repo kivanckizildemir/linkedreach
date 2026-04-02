@@ -1,0 +1,15 @@
+# Base image: node:20-slim + Chromium + all system dependencies.
+# Built once via GitHub Actions and pushed to GHCR.
+# The main Dockerfile FROM's this — no browser download on every deploy.
+FROM node:20-slim
+
+# Install Chromium and all of its system dependencies via Playwright.
+# This is the slow/flaky step that we want to run only when Playwright
+# version changes, not on every app code change.
+COPY package*.json /tmp/playwright-install/
+RUN cd /tmp/playwright-install && npm ci && \
+    npx playwright install chromium --with-deps && \
+    rm -rf /tmp/playwright-install
+
+# Pre-set the browsers path so the app process finds Chromium
+ENV PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright
