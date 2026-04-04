@@ -272,6 +272,23 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     await page.goto('https://www.linkedin.com/login', { waitUntil: 'domcontentloaded', timeout: 30_000 })
     await DELAY(1000 + Math.random() * 500)
 
+    // Dismiss GDPR / cookie consent banners (UK/EU residential IPs trigger these)
+    for (const selector of [
+      'button[action-type="ACCEPT"]',
+      'button[data-tracking-control-name="cookie_policy_banner_accept"]',
+      '#artdeco-global-alert-action--accept',
+      'button.artdeco-global-alert__action',
+    ]) {
+      const btn = await page.$(selector)
+      if (btn) { await btn.click(); await DELAY(800); break }
+    }
+
+    // If redirected away from login (e.g. already-logged-in BrightData session), navigate back
+    if (!page.url().includes('/login')) {
+      await page.goto('https://www.linkedin.com/login', { waitUntil: 'domcontentloaded', timeout: 30_000 })
+      await DELAY(1000)
+    }
+
     // Fill credentials
     await page.fill('#username', email)
     await DELAY(300 + Math.random() * 300)
