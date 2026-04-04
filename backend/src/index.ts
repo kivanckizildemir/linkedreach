@@ -51,16 +51,19 @@ app.get('/api/proxy-diag/:accountId', async (req, res) => {
   })
 })
 
-// Unauthenticated — returns snapshot captured during login attempt
-// GET /api/login-debug                    → in-memory snapshot (JSON)
-// GET /api/login-debug?img=1              → PNG screenshot (if captured)
-// GET /api/login-debug/:accountId         → read debug_log from Supabase (cross-instance)
-// GET /api/login-debug/:accountId?img=1   → PNG from Supabase record
-app.get('/api/login-debug/:accountId?', async (req, res) => {
-  const { supabase: sb } = await import('./lib/supabase')
-  const accountId = (req.params as Record<string, string | undefined>).accountId
+// Unauthenticated login debug snapshot endpoints
+// GET /api/login-debug               → in-memory snapshot (JSON) or { message }
+// GET /api/login-debug?img=1         → PNG from in-memory snapshot
+// GET /api/login-debug/:accountId    → read debug_log from Supabase (cross-instance safe)
+// GET /api/login-debug/:accountId?img=1 → PNG from Supabase record
 
-  // Try Supabase first if accountId provided
+async function serveLoginDebug(
+  accountId: string | undefined,
+  img: boolean,
+  res: import('express').Response
+) {
+  const { supabase: sb } = await import('./lib/supabase')
+
   if (accountId) {
     const { data } = await sb
       .from('linkedin_accounts')
@@ -69,7 +72,7 @@ app.get('/api/login-debug/:accountId?', async (req, res) => {
       .single()
     const snap = (data as { debug_log?: Record<string, unknown> } | null)?.debug_log
     if (snap) {
-      if (req.query.img === '1' && snap.screenshot) {
+      if (img && snap.screenshot) {
         const buf = Buffer.from(snap.screenshot as string, 'base64')
         res.setHeader('Content-Type', 'image/png')
         res.send(buf)
@@ -81,13 +84,12 @@ app.get('/api/login-debug/:accountId?', async (req, res) => {
     }
   }
 
-  // Fallback: in-memory (same instance only)
   const snap = getLastErrorSnapshot()
   if (!snap) {
     res.json({ message: 'No snapshot stored yet. Try connecting an account first.' })
     return
   }
-  if (req.query.img === '1' && snap.screenshot) {
+  if (img && snap.screenshot) {
     const buf = Buffer.from(snap.screenshot, 'base64')
     res.setHeader('Content-Type', 'image/png')
     res.send(buf)
@@ -95,6 +97,14 @@ app.get('/api/login-debug/:accountId?', async (req, res) => {
   }
   const { screenshot, ...rest } = snap
   res.json({ ...rest, hasScreenshot: !!screenshot, source: 'memory' })
+}
+
+app.get('/api/login-debug', (req, res) => {
+  void serveLoginDebug(undefined, req.query.img === '1', res)
+})
+
+app.get('/api/login-debug/:accountId', (req, res) => {
+  void serveLoginDebug(req.params.accountId, req.query.img === '1', res)
 })
 app.delete('/api/login-debug', (_req, res) => {
   clearLastErrorSnapshot()
