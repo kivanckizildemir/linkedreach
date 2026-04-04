@@ -277,8 +277,9 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     session.context = context
     session.page    = page
 
-    // Navigate to login
-    await page.goto('https://www.linkedin.com/login', { waitUntil: 'domcontentloaded', timeout: 30_000 })
+    // Navigate to login — force English locale to bypass language selection pages
+    // on country-specific subdomains (e.g. pe.linkedin.com from Peruvian residential IPs)
+    await page.goto('https://www.linkedin.com/login?_l=en_US', { waitUntil: 'domcontentloaded', timeout: 30_000 })
     await DELAY(1000 + Math.random() * 500)
 
     // ── Snapshot immediately after first navigation ───────────────────────────
@@ -328,10 +329,38 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       if (btn) { await btn.click(); await DELAY(800); break }
     }
 
+    // Handle language selection page (shown on country-specific subdomains like pe.linkedin.com)
+    // LinkedIn shows this when the IP country doesn't match the browser locale.
+    // Look for an English link and click it, then re-navigate to the login page.
+    const langPageText = await page.evaluate(() => document.body?.innerText ?? '').catch(() => '')
+    const hasLangSelector = langPageText.includes('English (English)') || langPageText.includes('選擇語言') || langPageText.includes('Chọn ngôn ngữ')
+    if (hasLangSelector) {
+      console.log('[LOGIN DEBUG] Language selection page detected — clicking English')
+      // Try to find and click the English option
+      const englishLink = await page.$('a[href*="_l=en_US"], a[href*="lang=en"]')
+        ?? await page.evaluate(() => {
+          const links = Array.from(document.querySelectorAll('a'))
+          return links.find(a => a.textContent?.includes('English (English)')) ? true : null
+        }).then(async (found) => {
+          if (!found) return null
+          // Click via evaluate since we can't return element handles from evaluate
+          await page.evaluate(() => {
+            const links = Array.from(document.querySelectorAll('a'))
+            const link = links.find(a => a.textContent?.includes('English (English)'))
+            if (link) (link as HTMLElement).click()
+          })
+          return true
+        })
+      if (englishLink) await DELAY(1500)
+      // Navigate directly to English login regardless
+      await page.goto('https://www.linkedin.com/login?_l=en_US', { waitUntil: 'domcontentloaded', timeout: 30_000 })
+      await DELAY(1000)
+    }
+
     // If redirected away from login (e.g. already-logged-in BrightData session), navigate back
     if (!page.url().includes('/login')) {
       console.log(`[LOGIN DEBUG] redirected to ${page.url()} — navigating back to /login`)
-      await page.goto('https://www.linkedin.com/login', { waitUntil: 'domcontentloaded', timeout: 30_000 })
+      await page.goto('https://www.linkedin.com/login?_l=en_US', { waitUntil: 'domcontentloaded', timeout: 30_000 })
       await DELAY(1000)
     }
 
