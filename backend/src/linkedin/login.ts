@@ -503,6 +503,10 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       }
     }).catch(() => ({ emailValue: 'eval-failed', emailId: '?', passwordLen: -1, passwordId: '?' }))
     console.log('[LOGIN DEBUG] field-values before submit:', JSON.stringify(fieldValues))
+    // Also persist field values to Supabase for remote debugging
+    await supabase.from('linkedin_accounts').update({
+      debug_log: { ...fieldValues, capturedAt: new Date().toISOString(), label: 'pre-submit-field-values' }
+    }).eq('id', session.accountId)
 
     // Submit via JS click on the submit button (BrightData-safe — no keyboard event needed)
     await jsClick('button[type="submit"], button[data-litms-control-urn="login-submit"], .btn__primary--large')
@@ -510,6 +514,8 @@ async function runLogin(key: string, email: string, password: string): Promise<v
 
     await page.waitForLoadState('domcontentloaded', { timeout: 15_000 })
     await DELAY(2000)
+
+    await captureSnap('post-submit')
 
     // Wrong credentials?
     const errorEl = await page.$('.alert-content, #error-for-password, .form__label--error')
