@@ -279,9 +279,10 @@ async function runLogin(key: string, email: string, password: string): Promise<v
 
     // Navigate to login — force English locale to bypass language selection pages
     // on country-specific subdomains (e.g. pe.linkedin.com from Peruvian residential IPs).
-    // Use networkidle so the React SPA has time to hydrate and render form inputs.
-    await page.goto('https://www.linkedin.com/login?_l=en_US', { waitUntil: 'networkidle', timeout: 45_000 })
-    await DELAY(1500 + Math.random() * 500)
+    // Use load (all resources) so the React SPA has time to hydrate and render form inputs.
+    // networkidle can time out on BrightData (ongoing background requests never stop).
+    await page.goto('https://www.linkedin.com/login?_l=en_US', { waitUntil: 'load', timeout: 45_000 })
+    await DELAY(2000 + Math.random() * 500)
 
     // ── Snapshot immediately after first navigation ───────────────────────────
     // Writes to Supabase so it survives across Railway instances and restarts.
@@ -364,15 +365,15 @@ async function runLogin(key: string, email: string, password: string): Promise<v
         })
       if (englishLink) await DELAY(1500)
       // Navigate directly to English login regardless
-      await page.goto('https://www.linkedin.com/login?_l=en_US', { waitUntil: 'networkidle', timeout: 45_000 })
-      await DELAY(1500)
+      await page.goto('https://www.linkedin.com/login?_l=en_US', { waitUntil: 'load', timeout: 45_000 })
+      await DELAY(2000)
     }
 
     // If redirected away from login (e.g. already-logged-in BrightData session), navigate back
     if (!page.url().includes('/login')) {
       console.log(`[LOGIN DEBUG] redirected to ${page.url()} — navigating back to /login`)
-      await page.goto('https://www.linkedin.com/login?_l=en_US', { waitUntil: 'networkidle', timeout: 45_000 })
-      await DELAY(1500)
+      await page.goto('https://www.linkedin.com/login?_l=en_US', { waitUntil: 'load', timeout: 45_000 })
+      await DELAY(2000)
     }
 
     await captureSnap('pre-fill')
@@ -439,15 +440,35 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     // Re-dismiss any banners that may have appeared after username interaction
     await dismissBanners()
 
-    // Tab to password field and type via keyboard (BrightData-safe)
-    await page.keyboard.press('Tab')
+    // Focus the password field using JS click — avoids keyboard Tab focus event
+    // which BrightData intercepts. BrightData blocks keyboard events on password
+    // fields (Forbidden action: password typing is not allowed) so we must:
+    //   1. Use jsClick to focus (not Tab) to avoid the CDP focus interception
+    //   2. Use page.keyboard.type() for the actual password characters
+    //   3. Move focus back to a non-password field before submitting
+    const PASSWORD_SELECTORS = [
+      '#password',
+      'input[name="session_password"]',
+      'input[type="password"]',
+      'input[autocomplete="current-password"]',
+    ]
+
+    let passwordSelector = 'input[type="password"]'
+    for (const sel of PASSWORD_SELECTORS) {
+      try {
+        const el = await page.$(sel)
+        if (el) { passwordSelector = sel; break }
+      } catch { /* try next */ }
+    }
+
+    await jsClick(passwordSelector)
     await DELAY(300)
     await page.keyboard.type(password, { delay: 40 })
     await DELAY(300 + Math.random() * 300)
 
     // Move focus away from password field before submitting — BrightData blocks
     // keyboard.press() (including Enter) when a password input is focused.
-    // Click the email field first to shift focus, then click the submit button.
+    // Click the email field to shift focus away, then click the submit button.
     await jsClick(emailSelector)
     await DELAY(200)
 
