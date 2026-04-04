@@ -419,8 +419,15 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     await page.keyboard.type(password, { delay: 40 })
     await DELAY(300 + Math.random() * 300)
 
-    // Submit via Enter key — no pointer events needed
-    await page.keyboard.press('Enter')
+    // Move focus away from password field before submitting — BrightData blocks
+    // keyboard.press() (including Enter) when a password input is focused.
+    // Click the username field first to shift focus, then click the submit button.
+    await jsClick('#username')
+    await DELAY(200)
+
+    // Submit via JS click on the submit button (BrightData-safe — no keyboard event needed)
+    await jsClick('button[type="submit"], button[data-litms-control-urn="login-submit"], .btn__primary--large')
+    await DELAY(300)
 
     await page.waitForLoadState('domcontentloaded', { timeout: 15_000 })
     await DELAY(2000)
