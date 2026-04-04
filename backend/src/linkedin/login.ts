@@ -392,22 +392,40 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       }
     }
 
-    // Fill username — force:true bypasses any overlay blocking interaction
+    // Native JS setter — sets input value and fires React-compatible events,
+    // bypassing Playwright actionability checks entirely.
+    const jsSetInput = async (selector: string, value: string) => {
+      await page.evaluate(([sel, val]) => {
+        const el = document.querySelector(sel) as HTMLInputElement | null
+        if (!el) throw new Error(`${sel} not found in DOM`)
+        // Use native setter so React's synthetic event system picks it up
+        const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+        if (nativeSetter) nativeSetter.call(el, val)
+        else el.value = val
+        el.dispatchEvent(new Event('input',  { bubbles: true }))
+        el.dispatchEvent(new Event('change', { bubbles: true }))
+        el.dispatchEvent(new Event('blur',   { bubbles: true }))
+      }, [selector, value])
+    }
+
+    // Fill username
     await page.click('#username', { force: true }).catch(() => {})
     await DELAY(200)
-    await page.fill('#username', email, { force: true })
+    await jsSetInput('#username', email)
     await DELAY(500 + Math.random() * 300)
 
     // Re-dismiss any banners that may have appeared after username interaction
     await dismissBanners()
 
-    // Fill password — force:true bypasses visibility/actionability checks (overlay-safe)
+    // Fill password
     await page.waitForSelector('#password', { timeout: 10_000 })
     await page.click('#password', { force: true }).catch(() => {})
     await DELAY(300)
-    await page.fill('#password', password, { force: true })
+    await jsSetInput('#password', password)
     await DELAY(300 + Math.random() * 300)
-    await page.click('button[type="submit"]')
+
+    // Submit
+    await page.click('button[type="submit"]', { force: true })
 
     await page.waitForLoadState('domcontentloaded', { timeout: 15_000 })
     await DELAY(2000)
