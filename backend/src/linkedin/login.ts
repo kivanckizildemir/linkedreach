@@ -318,15 +318,25 @@ async function runLogin(key: string, email: string, password: string): Promise<v
 
     await captureSnap('after-goto')
 
-    // Dismiss GDPR / cookie consent banners (UK/EU residential IPs trigger these)
+    // JS-based click helper — bypasses header/overlay pointer-event interception
+    const jsClick = async (selector: string) => {
+      await page.evaluate((sel) => {
+        const el = document.querySelector(sel) as HTMLElement | null
+        if (el) el.click()
+      }, selector)
+    }
+
+    // Dismiss GDPR / cookie consent banners using JS click (no pointer-event issues)
     for (const selector of [
       'button[action-type="ACCEPT"]',
       'button[data-tracking-control-name="cookie_policy_banner_accept"]',
       '#artdeco-global-alert-action--accept',
       'button.artdeco-global-alert__action',
     ]) {
-      const btn = await page.$(selector)
-      if (btn) { await btn.click(); await DELAY(800); break }
+      try {
+        const exists = await page.$(selector)
+        if (exists) { await jsClick(selector); await DELAY(800); break }
+      } catch { /* ok */ }
     }
 
     // Handle language selection page (shown on country-specific subdomains like pe.linkedin.com)
@@ -376,7 +386,7 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       throw new Error(`#username not found. URL: ${url} | Title: ${title} | Text: ${visible}`)
     })
 
-    // Helper: dismiss any consent/overlay banners that block field interaction
+    // Helper: dismiss any consent/overlay banners using JS click (no pointer-event issues)
     const dismissBanners = async () => {
       for (const selector of [
         'button[action-type="ACCEPT"]',
@@ -386,8 +396,8 @@ async function runLogin(key: string, email: string, password: string): Promise<v
         'button[data-test-modal-close-btn]',
       ]) {
         try {
-          const btn = await page.$(selector)
-          if (btn) { await btn.click(); await DELAY(500) }
+          const exists = await page.$(selector)
+          if (exists) { await jsClick(selector); await DELAY(500) }
         } catch { /* ok */ }
       }
     }
@@ -424,8 +434,8 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     await jsSetInput('#password', password)
     await DELAY(300 + Math.random() * 300)
 
-    // Submit
-    await page.click('button[type="submit"]', { force: true })
+    // Submit — use JS click to bypass header pointer-event interception
+    await jsClick('button[type="submit"]')
 
     await page.waitForLoadState('domcontentloaded', { timeout: 15_000 })
     await DELAY(2000)
