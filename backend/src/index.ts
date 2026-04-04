@@ -58,13 +58,14 @@ app.get('/api/proxy-diag/:accountId', async (req, res) => {
 // GET /api/login-debug/:accountId?img=1   → PNG from Supabase record
 app.get('/api/login-debug/:accountId?', async (req, res) => {
   const { supabase: sb } = await import('./lib/supabase')
+  const accountId = (req.params as Record<string, string | undefined>).accountId
 
   // Try Supabase first if accountId provided
-  if (req.params.accountId) {
+  if (accountId) {
     const { data } = await sb
       .from('linkedin_accounts')
       .select('debug_log')
-      .eq('id', req.params.accountId)
+      .eq('id', accountId)
       .single()
     const snap = (data as { debug_log?: Record<string, unknown> } | null)?.debug_log
     if (snap) {
