@@ -36,15 +36,18 @@ chromium.use(StealthPlugin())
 type SessionStatus = 'starting' | 'pending_push' | 'needs_verification' | 'success' | 'error'
 
 interface LoginSession {
-  browser?:    Browser
-  context?:    BrowserContext
-  page?:       Page
-  accountId:   string
-  createdAt:   number
-  status:      SessionStatus
-  hint:        string
-  error?:      string
-  totpSecret?: string
+  browser?:        Browser
+  context?:        BrowserContext
+  page?:           Page
+  accountId:       string
+  createdAt:       number
+  status:          SessionStatus
+  hint:            string
+  error?:          string
+  totpSecret?:     string
+  debugScreenshot?: string   // base64 PNG captured just before login form interaction
+  debugPageText?:  string    // visible text at time of capture
+  debugUrl?:       string    // URL at time of capture
 }
 
 const sessions = new Map<string, LoginSession>()
@@ -288,6 +291,31 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       await page.goto('https://www.linkedin.com/login', { waitUntil: 'domcontentloaded', timeout: 30_000 })
       await DELAY(1000)
     }
+
+    // ── Debug snapshot before filling credentials ─────────────────────────────
+    // Capture screenshot + page info so if #username is missing we know why
+    try {
+      const buf = await page.screenshot({ type: 'png', fullPage: false })
+      session.debugScreenshot = buf.toString('base64')
+      session.debugUrl        = page.url()
+      session.debugPageText   = await page.evaluate(() =>
+        (document.body?.innerText ?? '').substring(0, 1500)
+      )
+    } catch { /* non-fatal */ }
+
+    // Wait explicitly for the username field (gives a cleaner error + we already have a screenshot)
+    await page.waitForSelector('#username', { timeout: 20_000 }).catch(async (err) => {
+      // Grab a fresh screenshot after the timeout too (page may have changed)
+      try {
+        const buf2 = await page.screenshot({ type: 'png', fullPage: false })
+        session.debugScreenshot = buf2.toString('base64')
+        session.debugUrl        = page.url()
+        session.debugPageText   = await page.evaluate(() =>
+          (document.body?.innerText ?? '').substring(0, 1500)
+        )
+      } catch { /* ok */ }
+      throw err  // re-throw so the outer catch records it
+    })
 
     // Fill credentials
     await page.fill('#username', email)
@@ -552,6 +580,25 @@ export async function interactWithPage(
     return { ok: true }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : 'Unknown error' }
+  }
+}
+
+/**
+ * Returns the pre-error debug snapshot stored in the session
+ * (captured just before #username fill was attempted).
+ * Works even after the browser has been closed.
+ */
+export function getSessionDebugSnapshot(sessionKey: string): {
+  screenshot?: string
+  url?: string
+  text?: string
+} | null {
+  const session = sessions.get(sessionKey)
+  if (!session) return null
+  return {
+    screenshot: session.debugScreenshot,
+    url:        session.debugUrl,
+    text:       session.debugPageText,
   }
 }
 

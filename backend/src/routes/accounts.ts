@@ -3,7 +3,7 @@ import type { Request, Response } from 'express'
 import { supabase } from '../lib/supabase'
 import { requireAuth } from '../middleware/auth'
 import type { AccountStatus } from '../types'
-import { startLogin, submitVerificationCode, getLoginStatus, getSessionScreenshot, getSessionPageInfo, interactWithPage, testProxyRaw } from '../linkedin/login'
+import { startLogin, submitVerificationCode, getLoginStatus, getSessionScreenshot, getSessionPageInfo, getSessionDebugSnapshot, interactWithPage, testProxyRaw } from '../linkedin/login'
 // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-explicit-any
 const { chromium } = require('playwright-extra') as any
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -166,13 +166,28 @@ accountsRouter.get('/:id/connect-debug/:sessionKey', async (req: Request, res: R
   res.json(info)
 })
 
-// GET /api/accounts/:id/connect-screenshot/:sessionKey — screenshot for debugging
+// GET /api/accounts/:id/connect-screenshot/:sessionKey — live screenshot for debugging
 accountsRouter.get('/:id/connect-screenshot/:sessionKey', async (req: Request, res: Response) => {
   const png = await getSessionScreenshot(String(req.params.sessionKey))
   if (!png) { res.status(404).json({ error: 'Session not found or no page' }); return }
   const buf = Buffer.from(png, 'base64')
   res.setHeader('Content-Type', 'image/png')
   res.send(buf)
+})
+
+// GET /api/accounts/:id/connect-error-snapshot/:sessionKey
+//   Returns the screenshot + page text captured just before the #username fill attempt.
+//   Works after the browser has closed (data stored in session object).
+accountsRouter.get('/:id/connect-error-snapshot/:sessionKey', (req: Request, res: Response) => {
+  const snap = getSessionDebugSnapshot(String(req.params.sessionKey))
+  if (!snap) { res.status(404).json({ error: 'Session not found or no snapshot' }); return }
+  if (req.query.format === 'png' && snap.screenshot) {
+    const buf = Buffer.from(snap.screenshot, 'base64')
+    res.setHeader('Content-Type', 'image/png')
+    res.send(buf)
+    return
+  }
+  res.json(snap)
 })
 
 // POST /api/accounts/:id/connect-interact/:sessionKey — relay click/type/key to live browser
