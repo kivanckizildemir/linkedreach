@@ -278,9 +278,10 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     session.page    = page
 
     // Navigate to login — force English locale to bypass language selection pages
-    // on country-specific subdomains (e.g. pe.linkedin.com from Peruvian residential IPs)
-    await page.goto('https://www.linkedin.com/login?_l=en_US', { waitUntil: 'domcontentloaded', timeout: 30_000 })
-    await DELAY(1000 + Math.random() * 500)
+    // on country-specific subdomains (e.g. pe.linkedin.com from Peruvian residential IPs).
+    // Use networkidle so the React SPA has time to hydrate and render form inputs.
+    await page.goto('https://www.linkedin.com/login?_l=en_US', { waitUntil: 'networkidle', timeout: 45_000 })
+    await DELAY(1500 + Math.random() * 500)
 
     // ── Snapshot immediately after first navigation ───────────────────────────
     // Writes to Supabase so it survives across Railway instances and restarts.
@@ -291,7 +292,7 @@ async function runLogin(key: string, email: string, password: string): Promise<v
         let text = '(evaluate failed)'
         let html = '(evaluate failed)'
         try { text = await page.evaluate(() => (document.body?.innerText ?? '').substring(0, 2000)) } catch { /* ok */ }
-        try { html = await page.evaluate(() => document.documentElement.outerHTML.substring(0, 4000)) } catch { /* ok */ }
+        try { html = await page.evaluate(() => document.documentElement.outerHTML.substring(0, 10000)) } catch { /* ok */ }
 
         let screenshot: string | undefined
         try {
@@ -363,28 +364,53 @@ async function runLogin(key: string, email: string, password: string): Promise<v
         })
       if (englishLink) await DELAY(1500)
       // Navigate directly to English login regardless
-      await page.goto('https://www.linkedin.com/login?_l=en_US', { waitUntil: 'domcontentloaded', timeout: 30_000 })
-      await DELAY(1000)
+      await page.goto('https://www.linkedin.com/login?_l=en_US', { waitUntil: 'networkidle', timeout: 45_000 })
+      await DELAY(1500)
     }
 
     // If redirected away from login (e.g. already-logged-in BrightData session), navigate back
     if (!page.url().includes('/login')) {
       console.log(`[LOGIN DEBUG] redirected to ${page.url()} — navigating back to /login`)
-      await page.goto('https://www.linkedin.com/login?_l=en_US', { waitUntil: 'domcontentloaded', timeout: 30_000 })
-      await DELAY(1000)
+      await page.goto('https://www.linkedin.com/login?_l=en_US', { waitUntil: 'networkidle', timeout: 45_000 })
+      await DELAY(1500)
     }
 
     await captureSnap('pre-fill')
 
-    // Wait explicitly for the username field — include page info in error so UI shows it
-    await page.waitForSelector('#username', { timeout: 20_000 }).catch(async () => {
+    // LinkedIn's login form selector — try the classic #username first, then broader fallbacks.
+    // The SPA may render inputs without IDs on some regions/A-B tests.
+    const EMAIL_SELECTORS = [
+      '#username',
+      'input[name="session_key"]',
+      'input[autocomplete="username"]',
+      'input[type="email"]',
+      'input[name="email"]',
+      'input[id*="email"]',
+      'input[placeholder*="Email"], input[placeholder*="email"]',
+      'form input[type="text"]:first-of-type',
+    ]
+
+    let emailSelector = '#username'
+    let foundEmailInput = false
+    for (const sel of EMAIL_SELECTORS) {
+      try {
+        const el = await page.waitForSelector(sel, { timeout: sel === EMAIL_SELECTORS[0] ? 15_000 : 2_000 })
+        if (el) { emailSelector = sel; foundEmailInput = true; break }
+      } catch { /* try next */ }
+    }
+
+    if (!foundEmailInput) {
       await captureSnap('waitForSelector-timeout')
       const url   = page.url()
       const title = await page.title().catch(() => '?')
       let visible = ''
+      let allInputs = ''
       try { visible = await page.evaluate(() => (document.body?.innerText ?? '').substring(0, 300).replace(/\s+/g, ' ')) } catch { /* ok */ }
-      throw new Error(`#username not found. URL: ${url} | Title: ${title} | Text: ${visible}`)
-    })
+      try { allInputs = await page.evaluate(() => Array.from(document.querySelectorAll('input')).map((el: Element) => { const i = el as HTMLInputElement; return `${i.tagName}[id=${i.id}][name=${i.name}][type=${i.type}]` }).join(', ')) } catch { /* ok */ }
+      throw new Error(`Login form inputs not found. URL: ${url} | Title: ${title} | Inputs: ${allInputs} | Text: ${visible}`)
+    }
+
+    console.log(`[LOGIN DEBUG] Using email selector: ${emailSelector}`)
 
     // Helper: dismiss any consent/overlay banners using JS click (no pointer-event issues)
     const dismissBanners = async () => {
@@ -402,10 +428,10 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       }
     }
 
-    // Focus the username field using JS click (avoids pointer-event interception),
+    // Focus the email field using JS click (avoids pointer-event interception),
     // then type using real keyboard events — works with BrightData's security rules
     // (BrightData blocks JS-based password value setting but allows keyboard input).
-    await jsClick('#username')
+    await jsClick(emailSelector)
     await DELAY(300)
     await page.keyboard.type(email, { delay: 40 })
     await DELAY(500 + Math.random() * 300)
@@ -421,8 +447,8 @@ async function runLogin(key: string, email: string, password: string): Promise<v
 
     // Move focus away from password field before submitting — BrightData blocks
     // keyboard.press() (including Enter) when a password input is focused.
-    // Click the username field first to shift focus, then click the submit button.
-    await jsClick('#username')
+    // Click the email field first to shift focus, then click the submit button.
+    await jsClick(emailSelector)
     await DELAY(200)
 
     // Submit via JS click on the submit button (BrightData-safe — no keyboard event needed)
