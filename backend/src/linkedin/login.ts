@@ -376,9 +376,35 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       throw new Error(`#username not found. URL: ${url} | Title: ${title} | Text: ${visible}`)
     })
 
-    // Fill credentials
+    // Helper: dismiss any consent/overlay banners that block field interaction
+    const dismissBanners = async () => {
+      for (const selector of [
+        'button[action-type="ACCEPT"]',
+        'button[data-tracking-control-name="cookie_policy_banner_accept"]',
+        '#artdeco-global-alert-action--accept',
+        'button.artdeco-global-alert__action',
+        'button[data-test-modal-close-btn]',
+      ]) {
+        try {
+          const btn = await page.$(selector)
+          if (btn) { await btn.click(); await DELAY(500) }
+        } catch { /* ok */ }
+      }
+    }
+
+    // Fill username — click first to ensure focus, then type
+    await page.click('#username').catch(() => {})
+    await DELAY(200)
     await page.fill('#username', email)
-    await DELAY(300 + Math.random() * 300)
+    await DELAY(500 + Math.random() * 300)
+
+    // Re-dismiss any banners that may have appeared after username interaction
+    await dismissBanners()
+
+    // Fill password — use click+type to bypass interactability edge cases
+    await page.waitForSelector('#password', { timeout: 10_000 })
+    await page.click('#password').catch(() => {})
+    await DELAY(300)
     await page.fill('#password', password)
     await DELAY(300 + Math.random() * 300)
     await page.click('button[type="submit"]')
