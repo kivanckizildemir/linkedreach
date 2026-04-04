@@ -51,20 +51,49 @@ app.get('/api/proxy-diag/:accountId', async (req, res) => {
   })
 })
 
-// Unauthenticated — returns screenshot captured just before #username fill attempt
-// GET /api/login-debug          → JSON { url, text, hasScreenshot }
-// GET /api/login-debug?img=1    → PNG image (the actual screenshot)
-// DELETE /api/login-debug       → clear stored snapshot
-app.get('/api/login-debug', (req, res) => {
+// Unauthenticated — returns snapshot captured during login attempt
+// GET /api/login-debug                    → in-memory snapshot (JSON)
+// GET /api/login-debug?img=1              → PNG screenshot (if captured)
+// GET /api/login-debug/:accountId         → read debug_log from Supabase (cross-instance)
+// GET /api/login-debug/:accountId?img=1   → PNG from Supabase record
+app.get('/api/login-debug/:accountId?', async (req, res) => {
+  const { supabase: sb } = await import('./lib/supabase')
+
+  // Try Supabase first if accountId provided
+  if (req.params.accountId) {
+    const { data } = await sb
+      .from('linkedin_accounts')
+      .select('debug_log')
+      .eq('id', req.params.accountId)
+      .single()
+    const snap = (data as { debug_log?: Record<string, unknown> } | null)?.debug_log
+    if (snap) {
+      if (req.query.img === '1' && snap.screenshot) {
+        const buf = Buffer.from(snap.screenshot as string, 'base64')
+        res.setHeader('Content-Type', 'image/png')
+        res.send(buf)
+        return
+      }
+      const { screenshot, ...rest } = snap
+      res.json({ ...rest, hasScreenshot: !!screenshot, source: 'supabase' })
+      return
+    }
+  }
+
+  // Fallback: in-memory (same instance only)
   const snap = getLastErrorSnapshot()
-  if (!snap) { res.json({ message: 'No snapshot stored yet. Try connecting an account first.' }); return }
+  if (!snap) {
+    res.json({ message: 'No snapshot stored yet. Try connecting an account first.' })
+    return
+  }
   if (req.query.img === '1' && snap.screenshot) {
     const buf = Buffer.from(snap.screenshot, 'base64')
     res.setHeader('Content-Type', 'image/png')
     res.send(buf)
     return
   }
-  res.json({ url: snap.url, text: snap.text, html: snap.html, hasScreenshot: !!snap.screenshot, capturedAt: snap.capturedAt })
+  const { screenshot, ...rest } = snap
+  res.json({ ...rest, hasScreenshot: !!screenshot, source: 'memory' })
 })
 app.delete('/api/login-debug', (_req, res) => {
   clearLastErrorSnapshot()

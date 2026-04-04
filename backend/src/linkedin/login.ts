@@ -282,26 +282,36 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     await DELAY(1000 + Math.random() * 500)
 
     // ── Snapshot immediately after first navigation ───────────────────────────
-    // Captured before any consent logic so we always know where we landed.
-    // Uses page.evaluate (text-only) — avoids CDP screenshot issues on BrightData.
+    // Writes to Supabase so it survives across Railway instances and restarts.
     const captureSnap = async (label: string) => {
+      const url = page.url()
+      console.log(`[LOGIN DEBUG ${label}] url=${url}`)
       try {
-        const url  = page.url()
-        const text = await page.evaluate(() => (document.body?.innerText ?? '').substring(0, 2000))
-        const html = await page.evaluate(() => document.documentElement.outerHTML.substring(0, 3000))
-        const snap = { url, text, html, screenshot: undefined as string | undefined, capturedAt: new Date().toISOString() }
-        // Try screenshot — may not be supported by all BrightData zones
+        let text = '(evaluate failed)'
+        let html = '(evaluate failed)'
+        try { text = await page.evaluate(() => (document.body?.innerText ?? '').substring(0, 2000)) } catch { /* ok */ }
+        try { html = await page.evaluate(() => document.documentElement.outerHTML.substring(0, 4000)) } catch { /* ok */ }
+
+        let screenshot: string | undefined
         try {
           const buf = await page.screenshot({ type: 'png', fullPage: false })
-          snap.screenshot = buf.toString('base64')
-        } catch { /* CDP screenshot unsupported — text/html still captured */ }
-        session.debugScreenshot = snap.screenshot
-        session.debugUrl        = snap.url
-        session.debugPageText   = snap.text
-        lastErrorSnapshot       = snap
-        console.log(`[LOGIN DEBUG ${label}] url=${url} text_len=${text.length} has_username=${text.includes('email') || html.includes('id="username"')}`)
+          screenshot = buf.toString('base64')
+        } catch { /* BrightData may not support CDP screenshots */ }
+
+        const snap = { url, text, html, screenshot, capturedAt: new Date().toISOString(), label }
+        lastErrorSnapshot = snap
+        session.debugUrl        = url
+        session.debugPageText   = text
+        session.debugScreenshot = screenshot
+
+        console.log(`[LOGIN DEBUG ${label}] text_len=${text.length} has_username_id=${html.includes('id="username"')}`)
+
+        // Persist to Supabase so any Railway instance can read it
+        await supabase.from('linkedin_accounts').update({
+          debug_log: snap as unknown as Record<string, unknown>
+        }).eq('id', session.accountId)
       } catch (snapErr) {
-        console.error('[LOGIN DEBUG] snapshot capture failed:', snapErr)
+        console.error('[LOGIN DEBUG] snapshot failed:', snapErr)
       }
     }
 
@@ -327,10 +337,14 @@ async function runLogin(key: string, email: string, password: string): Promise<v
 
     await captureSnap('pre-fill')
 
-    // Wait explicitly for the username field
-    await page.waitForSelector('#username', { timeout: 20_000 }).catch(async (err) => {
+    // Wait explicitly for the username field — include page info in error so UI shows it
+    await page.waitForSelector('#username', { timeout: 20_000 }).catch(async () => {
       await captureSnap('waitForSelector-timeout')
-      throw err
+      const url   = page.url()
+      const title = await page.title().catch(() => '?')
+      let visible = ''
+      try { visible = await page.evaluate(() => (document.body?.innerText ?? '').substring(0, 300).replace(/\s+/g, ' ')) } catch { /* ok */ }
+      throw new Error(`#username not found. URL: ${url} | Title: ${title} | Text: ${visible}`)
     })
 
     // Fill credentials
