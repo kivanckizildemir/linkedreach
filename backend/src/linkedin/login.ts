@@ -477,9 +477,61 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       } catch { /* try next */ }
     }
 
-    await jsClick(passwordSelector)
-    await DELAY(300)
-    await page.keyboard.type(password, { delay: 40 })
+    // BrightData blocks keyboard.type() on password fields (silently — no error,
+    // but nothing is typed). Try multiple approaches in order:
+    // 1. page.fill() — uses Input.insertText CDP (not dispatchKeyEvent), may bypass block
+    // 2. React native value setter via evaluate — triggers React synthetic event
+    // 3. keyboard.type as last resort (will likely fail silently)
+    let passwordFilled = false
+
+    // Attempt 1: page.fill() — Playwright's built-in fill uses Input.insertText
+    try {
+      await page.fill(passwordSelector, password)
+      // Verify it was filled
+      const len = await page.evaluate((sel) => {
+        const el = document.querySelector(sel) as HTMLInputElement | null
+        return el?.value?.length ?? 0
+      }, passwordSelector)
+      if (len > 0) {
+        passwordFilled = true
+        console.log('[LOGIN DEBUG] password filled via page.fill(), length:', len)
+      }
+    } catch (e) {
+      console.log('[LOGIN DEBUG] page.fill() failed:', (e as Error).message?.substring(0, 100))
+    }
+
+    // Attempt 2: React native value setter (triggers React synthetic input event)
+    if (!passwordFilled) {
+      try {
+        await page.evaluate((args: { sel: string; val: string }) => {
+          const el = document.querySelector(args.sel) as HTMLInputElement | null
+          if (!el) return
+          const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
+          if (nativeInputValueSetter) nativeInputValueSetter.call(el, args.val)
+          el.dispatchEvent(new Event('input', { bubbles: true }))
+          el.dispatchEvent(new Event('change', { bubbles: true }))
+        }, { sel: passwordSelector, val: password })
+        const len = await page.evaluate((sel) => {
+          const el = document.querySelector(sel) as HTMLInputElement | null
+          return el?.value?.length ?? 0
+        }, passwordSelector)
+        if (len > 0) {
+          passwordFilled = true
+          console.log('[LOGIN DEBUG] password filled via React native setter, length:', len)
+        }
+      } catch (e) {
+        console.log('[LOGIN DEBUG] React native setter failed:', (e as Error).message?.substring(0, 100))
+      }
+    }
+
+    // Attempt 3: keyboard.type as last resort (BrightData may block silently)
+    if (!passwordFilled) {
+      await jsClick(passwordSelector)
+      await DELAY(300)
+      await page.keyboard.type(password, { delay: 40 })
+      console.log('[LOGIN DEBUG] password typed via keyboard.type (may be silently blocked)')
+    }
+
     await DELAY(300 + Math.random() * 300)
 
     // Move focus away from password field before submitting — BrightData blocks
