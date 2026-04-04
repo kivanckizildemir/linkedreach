@@ -15,7 +15,7 @@ import { labelsRouter } from './routes/labels'
 import { settingsRouter } from './routes/settings'
 import { proxiesRouter } from './routes/proxies'
 import { errorHandler, notFound } from './middleware/errors'
-import { testProxyRaw } from './linkedin/login'
+import { testProxyRaw, getLastErrorSnapshot, clearLastErrorSnapshot } from './linkedin/login'
 
 dotenv.config()
 
@@ -49,6 +49,26 @@ app.get('/api/proxy-diag/:accountId', async (req, res) => {
     ok,
     proxyUrl: process.env.BRIGHTDATA_PROXY_URL ? process.env.BRIGHTDATA_PROXY_URL.replace(/:([^:@]+)@/, ':***@') : 'NOT SET',
   })
+})
+
+// Unauthenticated — returns screenshot captured just before #username fill attempt
+// GET /api/login-debug          → JSON { url, text, hasScreenshot }
+// GET /api/login-debug?img=1    → PNG image (the actual screenshot)
+// DELETE /api/login-debug       → clear stored snapshot
+app.get('/api/login-debug', (req, res) => {
+  const snap = getLastErrorSnapshot()
+  if (!snap) { res.json({ message: 'No snapshot stored yet. Try connecting an account first.' }); return }
+  if (req.query.img === '1' && snap.screenshot) {
+    const buf = Buffer.from(snap.screenshot, 'base64')
+    res.setHeader('Content-Type', 'image/png')
+    res.send(buf)
+    return
+  }
+  res.json({ url: snap.url, text: snap.text, hasScreenshot: !!snap.screenshot, capturedAt: snap.capturedAt })
+})
+app.delete('/api/login-debug', (_req, res) => {
+  clearLastErrorSnapshot()
+  res.json({ cleared: true })
 })
 
 app.use('/api/accounts', accountsRouter)

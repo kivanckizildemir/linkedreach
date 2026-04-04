@@ -52,6 +52,12 @@ interface LoginSession {
 
 const sessions = new Map<string, LoginSession>()
 
+// Module-level store for the last login error snapshot (unauthenticated debug endpoint)
+let lastErrorSnapshot: { screenshot?: string; url?: string; text?: string; capturedAt: string } | null = null
+
+export function getLastErrorSnapshot() { return lastErrorSnapshot }
+export function clearLastErrorSnapshot() { lastErrorSnapshot = null }
+
 // Clean up sessions older than 10 minutes
 setInterval(() => {
   const now = Date.now()
@@ -296,11 +302,16 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     // Capture screenshot + page info so if #username is missing we know why
     try {
       const buf = await page.screenshot({ type: 'png', fullPage: false })
-      session.debugScreenshot = buf.toString('base64')
-      session.debugUrl        = page.url()
-      session.debugPageText   = await page.evaluate(() =>
-        (document.body?.innerText ?? '').substring(0, 1500)
-      )
+      const snap0 = {
+        screenshot: buf.toString('base64'),
+        url:        page.url(),
+        text:       await page.evaluate(() => (document.body?.innerText ?? '').substring(0, 1500)),
+        capturedAt: new Date().toISOString(),
+      }
+      session.debugScreenshot = snap0.screenshot
+      session.debugUrl        = snap0.url
+      session.debugPageText   = snap0.text
+      lastErrorSnapshot       = snap0      // persist even if browser closes
     } catch { /* non-fatal */ }
 
     // Wait explicitly for the username field (gives a cleaner error + we already have a screenshot)
@@ -308,11 +319,16 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       // Grab a fresh screenshot after the timeout too (page may have changed)
       try {
         const buf2 = await page.screenshot({ type: 'png', fullPage: false })
-        session.debugScreenshot = buf2.toString('base64')
-        session.debugUrl        = page.url()
-        session.debugPageText   = await page.evaluate(() =>
-          (document.body?.innerText ?? '').substring(0, 1500)
-        )
+        const snap1 = {
+          screenshot: buf2.toString('base64'),
+          url:        page.url(),
+          text:       await page.evaluate(() => (document.body?.innerText ?? '').substring(0, 1500)),
+          capturedAt: new Date().toISOString(),
+        }
+        session.debugScreenshot = snap1.screenshot
+        session.debugUrl        = snap1.url
+        session.debugPageText   = snap1.text
+        lastErrorSnapshot       = snap1    // update with post-timeout screenshot
       } catch { /* ok */ }
       throw err  // re-throw so the outer catch records it
     })
