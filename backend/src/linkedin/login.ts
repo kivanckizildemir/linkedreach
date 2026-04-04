@@ -529,6 +529,23 @@ async function runLogin(key: string, email: string, password: string): Promise<v
 
     const url = page.url()
 
+    // If still on login page, the submit did not work (form rejected silently or fields empty)
+    if (url.includes('/login')) {
+      // Try to find an error message that may use different selectors
+      let pageText = ''
+      try { pageText = await page.evaluate(() => (document.body?.innerText ?? '').substring(0, 500)) } catch { /* ok */ }
+      const lc = pageText.toLowerCase()
+      if (lc.includes('incorrect') || lc.includes('wrong') || lc.includes('invalid')) {
+        session.status = 'error'
+        session.error  = 'Incorrect email or password (detected from page text).'
+      } else {
+        session.status = 'error'
+        session.error  = `Login form submitted but stayed on login page. emailId=${fieldValues.emailId} emailValue="${fieldValues.emailValue}" passwordLen=${fieldValues.passwordLen}`
+      }
+      await browser.close()
+      return
+    }
+
     // Immediate success
     if (!url.includes('/checkpoint') && !url.includes('/challenge') && !url.includes('verification')) {
       const cookies = await context.cookies()
