@@ -468,9 +468,25 @@ async function runLogin(key: string, email: string, password: string): Promise<v
 
     // Move focus away from password field before submitting — BrightData blocks
     // keyboard.press() (including Enter) when a password input is focused.
-    // Click the email field to shift focus away, then click the submit button.
-    await jsClick(emailSelector)
-    await DELAY(200)
+    // Blur the password field via JS (no element interaction needed) then submit.
+    await page.evaluate(() => {
+      const el = document.activeElement as HTMLElement | null
+      if (el) el.blur()
+    })
+    await DELAY(300)
+
+    // Log what's in the email/password fields for debugging
+    const fieldValues = await page.evaluate(() => {
+      const emailEl = document.querySelector('#username, input[name="session_key"], input[type="email"], input[autocomplete="username"]') as HTMLInputElement | null
+      const passEl  = document.querySelector('#password, input[name="session_password"], input[type="password"]') as HTMLInputElement | null
+      return {
+        emailValue:    emailEl?.value ?? '(not found)',
+        emailId:       emailEl?.id ?? emailEl?.name ?? '(no id)',
+        passwordLen:   passEl ? passEl.value.length : -1,
+        passwordId:    passEl?.id ?? passEl?.name ?? '(no id)',
+      }
+    }).catch(() => ({ emailValue: 'eval-failed', emailId: '?', passwordLen: -1, passwordId: '?' }))
+    console.log('[LOGIN DEBUG] field-values before submit:', JSON.stringify(fieldValues))
 
     // Submit via JS click on the submit button (BrightData-safe — no keyboard event needed)
     await jsClick('button[type="submit"], button[data-litms-control-urn="login-submit"], .btn__primary--large')
