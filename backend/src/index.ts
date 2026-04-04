@@ -64,7 +64,7 @@ app.get('/api/login-debug', (req, res) => {
     res.send(buf)
     return
   }
-  res.json({ url: snap.url, text: snap.text, hasScreenshot: !!snap.screenshot, capturedAt: snap.capturedAt })
+  res.json({ url: snap.url, text: snap.text, html: snap.html, hasScreenshot: !!snap.screenshot, capturedAt: snap.capturedAt })
 })
 app.delete('/api/login-debug', (_req, res) => {
   clearLastErrorSnapshot()

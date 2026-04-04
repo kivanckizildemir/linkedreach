@@ -53,7 +53,7 @@ interface LoginSession {
 const sessions = new Map<string, LoginSession>()
 
 // Module-level store for the last login error snapshot (unauthenticated debug endpoint)
-let lastErrorSnapshot: { screenshot?: string; url?: string; text?: string; capturedAt: string } | null = null
+let lastErrorSnapshot: { screenshot?: string; url?: string; text?: string; html?: string; capturedAt: string } | null = null
 
 export function getLastErrorSnapshot() { return lastErrorSnapshot }
 export function clearLastErrorSnapshot() { lastErrorSnapshot = null }
@@ -281,6 +281,32 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     await page.goto('https://www.linkedin.com/login', { waitUntil: 'domcontentloaded', timeout: 30_000 })
     await DELAY(1000 + Math.random() * 500)
 
+    // ── Snapshot immediately after first navigation ───────────────────────────
+    // Captured before any consent logic so we always know where we landed.
+    // Uses page.evaluate (text-only) — avoids CDP screenshot issues on BrightData.
+    const captureSnap = async (label: string) => {
+      try {
+        const url  = page.url()
+        const text = await page.evaluate(() => (document.body?.innerText ?? '').substring(0, 2000))
+        const html = await page.evaluate(() => document.documentElement.outerHTML.substring(0, 3000))
+        const snap = { url, text, html, screenshot: undefined as string | undefined, capturedAt: new Date().toISOString() }
+        // Try screenshot — may not be supported by all BrightData zones
+        try {
+          const buf = await page.screenshot({ type: 'png', fullPage: false })
+          snap.screenshot = buf.toString('base64')
+        } catch { /* CDP screenshot unsupported — text/html still captured */ }
+        session.debugScreenshot = snap.screenshot
+        session.debugUrl        = snap.url
+        session.debugPageText   = snap.text
+        lastErrorSnapshot       = snap
+        console.log(`[LOGIN DEBUG ${label}] url=${url} text_len=${text.length} has_username=${text.includes('email') || html.includes('id="username"')}`)
+      } catch (snapErr) {
+        console.error('[LOGIN DEBUG] snapshot capture failed:', snapErr)
+      }
+    }
+
+    await captureSnap('after-goto')
+
     // Dismiss GDPR / cookie consent banners (UK/EU residential IPs trigger these)
     for (const selector of [
       'button[action-type="ACCEPT"]',
@@ -294,43 +320,17 @@ async function runLogin(key: string, email: string, password: string): Promise<v
 
     // If redirected away from login (e.g. already-logged-in BrightData session), navigate back
     if (!page.url().includes('/login')) {
+      console.log(`[LOGIN DEBUG] redirected to ${page.url()} — navigating back to /login`)
       await page.goto('https://www.linkedin.com/login', { waitUntil: 'domcontentloaded', timeout: 30_000 })
       await DELAY(1000)
     }
 
-    // ── Debug snapshot before filling credentials ─────────────────────────────
-    // Capture screenshot + page info so if #username is missing we know why
-    try {
-      const buf = await page.screenshot({ type: 'png', fullPage: false })
-      const snap0 = {
-        screenshot: buf.toString('base64'),
-        url:        page.url(),
-        text:       await page.evaluate(() => (document.body?.innerText ?? '').substring(0, 1500)),
-        capturedAt: new Date().toISOString(),
-      }
-      session.debugScreenshot = snap0.screenshot
-      session.debugUrl        = snap0.url
-      session.debugPageText   = snap0.text
-      lastErrorSnapshot       = snap0      // persist even if browser closes
-    } catch { /* non-fatal */ }
+    await captureSnap('pre-fill')
 
-    // Wait explicitly for the username field (gives a cleaner error + we already have a screenshot)
+    // Wait explicitly for the username field
     await page.waitForSelector('#username', { timeout: 20_000 }).catch(async (err) => {
-      // Grab a fresh screenshot after the timeout too (page may have changed)
-      try {
-        const buf2 = await page.screenshot({ type: 'png', fullPage: false })
-        const snap1 = {
-          screenshot: buf2.toString('base64'),
-          url:        page.url(),
-          text:       await page.evaluate(() => (document.body?.innerText ?? '').substring(0, 1500)),
-          capturedAt: new Date().toISOString(),
-        }
-        session.debugScreenshot = snap1.screenshot
-        session.debugUrl        = snap1.url
-        session.debugPageText   = snap1.text
-        lastErrorSnapshot       = snap1    // update with post-timeout screenshot
-      } catch { /* ok */ }
-      throw err  // re-throw so the outer catch records it
+      await captureSnap('waitForSelector-timeout')
+      throw err
     })
 
     // Fill credentials
