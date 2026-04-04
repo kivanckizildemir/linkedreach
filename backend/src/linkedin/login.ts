@@ -392,20 +392,20 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       }
     }
 
-    // Fill username — click first to ensure focus, then type
-    await page.click('#username').catch(() => {})
+    // Fill username — force:true bypasses any overlay blocking interaction
+    await page.click('#username', { force: true }).catch(() => {})
     await DELAY(200)
-    await page.fill('#username', email)
+    await page.fill('#username', email, { force: true })
     await DELAY(500 + Math.random() * 300)
 
     // Re-dismiss any banners that may have appeared after username interaction
     await dismissBanners()
 
-    // Fill password — use click+type to bypass interactability edge cases
+    // Fill password — force:true bypasses visibility/actionability checks (overlay-safe)
     await page.waitForSelector('#password', { timeout: 10_000 })
-    await page.click('#password').catch(() => {})
+    await page.click('#password', { force: true }).catch(() => {})
     await DELAY(300)
-    await page.fill('#password', password)
+    await page.fill('#password', password, { force: true })
     await DELAY(300 + Math.random() * 300)
     await page.click('button[type="submit"]')
 
