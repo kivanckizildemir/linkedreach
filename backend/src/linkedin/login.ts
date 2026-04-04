@@ -380,6 +380,8 @@ async function runLogin(key: string, email: string, password: string): Promise<v
 
     // LinkedIn's login form selector — try the classic #username first, then broader fallbacks.
     // The SPA may render inputs without IDs on some regions/A-B tests.
+    // Note: LinkedIn's React SPA generates dynamic IDs like :r0:, :r1: — so we use
+    // type/name/autocomplete attributes or position-based selectors as fallbacks.
     const EMAIL_SELECTORS = [
       '#username',
       'input[name="session_key"]',
@@ -389,15 +391,29 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       'input[id*="email"]',
       'input[placeholder*="Email"], input[placeholder*="email"]',
       'form input[type="text"]:first-of-type',
+      // React-generated IDs like :r0: — just wait for any visible text input in the login form
+      'input[type="text"]',
     ]
 
-    let emailSelector = '#username'
+    // First, wait for any input to appear (the form to be hydrated)
+    await page.waitForSelector('input', { timeout: 20_000 }).catch(() => {})
+
+    let emailSelector = 'input[type="text"]'
     let foundEmailInput = false
     for (const sel of EMAIL_SELECTORS) {
       try {
-        const el = await page.waitForSelector(sel, { timeout: sel === EMAIL_SELECTORS[0] ? 15_000 : 2_000 })
+        const el = await page.$(sel)
         if (el) { emailSelector = sel; foundEmailInput = true; break }
       } catch { /* try next */ }
+    }
+
+    // If still not found, try waiting for the first text input with a longer timeout
+    if (!foundEmailInput) {
+      try {
+        await page.waitForSelector('input[type="text"], input:not([type])', { timeout: 10_000 })
+        emailSelector = 'input[type="text"]'
+        foundEmailInput = true
+      } catch { /* fall through to error */ }
     }
 
     if (!foundEmailInput) {
