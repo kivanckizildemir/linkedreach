@@ -670,7 +670,7 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     // verification manually (or the system can handle it via the interactive browser UI).
     if (isChallenge) {
       console.log('[LOGIN DEBUG] Challenge URL obtained:', url)
-      // Try to navigate the browser to the challenge URL
+      // Navigate the browser to the challenge URL so we can inspect the page
       let postNavUrl = page.url()
       let postNavText = ''
       if (url) {
@@ -683,8 +683,8 @@ async function runLogin(key: string, email: string, password: string): Promise<v
           console.log('[LOGIN DEBUG] Navigation error (ok):', String(navErr).substring(0, 100))
         }
         postNavUrl = page.url()
-        postNavText = await page.evaluate(() => (document.body?.innerText ?? '').substring(0, 300)).catch(() => '') as string
-        console.log('[LOGIN DEBUG] Post-nav URL:', postNavUrl)
+        postNavText = await page.evaluate(() => (document.body?.innerText ?? '').substring(0, 500)).catch(() => '') as string
+        console.log('[LOGIN DEBUG] Post-nav URL:', postNavUrl, 'text:', postNavText.substring(0, 150))
       }
 
       const finalCookies = await context.cookies()
@@ -695,22 +695,112 @@ async function runLogin(key: string, email: string, password: string): Promise<v
         return
       }
 
+      // ── Detect challenge type from the page content ───────────────────────
+      const textLower = postNavText.toLowerCase()
+      const hasPinInputNow = !!(await page.$(
+        'input#input__email_verification_pin, input[name="pin"], input#input__phone_verification_pin, input[id*="verification"], input[name*="verification"]'
+      ).catch(() => null))
+      const isEmailChallenge = textLower.includes('email') || textLower.includes('sent a code') || textLower.includes('check your inbox')
+      const isPhoneChallenge = textLower.includes('text message') || textLower.includes('sms') || (textLower.includes('phone') && !textLower.includes('approve'))
+      const isAppPush       = textLower.includes('approve') || textLower.includes('notification') || textLower.includes('linked') || postNavText.length < 30
+
+      // Auto-click "Send verification code" if visible (email/phone OTP challenge)
+      if (!hasPinInputNow && (isEmailChallenge || isPhoneChallenge)) {
+        for (const btnSel of [
+          'button[data-litms-control-urn="challenge|primary-action"]',
+          'button.primary-action-new',
+          'button:has-text("Send verification code")',
+          'button:has-text("Send a verification code")',
+          'button:has-text("Get a verification code")',
+          'button:has-text("Send code")',
+          'button:has-text("Request a verification code")',
+          'form button[type="submit"]',
+        ]) {
+          try {
+            const btn = await page.$(btnSel)
+            if (btn) {
+              const btnText = await btn.evaluate((el: Element) => (el as HTMLElement).textContent?.trim() ?? '')
+              if (btnText && !btnText.toLowerCase().includes('cancel') && !btnText.toLowerCase().includes('back')) {
+                console.log('[LOGIN DEBUG] Clicking challenge button:', btnText)
+                await btn.click()
+                await DELAY(2500)
+                break
+              }
+            }
+          } catch { /* ok */ }
+        }
+        // After clicking, re-read page text and check for PIN input
+        postNavText = await page.evaluate(() => (document.body?.innerText ?? '').substring(0, 500)).catch(() => '') as string
+      }
+
+      // Check again for PIN input after potential button click
+      const hasPinAfterClick = !!(await page.$(
+        'input#input__email_verification_pin, input[name="pin"], input#input__phone_verification_pin, input[id*="verification"], input[name*="verification"]'
+      ).catch(() => null))
+
       await supabase.from('linkedin_accounts').update({
         debug_log: {
           label: 'challenge',
           challengeUrl: url,
           postNavUrl,
-          postNavText: postNavText.substring(0, 300),
+          postNavText: postNavText.substring(0, 400),
+          hasPinInput: hasPinAfterClick,
+          isEmailChallenge,
+          isPhoneChallenge,
+          isAppPush,
           postStatus: loginResponseStatus,
           capturedAt: new Date().toISOString(),
         }
       }).eq('id', session.accountId)
 
-      // BrightData blocks /checkpoint pages. Set pending_push to indicate LinkedIn challenge
-      // is required. The user should approve the LinkedIn push notification or complete
-      // the verification via the interactive browser UI.
+      if (hasPinAfterClick) {
+        // PIN/OTP input is visible — try TOTP auto-fill if secret is set
+        if (session.totpSecret) {
+          try {
+            const code = speakeasy.totp({ secret: session.totpSecret, encoding: 'base32' })
+            await page.fill(
+              'input#input__email_verification_pin, input[name="pin"], input#input__phone_verification_pin',
+              code
+            )
+            await DELAY(300)
+            const submitBtn = await page.$('button[type="submit"], button:has-text("Submit"), button:has-text("Verify")')
+            if (submitBtn) await submitBtn.click()
+            else await page.keyboard.press('Enter')
+            await page.waitForLoadState('domcontentloaded', { timeout: 15_000 }).catch(() => {})
+            await DELAY(2000)
+            const cookies = await context.cookies()
+            if (cookies.find(c => c.name === 'li_at')) {
+              await saveCookies(context, session.accountId)
+              session.status = 'success'
+              await browser.close()
+              return
+            }
+          } catch { /* fall through to manual */ }
+        }
+        // Determine where the code was sent for the hint
+        const codeDestination = isEmailChallenge
+          ? 'your email'
+          : isPhoneChallenge
+            ? 'your phone via SMS'
+            : 'your email or phone'
+        session.status = 'needs_verification'
+        session.hint   = `LinkedIn sent a verification code to ${codeDestination}. Enter it in the app to complete sign-in.`
+        return
+      }
+
+      if (isEmailChallenge || isPhoneChallenge) {
+        // We clicked send but PIN input not visible yet — set needs_verification
+        const dest = isEmailChallenge ? 'your email inbox' : 'your phone via SMS'
+        session.status = 'needs_verification'
+        session.hint   = `LinkedIn sent a verification code to ${dest}. Enter it in the app to complete sign-in.`
+        return
+      }
+
+      // Push notification (mobile app approval) or unknown challenge
       session.status = 'pending_push'
-      session.hint   = 'LinkedIn requires verification. Check your phone for a notification or open the challenge URL: ' + url.substring(0, 100)
+      session.hint   = isAppPush
+        ? 'Open the LinkedIn app on your phone and tap "Yes, it\'s me" to approve the sign-in.'
+        : `LinkedIn requires verification. Open this URL to complete it: ${url.substring(0, 120)}`
       return
     }
 
