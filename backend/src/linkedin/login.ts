@@ -542,10 +542,23 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     }).eq('id', session.accountId)
 
     // Wait for navigation after form.submit()
+    // LinkedIn processes login at /checkpoint/lg/login-submit, then redirects.
+    // First wait for domcontentloaded, then wait for the processing redirect.
     await Promise.race([
-      page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15_000 }),
-      DELAY(6_000),
+      page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20_000 }),
+      DELAY(8_000),
     ]).catch(() => {})
+
+    // If we're still on the login-submit processing page, wait for the final redirect
+    const urlAfterSubmit = page.url()
+    if (urlAfterSubmit.includes('/login-submit') || urlAfterSubmit.includes('/checkpoint/lg/login-submit')) {
+      console.log('[LOGIN DEBUG] Still on login-submit page, waiting for redirect...')
+      await Promise.race([
+        page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20_000 }),
+        DELAY(10_000),
+      ]).catch(() => {})
+    }
+
     await DELAY(2000)
 
     const url = page.url()
@@ -565,8 +578,12 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       return
     }
 
-    // Immediate success check
-    if (!url.includes('/checkpoint') && !url.includes('/challenge') && !url.includes('verification') && !url.includes('/login')) {
+    // Immediate success check — landed on feed or similar non-challenge page
+    const isLoginPage = /\/login(\?|$)/.test(url) || url.includes('/login?')
+    const isLoginSubmit = url.includes('/login-submit')
+    const isChallenge = url.includes('/checkpoint') || url.includes('/challenge') || url.includes('verification')
+
+    if (!isChallenge && !isLoginPage && !isLoginSubmit) {
       const cookies = await context.cookies()
       if (cookies.find(c => c.name === 'li_at')) {
         await saveCookies(context, session.accountId)
@@ -580,8 +597,8 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       return
     }
 
-    // Still on login page — credentials rejected or form empty
-    if (url.includes('/login')) {
+    // Still on login page (not login-submit) — credentials rejected or form empty
+    if (isLoginPage && !isLoginSubmit) {
       // Wait a bit more for the page to fully render after redirect
       await DELAY(3000)
       const loginText = await page.evaluate(() => (document.body?.innerText ?? '').substring(0, 800)).catch(() => '')
@@ -610,6 +627,23 @@ async function runLogin(key: string, email: string, password: string): Promise<v
         session.status = 'error'
         session.error  = `Stayed on /login. Page: ${loginText.substring(0, 150)}`
       }
+      await browser.close()
+      return
+    }
+
+    // If still on login-submit after waiting, treat as error
+    if (isLoginSubmit) {
+      const submitPageText = await page.evaluate(() => (document.body?.innerText ?? '').substring(0, 400)).catch(() => '')
+      let screenshotB64 = ''
+      try {
+        const buf = await page.screenshot({ type: 'png', fullPage: false })
+        screenshotB64 = buf.toString('base64')
+      } catch { /* ok */ }
+      await supabase.from('linkedin_accounts').update({
+        debug_log: { label: 'stuck-on-login-submit', url, pageText: submitPageText, screenshot: screenshotB64, capturedAt: new Date().toISOString() }
+      }).eq('id', session.accountId)
+      session.status = 'error'
+      session.error  = `Stuck on login-submit. URL: ${url} | Page: ${submitPageText.substring(0, 150)}`
       await browser.close()
       return
     }
