@@ -510,23 +510,26 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       debug_log: { ...submitResult, capturedAt: new Date().toISOString(), label: 'submit-result' }
     }).eq('id', session.accountId)
 
-    // Wait for navigation after form.submit() — use Promise.race for robustness
+    // Wait for navigation after form.submit()
     await Promise.race([
       page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15_000 }),
       DELAY(6_000),
     ]).catch(() => {})
     await DELAY(2000)
 
-    await captureSnap('post-login')
-
     const url = page.url()
     console.log('[LOGIN DEBUG] URL after submit:', url)
+
+    // Build a diagnostic prefix from submitResult for error messages
+    const submitDiag = typeof submitResult === 'object' && submitResult !== null
+      ? `emailFound=${(submitResult as Record<string,unknown>).emailFound} passFound=${(submitResult as Record<string,unknown>).passFound} passLen=${(submitResult as Record<string,unknown>).passLen} emailVal="${String((submitResult as Record<string,unknown>).emailVal).substring(0,20)}" formAction="${String((submitResult as Record<string,unknown>).formAction).substring(0,60)}"`
+      : JSON.stringify(submitResult).substring(0, 100)
 
     // Detect wrong credentials from page text
     const bodyText = await page.evaluate(() => (document.body?.innerText ?? '').toLowerCase().substring(0, 600)).catch(() => '')
     if (bodyText.includes('please enter a password') || bodyText.includes('wrong password')) {
       session.status = 'error'
-      session.error  = 'Password field was empty on submit — keyboard.type may have been blocked.'
+      session.error  = `Password field was empty on submit. ${submitDiag}`
       await browser.close()
       return
     }
@@ -541,7 +544,7 @@ async function runLogin(key: string, email: string, password: string): Promise<v
         return
       }
       session.status = 'error'
-      session.error  = `No li_at cookie on ${url}.`
+      session.error  = `No li_at cookie on ${url}. ${submitDiag}`
       await browser.close()
       return
     }
@@ -552,10 +555,10 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       const lc = loginText.toLowerCase()
       if (lc.includes('incorrect') || lc.includes('wrong') || lc.includes('please enter a password') || lc.includes('check your email')) {
         session.status = 'error'
-        session.error  = 'Incorrect email or password.'
+        session.error  = `Incorrect email or password. ${submitDiag}`
       } else {
         session.status = 'error'
-        session.error  = `Stayed on /login. Page text: ${loginText.substring(0, 150)}`
+        session.error  = `Stayed on /login. ${submitDiag}. Page: ${loginText.substring(0, 80)}`
       }
       await browser.close()
       return
