@@ -2,13 +2,31 @@ import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '../lib/fetchJson'
 
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+interface Product {
+  id: string
+  name: string
+  description: string
+  target_use_case: string
+}
+
+interface CustomCriterion {
+  id: string
+  label: string
+  description: string
+  weight: 'must_have' | 'nice_to_have' | 'disqualifier'
+}
+
 interface IcpConfig {
   target_titles: string[]
   target_industries: string[]
   target_locations: string[]
   min_company_size: number | null
-  max_company_size: null | number
+  max_company_size: number | null
   notes: string
+  products_services: Product[]
+  custom_criteria: CustomCriterion[]
 }
 
 interface UserSettings {
@@ -22,6 +40,8 @@ interface UserSettings {
   updated_at: string
 }
 
+// ─── API helpers ──────────────────────────────────────────────────────────────
+
 async function fetchSettings(): Promise<UserSettings> {
   const res = await apiFetch('/api/settings')
   if (!res.ok) throw new Error('Failed to fetch settings')
@@ -29,7 +49,9 @@ async function fetchSettings(): Promise<UserSettings> {
   return data
 }
 
-async function updateSettings(updates: Partial<Omit<UserSettings, 'id' | 'user_id' | 'created_at' | 'updated_at'>>): Promise<UserSettings> {
+async function updateSettings(
+  updates: Partial<Omit<UserSettings, 'id' | 'user_id' | 'created_at' | 'updated_at'>>
+): Promise<UserSettings> {
   const res = await apiFetch('/api/settings', {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
@@ -42,6 +64,8 @@ async function updateSettings(updates: Partial<Omit<UserSettings, 'id' | 'user_i
   const { data } = await res.json() as { data: UserSettings }
   return data
 }
+
+// ─── Static data ──────────────────────────────────────────────────────────────
 
 const TIMEZONES = [
   'Europe/London', 'Europe/Berlin', 'Europe/Paris', 'Europe/Amsterdam',
@@ -69,6 +93,18 @@ const SUGGESTED_INDUSTRIES = [
   'Legal', 'Education', 'Non-profit', 'Government',
 ]
 
+const WEIGHT_OPTIONS: { value: CustomCriterion['weight']; label: string; color: string }[] = [
+  { value: 'must_have',    label: 'Must Have',    color: 'bg-green-100 text-green-800 border-green-200' },
+  { value: 'nice_to_have', label: 'Nice to Have', color: 'bg-blue-100 text-blue-800 border-blue-200' },
+  { value: 'disqualifier', label: 'Disqualifier', color: 'bg-red-100 text-red-800 border-red-200' },
+]
+
+function uid() {
+  return Math.random().toString(36).slice(2, 10)
+}
+
+// ─── TagInput ─────────────────────────────────────────────────────────────────
+
 function TagInput({
   label,
   values,
@@ -85,15 +121,13 @@ function TagInput({
   const [input, setInput] = useState('')
   const [showSuggestions, setShowSuggestions] = useState(false)
 
-  const filtered = suggestions.filter(
-    s => !values.includes(s) && s.toLowerCase().includes(input.toLowerCase())
-  ).slice(0, 8)
+  const filtered = suggestions
+    .filter(s => !values.includes(s) && s.toLowerCase().includes(input.toLowerCase()))
+    .slice(0, 8)
 
   function add(val: string) {
     const trimmed = val.trim()
-    if (trimmed && !values.includes(trimmed)) {
-      onChange([...values, trimmed])
-    }
+    if (trimmed && !values.includes(trimmed)) onChange([...values, trimmed])
     setInput('')
     setShowSuggestions(false)
   }
@@ -112,13 +146,7 @@ function TagInput({
             className="inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 bg-blue-100 text-blue-800 rounded-full"
           >
             {v}
-            <button
-              type="button"
-              onClick={() => remove(v)}
-              className="text-blue-500 hover:text-blue-800 leading-none"
-            >
-              ×
-            </button>
+            <button type="button" onClick={() => remove(v)} className="text-blue-500 hover:text-blue-800 leading-none">×</button>
           </span>
         ))}
         <div className="relative flex-1 min-w-[120px]">
@@ -130,9 +158,7 @@ function TagInput({
             onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
             onKeyDown={e => {
               if (e.key === 'Enter' && input.trim()) { e.preventDefault(); add(input) }
-              if (e.key === 'Backspace' && !input && values.length > 0) {
-                remove(values[values.length - 1])
-              }
+              if (e.key === 'Backspace' && !input && values.length > 0) remove(values[values.length - 1])
             }}
             placeholder={values.length === 0 ? placeholder : ''}
             className="w-full text-sm text-gray-700 outline-none bg-transparent py-0.5"
@@ -158,6 +184,147 @@ function TagInput({
   )
 }
 
+// ─── ProductCard ──────────────────────────────────────────────────────────────
+
+function ProductCard({
+  product,
+  onChange,
+  onRemove,
+}: {
+  product: Product
+  onChange: (p: Product) => void
+  onRemove: () => void
+}) {
+  return (
+    <div className="rounded-xl border border-gray-200 bg-gray-50 p-4 space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <input
+          type="text"
+          value={product.name}
+          onChange={e => onChange({ ...product, name: e.target.value })}
+          placeholder="Product / service name"
+          className="flex-1 text-sm font-semibold text-gray-900 bg-transparent border-b border-gray-300 focus:border-blue-500 outline-none pb-0.5 placeholder:font-normal placeholder:text-gray-400"
+        />
+        <button
+          type="button"
+          onClick={onRemove}
+          className="text-gray-400 hover:text-red-500 transition-colors shrink-0"
+          title="Remove"
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+      <div>
+        <label className="block text-xs font-medium text-gray-500 mb-1">Description</label>
+        <textarea
+          rows={2}
+          value={product.description}
+          onChange={e => onChange({ ...product, description: e.target.value })}
+          placeholder="What does it do? What problem does it solve?"
+          className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+        />
+      </div>
+      <div>
+        <label className="block text-xs font-medium text-gray-500 mb-1">Target Use Case / Ideal Customer</label>
+        <textarea
+          rows={2}
+          value={product.target_use_case}
+          onChange={e => onChange({ ...product, target_use_case: e.target.value })}
+          placeholder="Who benefits most? e.g. B2B SaaS companies with 50–500 employees scaling their sales team"
+          className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+        />
+      </div>
+    </div>
+  )
+}
+
+// ─── CriterionRow ─────────────────────────────────────────────────────────────
+
+function CriterionRow({
+  criterion,
+  onChange,
+  onRemove,
+}: {
+  criterion: CustomCriterion
+  onChange: (c: CustomCriterion) => void
+  onRemove: () => void
+}) {
+  const weightInfo = WEIGHT_OPTIONS.find(w => w.value === criterion.weight)!
+
+  return (
+    <div className="rounded-xl border border-gray-200 bg-gray-50 p-4 space-y-3">
+      <div className="flex items-start gap-3">
+        <div className="flex-1 space-y-2">
+          <input
+            type="text"
+            value={criterion.label}
+            onChange={e => onChange({ ...criterion, label: e.target.value })}
+            placeholder="Criterion name (e.g. Uses Salesforce, Has raised Series A+)"
+            className="w-full text-sm font-semibold text-gray-900 bg-transparent border-b border-gray-300 focus:border-blue-500 outline-none pb-0.5 placeholder:font-normal placeholder:text-gray-400"
+          />
+          <textarea
+            rows={2}
+            value={criterion.description}
+            onChange={e => onChange({ ...criterion, description: e.target.value })}
+            placeholder="Explain what to look for — the AI will use this to evaluate the lead"
+            className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+          />
+        </div>
+        <button
+          type="button"
+          onClick={onRemove}
+          className="text-gray-400 hover:text-red-500 transition-colors mt-0.5 shrink-0"
+          title="Remove"
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+
+      {/* Weight selector */}
+      <div className="flex items-center gap-2">
+        <span className="text-xs text-gray-500 mr-1">Weight:</span>
+        {WEIGHT_OPTIONS.map(opt => (
+          <button
+            key={opt.value}
+            type="button"
+            onClick={() => onChange({ ...criterion, weight: opt.value })}
+            className={`px-3 py-1 text-xs font-medium rounded-full border transition-all ${
+              criterion.weight === opt.value
+                ? opt.color + ' ring-2 ring-offset-1 ' + (
+                    opt.value === 'must_have' ? 'ring-green-400' :
+                    opt.value === 'nice_to_have' ? 'ring-blue-400' : 'ring-red-400'
+                  )
+                : 'bg-white text-gray-500 border-gray-200 hover:border-gray-300'
+            }`}
+          >
+            {opt.label}
+          </button>
+        ))}
+        <span className={`ml-auto text-xs px-2 py-0.5 rounded-full border font-medium ${weightInfo.color}`}>
+          {weightInfo.label}
+        </span>
+      </div>
+    </div>
+  )
+}
+
+// ─── Main Settings page ───────────────────────────────────────────────────────
+
+const DEFAULT_ICP: IcpConfig = {
+  target_titles: [],
+  target_industries: [],
+  target_locations: [],
+  min_company_size: null,
+  max_company_size: null,
+  notes: '',
+  products_services: [],
+  custom_criteria: [],
+}
+
 export function Settings() {
   const queryClient = useQueryClient()
   const [saved, setSaved] = useState(false)
@@ -167,23 +334,19 @@ export function Settings() {
     queryFn: fetchSettings,
   })
 
-  // Local form state
-  const [icp, setIcp] = useState<IcpConfig>({
-    target_titles: [],
-    target_industries: [],
-    target_locations: [],
-    min_company_size: null,
-    max_company_size: null,
-    notes: '',
-  })
+  const [icp, setIcp] = useState<IcpConfig>(DEFAULT_ICP)
   const [timezone, setTimezone] = useState('Europe/London')
   const [connectionLimit, setConnectionLimit] = useState(20)
   const [messageLimit, setMessageLimit] = useState(80)
 
-  // Populate form when data loads
   useEffect(() => {
     if (settings) {
-      setIcp(settings.icp_config)
+      setIcp({
+        ...DEFAULT_ICP,
+        ...settings.icp_config,
+        products_services: settings.icp_config.products_services ?? [],
+        custom_criteria: settings.icp_config.custom_criteria ?? [],
+      })
       setTimezone(settings.timezone)
       setConnectionLimit(settings.daily_connection_limit)
       setMessageLimit(settings.daily_message_limit)
@@ -200,9 +363,59 @@ export function Settings() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['settings'] })
       setSaved(true)
-      setTimeout(() => setSaved(false), 2000)
+      setTimeout(() => setSaved(false), 2500)
     },
   })
+
+  // Products helpers
+  function addProduct() {
+    setIcp(c => ({
+      ...c,
+      products_services: [
+        ...c.products_services,
+        { id: uid(), name: '', description: '', target_use_case: '' },
+      ],
+    }))
+  }
+
+  function updateProduct(id: string, updated: Product) {
+    setIcp(c => ({
+      ...c,
+      products_services: c.products_services.map(p => p.id === id ? updated : p),
+    }))
+  }
+
+  function removeProduct(id: string) {
+    setIcp(c => ({
+      ...c,
+      products_services: c.products_services.filter(p => p.id !== id),
+    }))
+  }
+
+  // Criteria helpers
+  function addCriterion() {
+    setIcp(c => ({
+      ...c,
+      custom_criteria: [
+        ...c.custom_criteria,
+        { id: uid(), label: '', description: '', weight: 'nice_to_have' },
+      ],
+    }))
+  }
+
+  function updateCriterion(id: string, updated: CustomCriterion) {
+    setIcp(c => ({
+      ...c,
+      custom_criteria: c.custom_criteria.map(cr => cr.id === id ? updated : cr),
+    }))
+  }
+
+  function removeCriterion(id: string) {
+    setIcp(c => ({
+      ...c,
+      custom_criteria: c.custom_criteria.filter(cr => cr.id !== id),
+    }))
+  }
 
   if (isLoading) {
     return (
@@ -219,21 +432,18 @@ export function Settings() {
         <p className="mt-1 text-sm text-gray-500">Configure your ICP criteria, sending limits, and preferences</p>
       </div>
 
-      {/* ICP Configuration */}
+      {/* ── ICP: Target Audience ── */}
       <section className="bg-white rounded-xl border border-gray-200 p-6 space-y-5">
-        <div className="flex items-start gap-3">
-          <div className="w-9 h-9 rounded-xl bg-blue-50 flex items-center justify-center shrink-0">
+        <SectionHeader
+          icon={
             <svg className="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
             </svg>
-          </div>
-          <div>
-            <h2 className="text-base font-semibold text-gray-900">Ideal Customer Profile (ICP)</h2>
-            <p className="text-sm text-gray-500 mt-0.5">
-              These criteria are used by AI to score and qualify your leads. The more specific you are, the better the scores.
-            </p>
-          </div>
-        </div>
+          }
+          iconBg="bg-blue-50"
+          title="Target Audience"
+          subtitle="Define who your ideal lead looks like — titles, industries, locations, and company size."
+        />
 
         <TagInput
           label="Target Job Titles"
@@ -262,7 +472,7 @@ export function Settings() {
         <div className="grid grid-cols-2 gap-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1.5">
-              Min Company Size <span className="text-gray-400 font-normal">(employees, optional)</span>
+              Min Company Size <span className="text-gray-400 font-normal">(employees)</span>
             </label>
             <input
               type="number"
@@ -275,7 +485,7 @@ export function Settings() {
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1.5">
-              Max Company Size <span className="text-gray-400 font-normal">(employees, optional)</span>
+              Max Company Size <span className="text-gray-400 font-normal">(employees)</span>
             </label>
             <input
               type="number"
@@ -287,34 +497,149 @@ export function Settings() {
             />
           </div>
         </div>
-
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1.5">
-            Additional Notes for AI <span className="text-gray-400 font-normal">(optional)</span>
-          </label>
-          <textarea
-            rows={3}
-            value={icp.notes}
-            onChange={e => setIcp(c => ({ ...c, notes: e.target.value }))}
-            placeholder="e.g. Prioritise people at bootstrapped companies, deprioritise agencies…"
-            className="w-full px-3.5 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
-          />
-        </div>
       </section>
 
-      {/* Sending defaults */}
+      {/* ── Products & Services ── */}
       <section className="bg-white rounded-xl border border-gray-200 p-6 space-y-5">
-        <div className="flex items-start gap-3">
-          <div className="w-9 h-9 rounded-xl bg-purple-50 flex items-center justify-center shrink-0">
+        <SectionHeader
+          icon={
+            <svg className="w-5 h-5 text-violet-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+            </svg>
+          }
+          iconBg="bg-violet-50"
+          title="Products & Services"
+          subtitle="Tell the AI what you sell. It uses this to assess whether each lead has a likely need for your offering."
+        />
+
+        <div className="space-y-3">
+          {icp.products_services.length === 0 && (
+            <div className="rounded-xl border border-dashed border-gray-200 bg-gray-50 py-8 text-center">
+              <svg className="w-8 h-8 text-gray-300 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+              </svg>
+              <p className="text-sm text-gray-400">No products added yet</p>
+              <p className="text-xs text-gray-400 mt-0.5">Add what you sell so the AI can assess product-market fit</p>
+            </div>
+          )}
+
+          {icp.products_services.map(p => (
+            <ProductCard
+              key={p.id}
+              product={p}
+              onChange={updated => updateProduct(p.id, updated)}
+              onRemove={() => removeProduct(p.id)}
+            />
+          ))}
+        </div>
+
+        <button
+          type="button"
+          onClick={addProduct}
+          className="flex items-center gap-2 text-sm font-medium text-blue-600 hover:text-blue-700 transition-colors"
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+          </svg>
+          Add product or service
+        </button>
+      </section>
+
+      {/* ── Custom Qualification Criteria ── */}
+      <section className="bg-white rounded-xl border border-gray-200 p-6 space-y-5">
+        <SectionHeader
+          icon={
+            <svg className="w-5 h-5 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+            </svg>
+          }
+          iconBg="bg-amber-50"
+          title="Custom Qualification Criteria"
+          subtitle="Add specific rules the AI must apply when scoring. Mark each as Must Have, Nice to Have, or a Disqualifier."
+        />
+
+        {/* Legend */}
+        <div className="flex items-center gap-3 flex-wrap">
+          {WEIGHT_OPTIONS.map(opt => (
+            <span key={opt.value} className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border font-medium ${opt.color}`}>
+              {opt.value === 'must_have' && (
+                <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd"/></svg>
+              )}
+              {opt.value === 'disqualifier' && (
+                <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd"/></svg>
+              )}
+              {opt.label}
+            </span>
+          ))}
+          <span className="text-xs text-gray-400 ml-1">— set importance for each rule</span>
+        </div>
+
+        <div className="space-y-3">
+          {icp.custom_criteria.length === 0 && (
+            <div className="rounded-xl border border-dashed border-gray-200 bg-gray-50 py-8 text-center">
+              <svg className="w-8 h-8 text-gray-300 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+              </svg>
+              <p className="text-sm text-gray-400">No custom criteria yet</p>
+              <p className="text-xs text-gray-400 mt-0.5">e.g. "Uses Salesforce", "Has raised Series A+", "Not an agency"</p>
+            </div>
+          )}
+
+          {icp.custom_criteria.map(cr => (
+            <CriterionRow
+              key={cr.id}
+              criterion={cr}
+              onChange={updated => updateCriterion(cr.id, updated)}
+              onRemove={() => removeCriterion(cr.id)}
+            />
+          ))}
+        </div>
+
+        <button
+          type="button"
+          onClick={addCriterion}
+          className="flex items-center gap-2 text-sm font-medium text-blue-600 hover:text-blue-700 transition-colors"
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+          </svg>
+          Add qualification criterion
+        </button>
+      </section>
+
+      {/* ── Additional Notes ── */}
+      <section className="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
+        <SectionHeader
+          icon={
+            <svg className="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+            </svg>
+          }
+          iconBg="bg-gray-100"
+          title="Additional Notes for AI"
+          subtitle="Free-text guidance for the AI — use this for anything that doesn't fit into structured criteria."
+        />
+        <textarea
+          rows={3}
+          value={icp.notes}
+          onChange={e => setIcp(c => ({ ...c, notes: e.target.value }))}
+          placeholder="e.g. Prioritise bootstrapped companies over VC-funded ones. Deprioritise anyone in an agency role."
+          className="w-full px-3.5 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+        />
+      </section>
+
+      {/* ── Sending Defaults ── */}
+      <section className="bg-white rounded-xl border border-gray-200 p-6 space-y-5">
+        <SectionHeader
+          icon={
             <svg className="w-5 h-5 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
-          </div>
-          <div>
-            <h2 className="text-base font-semibold text-gray-900">Sending Defaults</h2>
-            <p className="text-sm text-gray-500 mt-0.5">Default daily limits applied to new LinkedIn accounts. LinkedIn safety rules are enforced independently.</p>
-          </div>
-        </div>
+          }
+          iconBg="bg-purple-50"
+          title="Sending Defaults"
+          subtitle="Default daily limits applied to new LinkedIn accounts. LinkedIn safety rules are enforced independently."
+        />
 
         <div className="grid grid-cols-2 gap-4">
           <div>
@@ -362,7 +687,7 @@ export function Settings() {
         </div>
       </section>
 
-      {/* Save button */}
+      {/* ── Save ── */}
       <div className="flex items-center gap-4">
         <button
           onClick={() => saveMutation.mutate()}
@@ -384,7 +709,7 @@ export function Settings() {
         )}
       </div>
 
-      {/* Info banner */}
+      {/* ── Info banner ── */}
       <div className="bg-amber-50 border border-amber-200 rounded-xl px-5 py-4 flex gap-3">
         <svg className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -395,6 +720,32 @@ export function Settings() {
             Existing ICP scores are not updated automatically. Use &ldquo;AI Score All&rdquo; on the Leads page to re-score all leads with the new criteria.
           </p>
         </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Shared section header component ─────────────────────────────────────────
+
+function SectionHeader({
+  icon,
+  iconBg,
+  title,
+  subtitle,
+}: {
+  icon: React.ReactNode
+  iconBg: string
+  title: string
+  subtitle: string
+}) {
+  return (
+    <div className="flex items-start gap-3">
+      <div className={`w-9 h-9 rounded-xl ${iconBg} flex items-center justify-center shrink-0`}>
+        {icon}
+      </div>
+      <div>
+        <h2 className="text-base font-semibold text-gray-900">{title}</h2>
+        <p className="text-sm text-gray-500 mt-0.5">{subtitle}</p>
       </div>
     </div>
   )
