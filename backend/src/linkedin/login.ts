@@ -534,6 +534,40 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       return
     }
 
+    // Detect if we're on the new SDUI form (has encrypted_session_key instead of loginCsrfParam).
+    // The new form requires RSA-encrypted credentials — we can't handle it yet.
+    // Retry with the classic checkpoint login page which has standard form fields.
+    const isNewSPAForm = 'encrypted_session_key' in formFields.fields && !('loginCsrfParam' in formFields.fields)
+    if (isNewSPAForm) {
+      console.log('[LOGIN DEBUG] Detected new SDUI form — retrying with classic login page')
+      // Try the classic checkpoint login page
+      await page.goto('https://www.linkedin.com/login?fromSignIn=true&trk=guest_homepage-basic_nav-header-signin', { waitUntil: 'load', timeout: 30_000 }).catch(() => {})
+      await DELAY(2000)
+
+      // Re-extract form fields from the classic page
+      const classicFormFields = await page.evaluate((emailVal: string) => {
+        // Only collect non-password inputs at top-level (classic form, no shadow DOM)
+        const inputs = Array.from(document.querySelectorAll('input:not([type="password"])')) as HTMLInputElement[]
+        const fields: Record<string, string> = {}
+        for (const inp of inputs) {
+          if (inp.name && !inp.disabled) fields[inp.name] = inp.value
+        }
+        fields['session_key'] = emailVal
+        const form = document.querySelector('form') as HTMLFormElement | null
+        return { fields, action: form?.getAttribute('action') ?? '', hasLoginCsrf: 'loginCsrfParam' in fields }
+      }, email).catch(() => null)
+
+      if (classicFormFields && 'loginCsrfParam' in (classicFormFields.fields ?? {})) {
+        // Successfully got classic form
+        const newFormFields = classicFormFields as unknown as typeof formFields
+        formFields.fields = newFormFields.fields
+        formFields.action = newFormFields.action
+        console.log('[LOGIN DEBUG] Classic form found with loginCsrfParam')
+      } else {
+        console.log('[LOGIN DEBUG] Classic form retry failed, proceeding with new form fields')
+      }
+    }
+
     // Step 2: Build the POST body with all form fields + the password
     const postFields: Record<string, string> = {
       ...formFields.fields,
