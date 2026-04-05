@@ -671,11 +671,17 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     // Navigate the browser to the redirect URL (challenge or next page)
     if (url) {
       const navUrl = url.startsWith('http') ? url : `https://www.linkedin.com${url}`
+      console.log('[LOGIN DEBUG] Navigating browser to:', navUrl)
       try {
         await page.goto(navUrl, { waitUntil: 'domcontentloaded', timeout: 20_000 })
         await DELAY(2000)
-      } catch { /* ok — page may redirect further */ }
+      } catch (navErr) {
+        console.log('[LOGIN DEBUG] Navigation error (ok):', String(navErr).substring(0, 100))
+      }
     }
+    const postNavUrl = page.url()
+    const postNavText = await page.evaluate(() => (document.body?.innerText ?? '').substring(0, 300)).catch(() => '')
+    console.log('[LOGIN DEBUG] Post-nav URL:', postNavUrl, 'text:', postNavText.substring(0, 100))
 
     // Check if we succeeded after navigation
     const finalCookies = await context.cookies()
@@ -685,6 +691,18 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       await browser.close()
       return
     }
+
+    // Save post-navigation diagnostic
+    await supabase.from('linkedin_accounts').update({
+      debug_log: {
+        label: 'post-nav',
+        postNavUrl,
+        postNavText: postNavText.substring(0, 400),
+        cookieNames: finalCookies.map(c => c.name),
+        challengeRedirectUrl: url,
+        capturedAt: new Date().toISOString(),
+      }
+    }).eq('id', session.accountId)
 
     // ── 2FA / challenge handling ──────────────────────────────────────────────
 
