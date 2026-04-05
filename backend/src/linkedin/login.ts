@@ -453,35 +453,63 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     //    (bypasses the browser restriction while keeping the correct session cookies)
 
     // Step 1: Extract form fields (non-password) from the login form.
-    // Use the already-found email input to navigate up to its parent form.
-    const formFields = await page.evaluate((args: { emailVal: string; emailSelector: string }) => {
+    // LinkedIn's newer SPA uses Shadow DOM / web components, so document.querySelector
+    // may not find inputs. We use a deep search that traverses shadow roots.
+    const formFields = await page.evaluate((args: { emailVal: string }) => {
+      // Helper: collect all inputs from the entire DOM including shadow roots
+      function collectInputs(root: Document | ShadowRoot | Element): HTMLInputElement[] {
+        const inputs: HTMLInputElement[] = []
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT)
+        let node = walker.currentNode as Element
+        while (node) {
+          if (node.tagName === 'INPUT') {
+            inputs.push(node as HTMLInputElement)
+          }
+          // Check shadow DOM
+          if (node.shadowRoot) {
+            inputs.push(...collectInputs(node.shadowRoot))
+          }
+          node = walker.nextNode() as Element
+          if (!node) break
+        }
+        return inputs
+      }
+
       try {
-        // Find the email input (which we already know exists from the selector loop)
-        const emailInput = document.querySelector(args.emailSelector) as HTMLInputElement | null
+        const allInputs = collectInputs(document)
 
-        // Navigate up to find the form
-        let form: HTMLFormElement | null = emailInput?.closest('form') as HTMLFormElement | null
+        // Find CSRF input first — it's the best anchor
+        const csrfInput = allInputs.find(i => i.name === 'loginCsrfParam' || i.name === 'csrfToken')
+        let form: HTMLFormElement | null = csrfInput?.closest('form') as HTMLFormElement | null
 
-        // Fallback: try common selectors for the login form
+        // Try to find form from session_key input
         if (!form) {
-          const csrfInput = document.querySelector('input[name="loginCsrfParam"]') ?? document.querySelector('input[name="csrfToken"]')
-          if (csrfInput) form = csrfInput.closest('form') as HTMLFormElement | null
+          const sessionKeyInput = allInputs.find(i => i.name === 'session_key')
+          if (sessionKeyInput) form = sessionKeyInput.closest('form') as HTMLFormElement | null
         }
 
-        // Last resort: find any form with inputs
+        // Try to find form from any named input
         if (!form) {
-          const allInputs = Array.from(document.querySelectorAll('input[name]')) as HTMLInputElement[]
           for (const inp of allInputs) {
-            const f = inp.closest('form') as HTMLFormElement | null
-            if (f) { form = f; break }
+            if (inp.name) {
+              const f = inp.closest('form') as HTMLFormElement | null
+              if (f) { form = f; break }
+            }
           }
         }
 
-        if (!form) return { error: 'No form found via any method' }
+        // If still no form, check if inputs are directly in page (no form wrapper)
+        // This happens in some SPA frameworks — collect all inputs and use the login endpoint
+        const inputsInForm = form
+          ? (Array.from(form.querySelectorAll('input:not([type="password"])')) as HTMLInputElement[])
+          : allInputs.filter(i => i.type !== 'password')
+
+        if (inputsInForm.length === 0 && allInputs.length === 0) {
+          return { error: 'No form found via any method' }
+        }
 
         const fields: Record<string, string> = {}
-        const inputs = Array.from(form.querySelectorAll('input:not([type="password"])')) as HTMLInputElement[]
-        for (const inp of inputs) {
+        for (const inp of inputsInForm) {
           if (inp.name && !inp.disabled) {
             fields[inp.name] = inp.value
           }
@@ -489,13 +517,13 @@ async function runLogin(key: string, email: string, password: string): Promise<v
         // Override session_key with the email we want to submit
         fields['session_key'] = args.emailVal
 
-        const formAction = form.getAttribute('action') ?? ''
+        const formAction = form?.getAttribute('action') ?? ''
 
-        return { fields, action: formAction, inputCount: inputs.length }
+        return { fields, action: formAction, inputCount: inputsInForm.length, totalInputs: allInputs.length }
       } catch (e) {
         return { error: String(e) }
       }
-    }, { emailVal: email, emailSelector })
+    }, { emailVal: email })
 
     console.log('[LOGIN DEBUG] formFields:', JSON.stringify(formFields))
 
