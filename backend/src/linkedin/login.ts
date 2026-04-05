@@ -477,80 +477,54 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       } catch { /* try next */ }
     }
 
-    // BrightData blocks all keyboard events on password fields (silently or with error).
-    // The only reliable approach: use a raw CDP session to call Input.insertText
-    // which bypasses BrightData's security wrapper, then fire React synthetic events.
-    // Focus the element first via JS (not CDP focus) so BrightData doesn't intercept.
+    // BrightData blocks all keyboard/CDP input events on password-type fields.
+    // Workaround: temporarily change the input type from "password" to "text",
+    // fill the value using the React native setter, then restore the type.
+    // BrightData's block is specifically on elements with type="password".
 
     let passwordFilled = false
 
-    // Attempt 1: Raw CDP Input.insertText via CDPSession
-    // First focus the element using JS evaluate (not CDP), then use insertText
+    // Attempt 1: Change type to text, set value, restore type
     try {
-      await page.evaluate((sel) => {
-        const el = document.querySelector(sel) as HTMLElement | null
-        if (el) el.focus()
-      }, passwordSelector)
-      await DELAY(100)
-
-      const cdpSession = await context.newCDPSession(page)
-      await cdpSession.send('Input.insertText', { text: password })
-      await cdpSession.detach().catch(() => {})
-
-      // Verify
-      const len = await page.evaluate((sel) => {
-        const el = document.querySelector(sel) as HTMLInputElement | null
-        return el?.value?.length ?? 0
-      }, passwordSelector)
-      if (len > 0) {
+      const setResult = await page.evaluate((args: { sel: string; val: string }) => {
+        const el = document.querySelector(args.sel) as HTMLInputElement | null
+        if (!el) return 'not-found'
+        try {
+          // Temporarily make it a text field so BrightData doesn't block us
+          el.setAttribute('type', 'text')
+          const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
+          if (nativeInputValueSetter) {
+            nativeInputValueSetter.call(el, args.val)
+          } else {
+            el.value = args.val
+          }
+          el.dispatchEvent(new InputEvent('input',  { bubbles: true, inputType: 'insertText', data: args.val }))
+          el.dispatchEvent(new Event('change', { bubbles: true }))
+          const len = el.value.length
+          // Restore type to password for security (doesn't affect value already set)
+          el.setAttribute('type', 'password')
+          return len
+        } catch (e2) {
+          return 'eval-error: ' + String(e2)
+        }
+      }, { sel: passwordSelector, val: password })
+      console.log('[LOGIN DEBUG] type-swap fill result:', setResult)
+      if (typeof setResult === 'number' && setResult > 0) {
         passwordFilled = true
-        console.log('[LOGIN DEBUG] password filled via CDP insertText, length:', len)
-      } else {
-        console.log('[LOGIN DEBUG] CDP insertText produced 0-length value')
       }
     } catch (e) {
-      console.log('[LOGIN DEBUG] CDP insertText failed:', (e as Error).message?.substring(0, 150))
+      console.log('[LOGIN DEBUG] type-swap fill threw:', (e as Error).message?.substring(0, 150))
     }
 
-    // Attempt 2: React native value setter (triggers React synthetic input event)
-    // This is not a keyboard event, so BrightData may allow it
+    // Attempt 2: Direct keyboard.type after JS focus (may be silently blocked but worth trying)
     if (!passwordFilled) {
       try {
-        const setResult = await page.evaluate((args: { sel: string; val: string }) => {
-          const el = document.querySelector(args.sel) as HTMLInputElement | null
-          if (!el) return 'not-found'
-          try {
-            const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
-            if (nativeInputValueSetter) nativeInputValueSetter.call(el, args.val)
-            else el.value = args.val
-            el.dispatchEvent(new Event('input', { bubbles: true }))
-            el.dispatchEvent(new Event('change', { bubbles: true }))
-            return el.value.length
-          } catch (e2) {
-            return 'eval-error: ' + String(e2)
-          }
-        }, { sel: passwordSelector, val: password })
-        console.log('[LOGIN DEBUG] React native setter result:', setResult)
-        if (typeof setResult === 'number' && setResult > 0) {
-          passwordFilled = true
-        }
+        await jsClick(passwordSelector)
+        await DELAY(200)
+        await page.keyboard.type(password, { delay: 40 })
+        console.log('[LOGIN DEBUG] keyboard.type completed (may be silently blocked)')
       } catch (e) {
-        console.log('[LOGIN DEBUG] React native setter threw:', (e as Error).message?.substring(0, 100))
-      }
-    }
-
-    // Attempt 3: page.fill() — may work if BrightData allows insertText via Playwright
-    if (!passwordFilled) {
-      try {
-        await page.fill(passwordSelector, password)
-        const len = await page.evaluate((sel) => {
-          const el = document.querySelector(sel) as HTMLInputElement | null
-          return el?.value?.length ?? 0
-        }, passwordSelector)
-        if (len > 0) { passwordFilled = true }
-        console.log('[LOGIN DEBUG] page.fill() length:', len)
-      } catch (e) {
-        console.log('[LOGIN DEBUG] page.fill() threw:', (e as Error).message?.substring(0, 100))
+        console.log('[LOGIN DEBUG] keyboard.type threw:', (e as Error).message?.substring(0, 100))
       }
     }
 
