@@ -445,166 +445,104 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       }
     }
 
-    // Focus the email field using JS click (avoids pointer-event interception),
-    // then type using real keyboard events — works with BrightData's security rules
-    // (BrightData blocks JS-based password value setting but allows keyboard input).
+    // ── Submit credentials via direct fetch() — bypasses BrightData password block ─
+    // BrightData blocks ALL methods to fill password-type inputs (keyboard, CDP, evaluate).
+    // We use fetch() from within the page context to POST credentials to LinkedIn's
+    // login endpoint directly. This uses the browser's cookies/session and the CSRF
+    // token that LinkedIn embedded in the login page.
+
+    // Fill email via keyboard (text inputs are allowed by BrightData)
     await jsClick(emailSelector)
     await DELAY(300)
     await page.keyboard.type(email, { delay: 40 })
     await DELAY(500 + Math.random() * 300)
-
-    // Re-dismiss any banners that may have appeared after username interaction
     await dismissBanners()
 
-    // Focus the password field using JS click — avoids keyboard Tab focus event
-    // which BrightData intercepts. BrightData blocks keyboard events on password
-    // fields (Forbidden action: password typing is not allowed) so we must:
-    //   1. Use jsClick to focus (not Tab) to avoid the CDP focus interception
-    //   2. Use page.keyboard.type() for the actual password characters
-    //   3. Move focus back to a non-password field before submitting
-    const PASSWORD_SELECTORS = [
-      '#password',
-      'input[name="session_password"]',
-      'input[type="password"]',
-      'input[autocomplete="current-password"]',
-    ]
+    // Extract CSRF token from the login page (needed for the POST)
+    const csrfToken = await page.evaluate(() => {
+      const csrfInput = document.querySelector('input[name="loginCsrfParam"]') as HTMLInputElement | null
+      if (csrfInput?.value) return csrfInput.value
+      // Fallback: JSESSIONID cookie (BrightData may expose this)
+      const m = document.cookie.match(/JSESSIONID="?([^";]+)"?/)
+      return m ? m[1] : ''
+    }).catch(() => '')
+    console.log('[LOGIN DEBUG] csrfToken len:', csrfToken.length)
 
-    let passwordSelector = 'input[type="password"]'
-    for (const sel of PASSWORD_SELECTORS) {
+    // Submit credentials via fetch() — no password field interaction needed
+    const fetchResult = await page.evaluate(async (args: { email: string; pass: string; csrf: string }) => {
       try {
-        const el = await page.$(sel)
-        if (el) { passwordSelector = sel; break }
-      } catch { /* try next */ }
-    }
+        const body = new URLSearchParams({
+          session_key:      args.email,
+          session_password: args.pass,
+          loginCsrfParam:   args.csrf,
+          isJsEnabled:      'true',
+          loginFlow:        'REMEMBER_ME_OPTIN',
+        })
 
-    // BrightData blocks all keyboard/CDP input events on password-type fields.
-    // Workaround: temporarily change the input type from "password" to "text",
-    // fill the value using the React native setter, then restore the type.
-    // BrightData's block is specifically on elements with type="password".
+        const res = await fetch('https://www.linkedin.com/checkpoint/lg/login-submit', {
+          method:      'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body:     body.toString(),
+          redirect: 'follow',
+        })
 
-    let passwordFilled = false
-
-    // Attempt 1: Change type to text, set value, restore type
-    try {
-      const setResult = await page.evaluate((args: { sel: string; val: string }) => {
-        const el = document.querySelector(args.sel) as HTMLInputElement | null
-        if (!el) return 'not-found'
-        try {
-          // Temporarily make it a text field so BrightData doesn't block us
-          el.setAttribute('type', 'text')
-          const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
-          if (nativeInputValueSetter) {
-            nativeInputValueSetter.call(el, args.val)
-          } else {
-            el.value = args.val
-          }
-          el.dispatchEvent(new InputEvent('input',  { bubbles: true, inputType: 'insertText', data: args.val }))
-          el.dispatchEvent(new Event('change', { bubbles: true }))
-          const len = el.value.length
-          // Restore type to password for security (doesn't affect value already set)
-          el.setAttribute('type', 'password')
-          return len
-        } catch (e2) {
-          return 'eval-error: ' + String(e2)
-        }
-      }, { sel: passwordSelector, val: password })
-      console.log('[LOGIN DEBUG] type-swap fill result:', setResult)
-      if (typeof setResult === 'number' && setResult > 0) {
-        passwordFilled = true
+        return { ok: res.ok, status: res.status, finalUrl: res.url, redirected: res.redirected }
+      } catch (e2) {
+        return { error: String(e2) }
       }
-    } catch (e) {
-      console.log('[LOGIN DEBUG] type-swap fill threw:', (e as Error).message?.substring(0, 150))
-    }
+    }, { email, pass: password, csrf: csrfToken })
 
-    // Attempt 2: Direct keyboard.type after JS focus (may be silently blocked but worth trying)
-    if (!passwordFilled) {
-      try {
-        await jsClick(passwordSelector)
-        await DELAY(200)
-        await page.keyboard.type(password, { delay: 40 })
-        console.log('[LOGIN DEBUG] keyboard.type completed (may be silently blocked)')
-      } catch (e) {
-        console.log('[LOGIN DEBUG] keyboard.type threw:', (e as Error).message?.substring(0, 100))
-      }
-    }
-
-    console.log('[LOGIN DEBUG] passwordFilled:', passwordFilled)
-    await DELAY(300 + Math.random() * 300)
-
-    // Move focus away from password field before submitting — BrightData blocks
-    // keyboard.press() (including Enter) when a password input is focused.
-    // Blur the password field via JS (no element interaction needed) then submit.
-    await page.evaluate(() => {
-      const el = document.activeElement as HTMLElement | null
-      if (el) el.blur()
-    })
-    await DELAY(300)
-
-    // Log what's in the email/password fields for debugging
-    const fieldValues = await page.evaluate(() => {
-      const emailEl = document.querySelector('#username, input[name="session_key"], input[type="email"], input[autocomplete="username"]') as HTMLInputElement | null
-      const passEl  = document.querySelector('#password, input[name="session_password"], input[type="password"]') as HTMLInputElement | null
-      return {
-        emailValue:    emailEl?.value ?? '(not found)',
-        emailId:       emailEl?.id ?? emailEl?.name ?? '(no id)',
-        passwordLen:   passEl ? passEl.value.length : -1,
-        passwordId:    passEl?.id ?? passEl?.name ?? '(no id)',
-      }
-    }).catch(() => ({ emailValue: 'eval-failed', emailId: '?', passwordLen: -1, passwordId: '?' }))
-    console.log('[LOGIN DEBUG] field-values before submit:', JSON.stringify(fieldValues))
-    // Also persist field values to Supabase for remote debugging
-    await supabase.from('linkedin_accounts').update({
-      debug_log: { ...fieldValues, capturedAt: new Date().toISOString(), label: 'pre-submit-field-values' }
-    }).eq('id', session.accountId)
-
-    // Submit via JS click on the submit button (BrightData-safe — no keyboard event needed)
-    await jsClick('button[type="submit"], button[data-litms-control-urn="login-submit"], .btn__primary--large')
-    await DELAY(300)
-
-    await page.waitForLoadState('domcontentloaded', { timeout: 15_000 })
+    console.log('[LOGIN DEBUG] fetchResult:', JSON.stringify(fetchResult))
     await DELAY(2000)
 
-    await captureSnap('post-submit')
+    // Navigate to feed to materialise any session cookies the fetch granted
+    await page.goto('https://www.linkedin.com/feed/', { waitUntil: 'domcontentloaded', timeout: 20_000 }).catch(() => {})
+    await DELAY(2000)
 
-    // Wrong credentials?
-    const errorEl = await page.$('.alert-content, #error-for-password, .form__label--error')
+    await captureSnap('post-login')
+
+    const url = page.url()
+    console.log('[LOGIN DEBUG] URL after login + feed nav:', url)
+
+    // Check for inline error messages (wrong credentials)
+    const errorEl = await page.$('.alert-content, #error-for-password, .form__label--error').catch(() => null)
     if (errorEl) {
-      const msg = (await errorEl.innerText()).trim()
+      const msg = (await errorEl.innerText().catch(() => '')).trim()
       session.status = 'error'
       session.error  = msg || 'Incorrect email or password.'
       await browser.close()
       return
     }
 
-    const url = page.url()
-
-    // If still on login page, the submit did not work (form rejected silently or fields empty)
-    if (url.includes('/login')) {
-      // Try to find an error message that may use different selectors
-      let pageText = ''
-      try { pageText = await page.evaluate(() => (document.body?.innerText ?? '').substring(0, 500)) } catch { /* ok */ }
-      const lc = pageText.toLowerCase()
-      if (lc.includes('incorrect') || lc.includes('wrong') || lc.includes('invalid')) {
-        session.status = 'error'
-        session.error  = 'Incorrect email or password (detected from page text).'
-      } else {
-        session.status = 'error'
-        session.error  = `Login form submitted but stayed on login page. emailId=${fieldValues.emailId} emailValue="${fieldValues.emailValue}" passwordLen=${fieldValues.passwordLen}`
-      }
+    // Also check page text for error indicators
+    const bodyText = await page.evaluate(() => (document.body?.innerText ?? '').toLowerCase().substring(0, 600)).catch(() => '')
+    if (bodyText.includes('incorrect') || bodyText.includes('wrong password') || bodyText.includes('please enter a password')) {
+      session.status = 'error'
+      session.error  = 'Incorrect email or password (text detected).'
       await browser.close()
       return
     }
 
-    // Immediate success
-    if (!url.includes('/checkpoint') && !url.includes('/challenge') && !url.includes('verification')) {
+    // Immediate success check
+    if (!url.includes('/checkpoint') && !url.includes('/challenge') && !url.includes('verification') && !url.includes('/login')) {
       const cookies = await context.cookies()
       if (cookies.find(c => c.name === 'li_at')) {
         await saveCookies(context, session.accountId)
         session.status = 'success'
-      } else {
-        session.status = 'error'
-        session.error  = 'Login appeared to succeed but no session cookie was found.'
+        await browser.close()
+        return
       }
+      session.status = 'error'
+      session.error  = `No li_at cookie on ${url}. fetchResult=${JSON.stringify(fetchResult).substring(0, 80)}`
+      await browser.close()
+      return
+    }
+
+    // Still on login page — credentials rejected or fetch failed
+    if (url.includes('/login')) {
+      session.status = 'error'
+      session.error  = `Stayed on /login after fetch attempt. fetchResult=${JSON.stringify(fetchResult).substring(0, 100)}`
       await browser.close()
       return
     }
