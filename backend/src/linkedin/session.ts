@@ -12,8 +12,9 @@ chromiumExtra.use(StealthPlugin())
 
 // Bright Data residential proxy fallback (used when account has no proxy_id)
 // Format: http://brd-customer-XXXX-zone-ZONE:PASSWORD@brd.superproxy.io:PORT
-// Set DISABLE_PROXY=true locally to bypass proxy (home IPs are already residential)
-const BD_PROXY_URL = process.env.DISABLE_PROXY === 'true' ? '' : (process.env.BRIGHTDATA_PROXY_URL ?? '')
+// Set DISABLE_PROXY=true locally to bypass ALL proxies (env-level and account-level).
+const DISABLE_PROXY = process.env.DISABLE_PROXY === 'true'
+const BD_PROXY_URL  = DISABLE_PROXY ? '' : (process.env.BRIGHTDATA_PROXY_URL ?? '')
 
 export interface AccountRecord {
   id: string
@@ -34,10 +35,11 @@ export async function createSession(account: AccountRecord): Promise<{
   let browser: Browser
   let context: BrowserContext
 
-  // Resolve proxy: account-level DB proxy takes priority, then env-level Bright Data proxy
+  // Resolve proxy: account-level DB proxy takes priority, then env-level Bright Data proxy.
+  // Both are skipped entirely when DISABLE_PROXY=true (e.g. local dev with a residential IP).
   let proxySettings: { server: string; username?: string; password?: string } | undefined
 
-  if (account.proxy_id) {
+  if (!DISABLE_PROXY && account.proxy_id) {
     const { data: proxy } = await supabase
       .from('proxies')
       .select('proxy_url')
@@ -52,7 +54,7 @@ export async function createSession(account: AccountRecord): Promise<{
         password: url.password || undefined,
       }
     }
-  } else if (BD_PROXY_URL) {
+  } else if (!DISABLE_PROXY && BD_PROXY_URL) {
     const url = new URL(BD_PROXY_URL)
     // Bright Data port 33335 is their "super proxy" — use port 22225 for standard
     // residential which reliably supports HTTPS CONNECT tunneling

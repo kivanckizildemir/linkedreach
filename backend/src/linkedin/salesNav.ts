@@ -180,10 +180,9 @@ export async function scrapeSalesNavSearch(
     } catch { /* not JSON or irrelevant */ }
   })
 
-  // Warm up: visit sales home first
+  // Warm up: visit sales home first (via safeNavigate so proxy/challenge errors surface clearly)
   console.log('[sales-nav] Warming up Sales Navigator home…')
-  await page.goto('https://www.linkedin.com/sales/home', { waitUntil: 'domcontentloaded', timeout: 30_000 })
-  await detectAndHandleChallenge(page, accountId)
+  await safeNavigate(page, 'https://www.linkedin.com/sales/home', accountId)
 
   if (page.url().includes('/sales/contract-chooser')) {
     try {
