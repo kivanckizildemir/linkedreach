@@ -12,7 +12,6 @@ interface Product {
   target_use_case: string
   usps: string[]
   differentiators: string[]
-  tone_of_voice: string
   website_url: string
 }
 
@@ -192,13 +191,6 @@ function TagInput({
 
 // ─── ProductCard ──────────────────────────────────────────────────────────────
 
-const TONE_OPTIONS = [
-  { value: 'professional', label: '🎩 Professional' },
-  { value: 'conversational', label: '💬 Conversational' },
-  { value: 'bold', label: '⚡ Bold' },
-  { value: 'empathetic', label: '🤝 Empathetic' },
-]
-
 async function extractProductFromUrl(url: string): Promise<{ name: string; description: string; target_use_case: string }> {
   const res = await apiFetch('/api/settings/extract-product', {
     method: 'POST',
@@ -282,7 +274,6 @@ function ProductCard({
     one_liner: product.one_liner ?? '',
     usps: product.usps ?? [],
     differentiators: product.differentiators ?? [],
-    tone_of_voice: product.tone_of_voice ?? 'professional',
     website_url: product.website_url ?? '',
   }
 
@@ -321,9 +312,6 @@ function ProductCard({
           placeholder="Product / service name"
           className="flex-1 text-sm font-semibold text-gray-900 bg-transparent outline-none placeholder:font-normal placeholder:text-gray-400"
         />
-        {p.tone_of_voice && (
-          <span className="text-xs text-gray-400 hidden sm:block capitalize">{p.tone_of_voice}</span>
-        )}
         <button type="button" onClick={onRemove} className="text-gray-400 hover:text-red-500 transition-colors shrink-0" title="Remove">
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -404,11 +392,11 @@ function ProductCard({
 
           {/* USPs */}
           <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1.5">Unique Selling Points <span className="text-gray-400 font-normal">(what makes you the obvious choice)</span></label>
+            <label className="block text-xs font-medium text-gray-500 mb-1.5">Value Propositions <span className="text-gray-400 font-normal">(key benefits you deliver to the customer)</span></label>
             <TagListInput
               items={p.usps}
               onChange={usps => onChange({ ...p, usps })}
-              placeholder="e.g. 5-minute setup, no credit card required…"
+              placeholder="e.g. saves 10 hrs/week, increases reply rates by 3×…"
             />
           </div>
 
@@ -420,28 +408,6 @@ function ProductCard({
               onChange={differentiators => onChange({ ...p, differentiators })}
               placeholder="e.g. 3× faster than Salesforce, no per-seat pricing…"
             />
-          </div>
-
-          {/* Tone of voice */}
-          <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1.5">Tone of Voice</label>
-            <div className="flex flex-wrap gap-2">
-              {TONE_OPTIONS.map(opt => (
-                <button
-                  key={opt.value}
-                  type="button"
-                  onClick={() => onChange({ ...p, tone_of_voice: opt.value })}
-                  className={[
-                    'px-3 py-1.5 text-xs font-medium rounded-lg border transition-all',
-                    p.tone_of_voice === opt.value
-                      ? 'bg-blue-600 text-white border-blue-600'
-                      : 'bg-white text-gray-600 border-gray-200 hover:border-blue-300',
-                  ].join(' ')}
-                >
-                  {opt.label}
-                </button>
-              ))}
-            </div>
           </div>
 
         </div>
@@ -584,7 +550,7 @@ export function Settings() {
       ...c,
       products_services: [
         ...c.products_services,
-        { id: uid(), name: '', one_liner: '', description: '', target_use_case: '', usps: [], differentiators: [], tone_of_voice: 'professional', website_url: '' },
+        { id: uid(), name: '', one_liner: '', description: '', target_use_case: '', usps: [], differentiators: [], website_url: '' },
       ],
     }))
   }
