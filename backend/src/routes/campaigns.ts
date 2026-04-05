@@ -212,7 +212,7 @@ campaignsRouter.get('/:id/leads', async (req: Request, res: Response) => {
       created_at,
       lead:leads (
         id, first_name, last_name, title, company, industry, location,
-        linkedin_url, icp_score, icp_flag
+        linkedin_url, icp_score, icp_flag, raw_data
       )
     `)
     .eq('campaign_id', req.params.id)

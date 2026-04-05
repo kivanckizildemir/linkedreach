@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, type FormEvent } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { fetchLeads, requalifyLead, qualifyAllLeads, importLeads, startSalesNavImport, getScrapeStatus, fetchLeadNotes, addLeadNote, deleteLeadNote, personaliseOpeningLine, fetchLeadCampaigns, bulkDeleteLeads, createManualLead } from '../api/leads'
 import type { Lead, LeadNote, LeadCampaignMembership } from '../api/leads'
+import { supabase } from '../lib/supabase'
 import { fetchLabels, fetchLeadLabels, fetchAllLeadLabelAssignments, assignLabel, removeLabel, createLabel, type LeadLabel } from '../api/labels'
 import { fetchAccounts } from '../api/accounts'
 import { addLeadsToCampaign } from '../api/campaigns'
@@ -45,6 +46,70 @@ function ReasoningTooltip({ reasoning }: { reasoning: string }) {
         <div className="absolute left-6 top-0 z-50 w-64 bg-gray-900 text-white text-xs rounded-xl p-3 shadow-xl leading-relaxed">
           <p className="font-semibold text-gray-300 mb-1 text-[10px] uppercase tracking-wider">AI Reasoning</p>
           {reasoning}
+        </div>
+      )}
+    </div>
+  )
+}
+
+type ProductRef = { id: string; name: string }
+
+function BestFitCell({ lead, products }: { lead: Lead; products: ProductRef[] }) {
+  const [show, setShow] = useState(false)
+
+  const productScores = lead.raw_data?.product_scores
+  const bestId        = lead.raw_data?.best_product_id
+
+  // No per-product data yet — show nothing (ICP Score column covers it)
+  if (!productScores || !bestId || !productScores[bestId]) {
+    return <span className="text-gray-300 text-xs">—</span>
+  }
+
+  const best        = productScores[bestId]
+  const bestProduct = products.find(p => p.id === bestId)
+  const color       = best.score >= 75 ? '#EF4444' : best.score >= 50 ? '#F97316' : best.score >= 25 ? '#3B82F6' : '#9CA3AF'
+
+  // Sorted list of all products that have a score
+  const scoredProducts = products
+    .filter(p => productScores[p.id])
+    .sort((a, b) => (productScores[b.id]?.score ?? 0) - (productScores[a.id]?.score ?? 0))
+
+  const hasMultiple = scoredProducts.length > 1
+
+  return (
+    <div className="relative"
+      onMouseEnter={() => setShow(true)}
+      onMouseLeave={() => setShow(false)}
+    >
+      <div className="flex items-center gap-1.5 cursor-default">
+        <span className="text-xs font-medium text-gray-700 max-w-[72px] truncate" title={bestProduct?.name}>
+          {bestProduct?.name ?? 'Best fit'}
+        </span>
+        <span className="text-xs font-bold tabular-nums" style={{ color }}>{best.score}</span>
+        {hasMultiple && (
+          <span className="text-[10px] text-gray-300">▾</span>
+        )}
+      </div>
+
+      {show && hasMultiple && (
+        <div className="absolute left-0 top-full mt-1 z-50 bg-white border border-gray-200 rounded-xl shadow-xl p-3 min-w-[220px]">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-2">All Product Scores</p>
+          {scoredProducts.map(p => {
+            const ps = productScores[p.id]
+            const c  = ps.score >= 75 ? '#EF4444' : ps.score >= 50 ? '#F97316' : ps.score >= 25 ? '#3B82F6' : '#9CA3AF'
+            return (
+              <div key={p.id} className="flex items-center gap-2 py-1.5 border-t border-gray-50 first:border-0">
+                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${p.id === bestId ? 'bg-violet-500' : 'bg-gray-300'}`} />
+                <span className="text-xs text-gray-700 flex-1 truncate">{p.name}</span>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <div className="w-14 h-1.5 rounded-full bg-gray-100 overflow-hidden">
+                    <div className="h-full rounded-full" style={{ width: `${ps.score}%`, background: c }} />
+                  </div>
+                  <span className="text-xs font-bold tabular-nums w-7 text-right" style={{ color: c }}>{ps.score}</span>
+                </div>
+              </div>
+            )
+          })}
         </div>
       )}
     </div>
@@ -120,6 +185,17 @@ export function Leads() {
     queryFn: () => import('../api/campaigns').then(m => m.fetchCampaigns()),
     enabled: showAddToCampaign,
   })
+
+  // Fetch product list for "Best Fit" column (cached, served from user-settings key)
+  const { data: userSettingsRaw } = useQuery({
+    queryKey: ['user-settings'],
+    queryFn: async () => {
+      const { data } = await supabase.from('user_settings').select('icp_config').single()
+      return data as { icp_config: { products_services?: ProductRef[] } } | null
+    },
+    staleTime: 300_000,
+  })
+  const products: ProductRef[] = userSettingsRaw?.icp_config?.products_services?.filter(p => p.id && p.name) ?? []
 
   const addToCampaignMutation = useMutation({
     mutationFn: () => addLeadsToCampaign(targetCampaignId, [...selectedIds]),
@@ -281,6 +357,7 @@ export function Leads() {
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Company</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ICP Score</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Flag</th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Best Fit</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Labels</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Source</th>
                 <th className="px-4 py-3" />
@@ -289,11 +366,11 @@ export function Leads() {
             <tbody className="divide-y divide-gray-100">
               {isLoading ? (
                 <tr>
-                  <td colSpan={9} className="px-4 py-16 text-center text-gray-400 text-sm">Loading…</td>
+                  <td colSpan={10} className="px-4 py-16 text-center text-gray-400 text-sm">Loading…</td>
                 </tr>
               ) : leads.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="px-4 py-16 text-center text-gray-500">
+                  <td colSpan={10} className="px-4 py-16 text-center text-gray-500">
                     No leads yet. Import from a Sales Navigator Excel export to get started.
                   </td>
                 </tr>
@@ -346,6 +423,9 @@ export function Leads() {
                         ) : (
                           <span className="text-gray-400 text-xs italic">Unscored</span>
                         )}
+                      </td>
+                      <td className="px-4 py-3">
+                        <BestFitCell lead={lead} products={products} />
                       </td>
                       <td className="px-4 py-3">
                         <LeadLabelCell leadId={lead.id} allLabels={labels} queryClient={queryClient} />

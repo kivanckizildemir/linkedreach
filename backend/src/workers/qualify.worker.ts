@@ -53,16 +53,22 @@ export const qualifyWorker = new Worker<QualifyJob>(
       icpConfig as Record<string, unknown>
     )
 
+    const rawDataUpdate: Record<string, unknown> = {
+      ...(lead.raw_data as Record<string, unknown> ?? {}),
+      ai_reasoning: result.reasoning,
+      ai_qualified_at: new Date().toISOString(),
+    }
+    if (result.product_scores) {
+      rawDataUpdate.product_scores = result.product_scores
+      rawDataUpdate.best_product_id = result.best_product_id
+    }
+
     await supabase
       .from('leads')
       .update({
         icp_score: result.score,
         icp_flag: result.flag,
-        raw_data: {
-          ...(lead.raw_data as Record<string, unknown> ?? {}),
-          ai_reasoning: result.reasoning,
-          ai_qualified_at: new Date().toISOString(),
-        },
+        raw_data: rawDataUpdate,
       })
       .eq('id', lead_id)
 

@@ -13,7 +13,13 @@ export interface Lead {
   location: string | null
   icp_score: number | null
   icp_flag: 'hot' | 'warm' | 'cold' | 'disqualified' | null
-  raw_data: { ai_reasoning?: string; ai_qualified_at?: string; opening_line?: string } | null
+  raw_data: {
+    ai_reasoning?: string
+    ai_qualified_at?: string
+    opening_line?: string
+    product_scores?: Record<string, { score: number; flag: string; reasoning: string }>
+    best_product_id?: string
+  } | null
   source: 'excel_import' | 'chrome_extension' | 'manual'
   created_at: string
   updated_at: string

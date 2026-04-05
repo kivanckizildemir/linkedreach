@@ -20,6 +20,10 @@ export interface CampaignLead {
     linkedin_url: string
     icp_score: number | null
     icp_flag: 'hot' | 'warm' | 'cold' | 'disqualified' | null
+    raw_data: {
+      product_scores?: Record<string, { score: number; flag: string; reasoning: string }>
+      best_product_id?: string
+    } | null
   }
 }
 

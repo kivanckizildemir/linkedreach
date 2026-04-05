@@ -1769,6 +1769,25 @@ function CampaignLeadsTab({ campaignId }: { campaignId: string }) {
     queryFn: () => fetchCampaignLeads(campaignId),
   })
 
+  // Fetch campaign to get selected product_id (same query key as FlowCanvas — served from cache)
+  const { data: campaignDetail } = useQuery({
+    queryKey: ['campaign-detail', campaignId],
+    queryFn: () => fetchCampaign(campaignId),
+  })
+  const campaignProductId = campaignDetail?.product_id ?? null
+
+  // Fetch product names for the column header
+  const { data: userSettingsRaw } = useQuery({
+    queryKey: ['user-settings'],
+    queryFn: async () => {
+      const { data } = await supabase.from('user_settings').select('icp_config').single()
+      return data as { icp_config: { products_services?: Array<{ id: string; name: string }> } } | null
+    },
+    staleTime: 300_000,
+  })
+  const settingsProducts = userSettingsRaw?.icp_config?.products_services ?? []
+  const campaignProduct  = campaignProductId ? settingsProducts.find(p => p.id === campaignProductId) : null
+
   const removeMutation = useMutation({
     mutationFn: (clId: string) => removeCampaignLead(campaignId, clId),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['campaign-leads', campaignId] }),
@@ -1802,7 +1821,9 @@ function CampaignLeadsTab({ campaignId }: { campaignId: string }) {
               <tr className="border-b border-gray-100 text-xs font-medium text-gray-500 uppercase tracking-wide">
                 <th className="text-left px-4 py-3">Lead</th>
                 <th className="text-left px-4 py-3 hidden md:table-cell">Company</th>
-                <th className="text-left px-4 py-3 hidden lg:table-cell">ICP</th>
+                <th className="text-left px-4 py-3 hidden lg:table-cell" title={campaignProduct?.name}>
+                  {campaignProduct ? campaignProduct.name.length > 12 ? campaignProduct.name.slice(0, 10) + '…' : campaignProduct.name : 'ICP'}
+                </th>
                 <th className="text-left px-4 py-3">Status</th>
                 <th className="text-left px-4 py-3 hidden md:table-cell">Step</th>
                 <th className="px-4 py-3" />
@@ -1829,13 +1850,30 @@ function CampaignLeadsTab({ campaignId }: { campaignId: string }) {
                     {cl.lead.company ?? '—'}
                   </td>
                   <td className="px-4 py-3 hidden lg:table-cell">
-                    {cl.lead.icp_flag ? (
-                      <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${ICP_BADGE[cl.lead.icp_flag].bg}`}>
-                        {ICP_BADGE[cl.lead.icp_flag].label}
-                      </span>
-                    ) : (
-                      <span className="text-xs text-gray-400">—</span>
-                    )}
+                    {(() => {
+                      const productScores = cl.lead.raw_data?.product_scores
+                      const ps = campaignProductId && productScores ? productScores[campaignProductId] : null
+                      if (ps) {
+                        const flag = ps.flag as 'hot' | 'warm' | 'cold' | 'disqualified'
+                        const c = ps.score >= 75 ? '#EF4444' : ps.score >= 50 ? '#F97316' : ps.score >= 25 ? '#3B82F6' : '#9CA3AF'
+                        return (
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-xs font-bold tabular-nums" style={{ color: c }}>{ps.score}</span>
+                            <span className={`text-xs font-medium px-1.5 py-0.5 rounded-full ${ICP_BADGE[flag].bg}`}>
+                              {ICP_BADGE[flag].label}
+                            </span>
+                          </div>
+                        )
+                      }
+                      if (cl.lead.icp_flag) {
+                        return (
+                          <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${ICP_BADGE[cl.lead.icp_flag].bg}`}>
+                            {ICP_BADGE[cl.lead.icp_flag].label}
+                          </span>
+                        )
+                      }
+                      return <span className="text-xs text-gray-400">—</span>
+                    })()}
                   </td>
                   <td className="px-4 py-3">
                     <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${CL_STATUS_COLORS[cl.status]}`}>

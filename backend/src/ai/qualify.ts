@@ -13,10 +13,18 @@ export interface LeadProfile {
   connection_degree: number | null
 }
 
-export interface QualifyResult {
-  score: number      // 0-100
+export interface ProductScore {
+  score: number
   flag: IcpFlag
   reasoning: string
+}
+
+export interface QualifyResult {
+  score: number      // 0-100 (best product score, or overall if no products)
+  flag: IcpFlag
+  reasoning: string
+  product_scores?: Record<string, ProductScore>   // keyed by product.id
+  best_product_id?: string
 }
 
 interface Product {
@@ -80,12 +88,25 @@ function buildPrompt(lead: LeadProfile, icp: IcpConfig): string {
   lines.push('')
 
   // ── Products & services ──
-  if (icp.products_services?.length) {
+  // Products with IDs use per-product scoring; those without fall back to single-score mode.
+  const productsWithIds = (icp.products_services ?? []).filter(p => p.name && p.id)
+  const productsNoId    = (icp.products_services ?? []).filter(p => p.name && !p.id)
+
+  if (productsWithIds.length > 0) {
+    lines.push('## Products & Services We Sell')
+    lines.push('You will score this lead SEPARATELY for each product. Each product has a unique [PRODUCT_ID] tag.')
+    for (const p of productsWithIds) {
+      lines.push('')
+      lines.push(`### ${p.name} [PRODUCT_ID: ${p.id!}]`)
+      if (p.description) lines.push(`Description: ${p.description}`)
+      if (p.target_use_case) lines.push(`Ideal customer: ${p.target_use_case}`)
+    }
+    lines.push('')
+  } else if (productsNoId.length > 0) {
     lines.push('## Products & Services We Sell')
     lines.push('Use this to assess whether the lead is likely to have a need for what we offer.')
-    for (const p of icp.products_services) {
-      if (!p.name) continue
-      lines.push(``)
+    for (const p of productsNoId) {
+      lines.push('')
       lines.push(`### ${p.name}`)
       if (p.description) lines.push(`Description: ${p.description}`)
       if (p.target_use_case) lines.push(`Ideal customer: ${p.target_use_case}`)
@@ -137,19 +158,34 @@ function buildPrompt(lead: LeadProfile, icp: IcpConfig): string {
 
   // ── Scoring instructions ──
   lines.push('## Scoring Instructions')
-  lines.push('Score this lead from 0 to 100 based on how well they match the ICP above.')
-  lines.push('Assign a flag:')
-  lines.push('- "hot" if score >= 75')
-  lines.push('- "warm" if score >= 50')
-  lines.push('- "cold" if score >= 25')
-  lines.push('- "disqualified" if score < 25 OR any disqualifier applies')
+  lines.push('Flag rules: "hot" ≥ 75 · "warm" ≥ 50 · "cold" ≥ 25 · "disqualified" < 25 or if any disqualifier applies')
   lines.push('')
-  lines.push('Respond ONLY with valid JSON in this exact format (no markdown, no extra text):')
-  lines.push('{')
-  lines.push('  "score": <number 0-100>,')
-  lines.push('  "flag": "<hot|warm|cold|disqualified>",')
-  lines.push('  "reasoning": "<1-2 sentence explanation>"')
-  lines.push('}')
+
+  if (productsWithIds.length > 0) {
+    // Per-product output format
+    lines.push('Score this lead separately for EACH product using the ICP criteria above.')
+    lines.push('Use the exact product IDs shown in the [PRODUCT_ID: ...] tags.')
+    lines.push('')
+    lines.push('Respond ONLY with valid JSON (no markdown fences, no extra text):')
+    lines.push('{')
+    lines.push('  "product_scores": {')
+    productsWithIds.forEach((p, i) => {
+      const comma = i < productsWithIds.length - 1 ? ',' : ''
+      lines.push(`    "${p.id!}": { "score": <0-100>, "flag": "<hot|warm|cold|disqualified>", "reasoning": "<1 sentence>" }${comma}`)
+    })
+    lines.push('  }')
+    lines.push('}')
+  } else {
+    // Single overall score
+    lines.push('Score this lead from 0 to 100 based on overall ICP fit.')
+    lines.push('')
+    lines.push('Respond ONLY with valid JSON (no markdown, no extra text):')
+    lines.push('{')
+    lines.push('  "score": <number 0-100>,')
+    lines.push('  "flag": "<hot|warm|cold|disqualified>",')
+    lines.push('  "reasoning": "<1-2 sentence explanation>"')
+    lines.push('}')
+  }
 
   return lines.join('\n')
 }
@@ -158,21 +194,52 @@ export async function qualifyLead(
   lead: LeadProfile,
   icpConfig: Record<string, unknown>
 ): Promise<QualifyResult> {
-  const prompt = buildPrompt(lead, icpConfig as IcpConfig)
+  const icp = icpConfig as IcpConfig
+  const hasPerProductScoring = (icp.products_services ?? []).some(p => p.name && p.id)
+
+  const prompt = buildPrompt(lead, icp)
 
   const message = await client.messages.create({
     model: 'claude-haiku-4-5-20251001',
-    max_tokens: 256,
+    max_tokens: hasPerProductScoring ? 1024 : 256,
     messages: [{ role: 'user', content: prompt }],
   })
 
   const raw = (message.content[0] as { type: string; text: string }).text.trim()
-  // Strip markdown fences if present
   const json = raw.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '')
+
+  if (hasPerProductScoring) {
+    // Per-product response: { product_scores: { [id]: { score, flag, reasoning } } }
+    const parsed = JSON.parse(json) as { product_scores: Record<string, ProductScore> }
+    const productScores = parsed.product_scores
+
+    // Clamp scores
+    for (const id of Object.keys(productScores)) {
+      productScores[id].score = Math.max(0, Math.min(100, Math.round(productScores[id].score)))
+    }
+
+    // Find best product (highest score)
+    let bestProductId = ''
+    let bestScore = -1
+    for (const [id, ps] of Object.entries(productScores)) {
+      if (ps.score > bestScore) {
+        bestScore = ps.score
+        bestProductId = id
+      }
+    }
+
+    const best = productScores[bestProductId]
+    return {
+      score: best.score,
+      flag: best.flag,
+      reasoning: best.reasoning,
+      product_scores: productScores,
+      best_product_id: bestProductId,
+    }
+  }
+
+  // Single-score fallback
   const result = JSON.parse(json) as QualifyResult
-
-  // Clamp score to valid range
   result.score = Math.max(0, Math.min(100, Math.round(result.score)))
-
   return result
 }
