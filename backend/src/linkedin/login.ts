@@ -455,7 +455,16 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     // Step 1: Extract form fields (non-password) from the login form
     const formFields = await page.evaluate((emailVal: string) => {
       try {
-        const form = document.querySelector('form') as HTMLFormElement | null
+        // Look specifically for the login form (has loginCsrfParam or csrfToken)
+        const allForms = Array.from(document.querySelectorAll('form')) as HTMLFormElement[]
+        const loginForm = allForms.find(f =>
+          f.querySelector('input[name="loginCsrfParam"]') ||
+          f.querySelector('input[name="csrfToken"]') ||
+          f.querySelector('input[name="session_key"]') ||
+          f.action.includes('login-submit')
+        ) ?? allForms[0]
+
+        const form = loginForm ?? null
         if (!form) return { error: 'No form found' }
 
         const fields: Record<string, string> = {}
@@ -468,7 +477,11 @@ async function runLogin(key: string, email: string, password: string): Promise<v
         // Override session_key with the email we want to submit
         fields['session_key'] = emailVal
 
-        return { fields, action: form.action }
+        // form.action returns absolute URL — if it's just the page URL (no explicit action),
+        // we'll use empty string and fall back to the hardcoded LinkedIn submit URL.
+        const formAction = form.getAttribute('action') ?? ''
+
+        return { fields, action: formAction, formActionAbsolute: form.action }
       } catch (e) {
         return { error: String(e) }
       }
@@ -498,7 +511,14 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
       .join('&')
 
-    const formAction = formFields.action || 'https://www.linkedin.com/checkpoint/lg/login-submit'
+    // LinkedIn's login form has action="/checkpoint/lg/login-submit" as a relative path.
+    // form.getAttribute('action') gives the relative path; form.action gives absolute.
+    // If the form has no action attribute (returns null/""), fall back to the known URL.
+    const formAction = formFields.action
+      ? (formFields.action.startsWith('http')
+          ? formFields.action
+          : `https://www.linkedin.com${formFields.action}`)
+      : 'https://www.linkedin.com/checkpoint/lg/login-submit'
     console.log('[LOGIN DEBUG] Submitting POST to:', formAction)
     console.log('[LOGIN DEBUG] Fields:', Object.keys(postFields).join(', '))
 
