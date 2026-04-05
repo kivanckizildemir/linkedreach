@@ -444,206 +444,197 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       }
     }
 
-    // ── Credential submission via synthetic form DOM manipulation ────────────────
-    // BrightData blocks all keyboard events to password fields.
-    // Strategy: use evaluate() to submit the form by dynamically creating a hidden
-    // form with the credentials and submitting it. This bypasses the password input
-    // field entirely and uses the browser's own form submission mechanism.
-    // The CSRF token (loginCsrfParam) is extracted from the existing page.
+    // ── Credential submission via direct Node.js HTTP POST through BrightData proxy ─
+    // BrightData Scraping Browser blocks form.submit() to /checkpoint/lg/login-submit
+    // (navigation hangs indefinitely). Instead:
+    // 1. Extract all form tokens from the browser page via evaluate()
+    // 2. Get page cookies from the BrightData browser context
+    // 3. POST directly from Node.js using undici through BRIGHTDATA_PROXY_URL
+    //    (bypasses the browser restriction while keeping the correct session cookies)
 
-    // Fill email via keyboard first (text inputs work fine)
-    await jsClick(emailSelector)
-    await DELAY(300)
-    await page.keyboard.type(email, { delay: 40 })
-    await DELAY(500 + Math.random() * 300)
-    await dismissBanners()
-
-    // Submit credentials using form.submit() WITHOUT touching the password field.
-    // BrightData blocks all access to password-type inputs via evaluate/keyboard.
-    // Instead: fill the email field via evaluate (text input, not blocked),
-    // then inject a hidden input for the password into the EXISTING form, and submit.
-    // The existing form already has the CSRF token (loginCsrfParam) as a hidden input.
-    const submitResult = await page.evaluate((args: { email: string; pass: string }) => {
+    // Step 1: Extract form fields (non-password) from the login form
+    const formFields = await page.evaluate((emailVal: string) => {
       try {
-        // Find the email input (text type — not blocked by BrightData)
-        const emailInput = document.querySelector(
-          '#username, input[name="session_key"], input[autocomplete="username"], input[type="text"]:not([type="hidden"])'
-        ) as HTMLInputElement | null
+        const form = document.querySelector('form') as HTMLFormElement | null
+        if (!form) return { error: 'No form found' }
 
-        // Set email via React native setter
-        const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
-        if (emailInput) {
-          if (nativeInputValueSetter) nativeInputValueSetter.call(emailInput, args.email)
-          else emailInput.value = args.email
-          emailInput.dispatchEvent(new InputEvent('input', { bubbles: true }))
-        }
-
-        // Find the login form
-        const form = (emailInput?.closest('form') ?? document.querySelector('form')) as HTMLFormElement | null
-        const formAction = form?.action ?? ''
-
-        // Capture non-password form inputs BEFORE manipulation (diagnostic)
-        const allInputsBefore = form ? Array.from(form.querySelectorAll('input:not([type="password"])')).map((i: Element) => {
-          const inp = i as HTMLInputElement
-          return `${inp.name}(${inp.type})=${inp.disabled ? 'DISABLED' : inp.value.substring(0, 20)}`
-        }) : []
-
-        let passDisableError = ''
-        let passFieldCount = 0
-        let passFieldName = ''
-        if (form) {
-          // Try to disable existing password fields — wrap in try/catch since BrightData may block
-          try {
-            const existingPassInputs = Array.from(form.querySelectorAll('input[type="password"]')) as HTMLInputElement[]
-            passFieldCount = existingPassInputs.length
-            passFieldName  = existingPassInputs.map(i => i.name).join(',')
-            existingPassInputs.forEach(inp => { inp.disabled = true })
-          } catch (passErr) {
-            passDisableError = String(passErr).substring(0, 100)
+        const fields: Record<string, string> = {}
+        const inputs = Array.from(form.querySelectorAll('input:not([type="password"])')) as HTMLInputElement[]
+        for (const inp of inputs) {
+          if (inp.name && !inp.disabled) {
+            fields[inp.name] = inp.value
           }
-
-          // Add hidden password input (type=hidden is NOT blocked by BrightData)
-          const hiddenPass = document.createElement('input')
-          hiddenPass.type  = 'hidden'
-          hiddenPass.name  = 'session_password'
-          hiddenPass.value = args.pass
-          form.appendChild(hiddenPass)
         }
+        // Override session_key with the email we want to submit
+        fields['session_key'] = emailVal
 
-        // Capture non-password form inputs AFTER injection — should now include session_password(hidden)
-        const allInputsAfter = form ? Array.from(form.querySelectorAll('input:not([type="password"])')).map((i: Element) => {
-          const inp = i as HTMLInputElement
-          return `${inp.name}(${inp.type})=${inp.disabled ? 'DISABLED' : inp.value.substring(0, 20)}`
-        }) : []
-
-        if (form) {
-          form.submit()
-        }
-
-        return {
-          ok:              !!form,
-          formAction,
-          emailFound:      !!emailInput,
-          emailVal:        emailInput?.value?.substring(0, 30) ?? '',
-          allInputsBefore: allInputsBefore,
-          allInputsAfter:  allInputsAfter,
-          passFieldCount,
-          passFieldName,
-          passDisableError,
-        }
-      } catch (e2) {
-        return { error: String(e2) }
+        return { fields, action: form.action }
+      } catch (e) {
+        return { error: String(e) }
       }
-    }, { email, pass: password })
+    }, email)
 
-    console.log('[LOGIN DEBUG] submitResult:', JSON.stringify(submitResult))
+    console.log('[LOGIN DEBUG] formFields:', JSON.stringify(formFields))
+
+    if (!formFields || 'error' in formFields || !formFields.fields) {
+      session.status = 'error'
+      session.error  = `Could not extract form fields: ${JSON.stringify(formFields)}`
+      await browser.close()
+      return
+    }
+
+    // Step 2: Get cookies from the browser context to include in our POST
+    const browserCookies = await context.cookies('https://www.linkedin.com')
+    const cookieHeader = browserCookies
+      .map(c => `${c.name}=${c.value}`)
+      .join('; ')
+
+    // Step 3: Build the POST body with all form fields + the password
+    const postFields: Record<string, string> = {
+      ...formFields.fields,
+      session_password: password,
+    }
+    const postBody = Object.entries(postFields)
+      .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+      .join('&')
+
+    const formAction = formFields.action || 'https://www.linkedin.com/checkpoint/lg/login-submit'
+    console.log('[LOGIN DEBUG] Submitting POST to:', formAction)
+    console.log('[LOGIN DEBUG] Fields:', Object.keys(postFields).join(', '))
+
+    // Step 4: POST via undici through BrightData proxy
+    let loginResponseUrl = ''
+    let loginResponseCookies: string[] = []
+    let loginResponseStatus = 0
+    let loginError = ''
+
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { fetch: undici_fetch, ProxyAgent } = require('undici') as typeof import('undici')
+
+      const BD_PROXY_URL = process.env.BRIGHTDATA_PROXY_URL ?? ''
+      const dispatcher = BD_PROXY_URL ? new ProxyAgent(BD_PROXY_URL) : undefined
+
+      const fetchOpts: Parameters<typeof undici_fetch>[1] = {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+          'Referer': 'https://www.linkedin.com/login',
+          'Origin': 'https://www.linkedin.com',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9',
+          ...(cookieHeader ? { 'Cookie': cookieHeader } : {}),
+        },
+        body: postBody,
+        redirect: 'manual',
+        ...(dispatcher ? { dispatcher } : {}),
+      }
+
+      const response = await undici_fetch(formAction, fetchOpts)
+      loginResponseStatus = response.status
+      loginResponseUrl = response.headers.get('location') ?? ''
+      loginResponseCookies = response.headers.getSetCookie?.() ?? []
+      console.log('[LOGIN DEBUG] POST response status:', loginResponseStatus, 'location:', loginResponseUrl)
+      console.log('[LOGIN DEBUG] Set-Cookie headers:', loginResponseCookies.length)
+
+    } catch (fetchErr) {
+      loginError = String(fetchErr)
+      console.error('[LOGIN DEBUG] Fetch error:', loginError)
+    }
+
     await supabase.from('linkedin_accounts').update({
-      debug_log: { ...submitResult, capturedAt: new Date().toISOString(), label: 'submit-result' }
+      debug_log: {
+        label: 'direct-post-result',
+        formAction,
+        postFields: Object.keys(postFields),
+        loginResponseStatus,
+        loginResponseUrl,
+        loginResponseCookies: loginResponseCookies.map(c => c.split(';')[0].substring(0, 40)),
+        loginError,
+        capturedAt: new Date().toISOString(),
+      }
     }).eq('id', session.accountId)
 
-    // Wait for navigation after form.submit()
-    // LinkedIn processes login at /checkpoint/lg/login-submit, then redirects.
-    // First wait for domcontentloaded, then wait for the processing redirect.
-    await Promise.race([
-      page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20_000 }),
-      DELAY(8_000),
-    ]).catch(() => {})
-
-    // If we're still on the login-submit processing page, wait for the final redirect
-    const urlAfterSubmit = page.url()
-    if (urlAfterSubmit.includes('/login-submit') || urlAfterSubmit.includes('/checkpoint/lg/login-submit')) {
-      console.log('[LOGIN DEBUG] Still on login-submit page, waiting for redirect...')
-      await Promise.race([
-        page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20_000 }),
-        DELAY(10_000),
-      ]).catch(() => {})
-    }
-
-    await DELAY(2000)
-
-    const url = page.url()
-    console.log('[LOGIN DEBUG] URL after submit:', url)
-
-    // Build a diagnostic prefix from submitResult for error messages
-    const submitDiag = typeof submitResult === 'object' && submitResult !== null
-      ? `emailFound=${(submitResult as Record<string,unknown>).emailFound} emailVal="${String((submitResult as Record<string,unknown>).emailVal).substring(0,25)}" formAction="${String((submitResult as Record<string,unknown>).formAction).substring(0,60)}" passFields=${(submitResult as Record<string,unknown>).passFieldCount} passFieldName="${(submitResult as Record<string,unknown>).passFieldName}" passErr="${String((submitResult as Record<string,unknown>).passDisableError).substring(0,60)}" after=${JSON.stringify((submitResult as Record<string,unknown>).allInputsAfter).substring(0,300)}`
-      : JSON.stringify(submitResult).substring(0, 300)
-
-    // Detect wrong credentials from page text
-    const bodyText = await page.evaluate(() => (document.body?.innerText ?? '').toLowerCase().substring(0, 600)).catch(() => '')
-    if (bodyText.includes('please enter a password') || bodyText.includes('wrong password')) {
+    if (loginError) {
       session.status = 'error'
-      session.error  = `Password field was empty on submit. ${submitDiag}`
+      session.error  = `Login POST failed: ${loginError.substring(0, 200)}`
       await browser.close()
       return
     }
 
-    // Immediate success check — landed on feed or similar non-challenge page
-    const isLoginPage = /\/login(\?|$)/.test(url) || url.includes('/login?')
-    const isLoginSubmit = url.includes('/login-submit')
-    const isChallenge = url.includes('/checkpoint') || url.includes('/challenge') || url.includes('verification')
+    // Parse the response to determine outcome
+    // LinkedIn returns 302 redirect with Location header after login attempt
+    const liAtFromResponse = loginResponseCookies.find(c => c.startsWith('li_at=') && !c.includes('li_at=;') && !c.includes('li_at=""'))
+    const redirectLocation = loginResponseUrl || ''
 
-    if (!isChallenge && !isLoginPage && !isLoginSubmit) {
-      const cookies = await context.cookies()
-      if (cookies.find(c => c.name === 'li_at')) {
-        await saveCookies(context, session.accountId)
-        session.status = 'success'
-        await browser.close()
-        return
+    const submitDiag = `status=${loginResponseStatus} location=${redirectLocation.substring(0,80)} li_at=${liAtFromResponse ? 'found' : 'not-found'}`
+
+    // If we got li_at cookie, login succeeded — inject cookies into browser context and save
+    if (liAtFromResponse) {
+      const liAtValue = liAtFromResponse.split('=')[1]?.split(';')[0]
+      if (liAtValue) {
+        await context.addCookies([{
+          name: 'li_at',
+          value: liAtValue,
+          domain: '.linkedin.com',
+          path: '/',
+          httpOnly: true,
+          secure: true,
+          sameSite: 'None',
+        }])
       }
-      session.status = 'error'
-      session.error  = `No li_at cookie on ${url}. ${submitDiag}`
-      await browser.close()
-      return
-    }
-
-    // Still on login page (not login-submit) — credentials rejected or form empty
-    if (isLoginPage && !isLoginSubmit) {
-      // Wait a bit more for the page to fully render after redirect
-      await DELAY(3000)
-      const loginText = await page.evaluate(() => (document.body?.innerText ?? '').substring(0, 800)).catch(() => '')
-      const lc = loginText.toLowerCase()
-      // Take a screenshot for diagnosis
-      let screenshotB64 = ''
-      try {
-        const buf = await page.screenshot({ type: 'png', fullPage: false })
-        screenshotB64 = buf.toString('base64')
-      } catch { /* ok */ }
-      // Save to debug_log
-      await supabase.from('linkedin_accounts').update({
-        debug_log: {
-          label: 'post-submit-login-page',
-          url,
-          pageText: loginText,
-          screenshot: screenshotB64,
-          capturedAt: new Date().toISOString(),
-          submitDiag: submitDiag.substring(0, 500),
-        }
-      }).eq('id', session.accountId)
-      if (lc.includes('incorrect') || lc.includes('wrong') || lc.includes('please enter a password') || lc.includes('check your email')) {
-        session.status = 'error'
-        session.error  = `Incorrect email or password. Page: ${loginText.substring(0, 150)}`
-      } else {
-        session.status = 'error'
-        session.error  = `Stayed on /login. Page: ${loginText.substring(0, 150)}`
+      // Also inject any other LinkedIn cookies from response
+      for (const setCookie of loginResponseCookies) {
+        try {
+          const [nameVal] = setCookie.split(';')
+          const eqIdx = nameVal.indexOf('=')
+          if (eqIdx < 0) continue
+          const name = nameVal.substring(0, eqIdx).trim()
+          const value = nameVal.substring(eqIdx + 1).trim()
+          if (name && value && !['li_at'].includes(name)) {
+            await context.addCookies([{
+              name, value, domain: '.linkedin.com', path: '/', httpOnly: false, secure: true, sameSite: 'Lax',
+            }]).catch(() => {})
+          }
+        } catch { /* ok */ }
       }
+      await saveCookies(context, session.accountId)
+      session.status = 'success'
       await browser.close()
       return
     }
 
-    // If still on login-submit after waiting, treat as error
-    if (isLoginSubmit) {
-      const submitPageText = await page.evaluate(() => (document.body?.innerText ?? '').substring(0, 400)).catch(() => '')
-      let screenshotB64 = ''
-      try {
-        const buf = await page.screenshot({ type: 'png', fullPage: false })
-        screenshotB64 = buf.toString('base64')
-      } catch { /* ok */ }
-      await supabase.from('linkedin_accounts').update({
-        debug_log: { label: 'stuck-on-login-submit', url, pageText: submitPageText, screenshot: screenshotB64, capturedAt: new Date().toISOString() }
-      }).eq('id', session.accountId)
+    // Check for bad credentials (redirected to /login)
+    const isLoginRedirect = redirectLocation.includes('/login') && !redirectLocation.includes('/login-submit')
+    const isChallenge = redirectLocation.includes('/checkpoint') || redirectLocation.includes('/challenge') || redirectLocation.includes('verification') || redirectLocation.includes('/feed')
+    const isLoginSubmit = redirectLocation.includes('/login-submit')
+
+    const url = redirectLocation || formAction
+
+    // If redirected back to login — wrong credentials
+    if (isLoginRedirect && !isChallenge) {
       session.status = 'error'
-      session.error  = `Stuck on login-submit. URL: ${url} | Page: ${submitPageText.substring(0, 150)}`
+      session.error  = `Incorrect email or password (redirected to login). ${submitDiag}`
+      await browser.close()
+      return
+    }
+
+    // If login-submit or success pages — navigate the browser to the redirect URL
+    // to allow 2FA/challenge handling in the browser
+    if (isChallenge || isLoginSubmit || url) {
+      // Navigate the browser to the redirect location
+      try {
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20_000 })
+        await DELAY(2000)
+      } catch { /* ok — page may redirect further */ }
+    }
+
+    // Check if we succeeded after navigation
+    const finalCookies = await context.cookies()
+    if (finalCookies.find(c => c.name === 'li_at')) {
+      await saveCookies(context, session.accountId)
+      session.status = 'success'
       await browser.close()
       return
     }
