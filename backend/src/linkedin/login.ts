@@ -535,8 +535,8 @@ async function runLogin(key: string, email: string, password: string): Promise<v
 
     // Build a diagnostic prefix from submitResult for error messages
     const submitDiag = typeof submitResult === 'object' && submitResult !== null
-      ? `emailFound=${(submitResult as Record<string,unknown>).emailFound} passFound=${(submitResult as Record<string,unknown>).passFound} passLen=${(submitResult as Record<string,unknown>).passLen} emailVal="${String((submitResult as Record<string,unknown>).emailVal).substring(0,20)}" formAction="${String((submitResult as Record<string,unknown>).formAction).substring(0,60)}"`
-      : JSON.stringify(submitResult).substring(0, 100)
+      ? `emailFound=${(submitResult as Record<string,unknown>).emailFound} emailVal="${String((submitResult as Record<string,unknown>).emailVal).substring(0,25)}" formAction="${String((submitResult as Record<string,unknown>).formAction).substring(0,60)}" formInputs=${JSON.stringify((submitResult as Record<string,unknown>).formInputs).substring(0,200)}`
+      : JSON.stringify(submitResult).substring(0, 150)
 
     // Detect wrong credentials from page text
     const bodyText = await page.evaluate(() => (document.body?.innerText ?? '').toLowerCase().substring(0, 600)).catch(() => '')
