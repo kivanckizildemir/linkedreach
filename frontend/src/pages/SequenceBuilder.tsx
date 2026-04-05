@@ -847,23 +847,33 @@ function EditModal({ step, sequenceId, campaignId, onSave, onDelete, onClose, on
 }
 
 // ── Test Message Modal ────────────────────────────────────────────────────────
+// Can be opened from the toolbar (no pre-selected step) or from EditModal (step pre-selected).
+
+const MESSAGE_STEP_TYPES = new Set(['connect', 'message', 'inmail'])
 
 function TestMessageModal({
-  step,
+  initialStep,
+  allSteps,
   sequenceId,
   campaignId,
   onClose,
 }: {
-  step: SequenceStep
+  initialStep?: SequenceStep       // pre-selected when opened from EditModal
+  allSteps: SequenceStep[]         // all steps — used to build step picker
   sequenceId: string
   campaignId: string
   onClose: () => void
 }) {
+  const messageSteps = allSteps.filter(s => MESSAGE_STEP_TYPES.has(s.type))
+
+  const [selectedStepId, setSelectedStepId] = useState<string>(initialStep?.id ?? messageSteps[0]?.id ?? '')
   const [leadId, setLeadId] = useState('')
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<PreviewResult | null>(null)
   const [err, setErr] = useState('')
   const [copied, setCopied] = useState(false)
+
+  const selectedStep = allSteps.find(s => s.id === selectedStepId) ?? null
 
   const { data: campaignLeads = [], isLoading: leadsLoading } = useQuery({
     queryKey: ['campaign-leads', campaignId],
@@ -871,12 +881,12 @@ function TestMessageModal({
   })
 
   async function handlePreview() {
-    if (!leadId) return
+    if (!leadId || !selectedStepId) return
     setLoading(true)
     setErr('')
     setResult(null)
     try {
-      const r = await previewStepForLead(sequenceId, step.id, leadId)
+      const r = await previewStepForLead(sequenceId, selectedStepId, leadId)
       setResult(r)
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'Preview failed')
@@ -893,17 +903,17 @@ function TestMessageModal({
     })
   }
 
-  const cfg = STEP_CFG[step.type]
+  const canGenerate = !!selectedStepId && !!leadId && campaignLeads.length > 0
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[110] p-4">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col">
         {/* Header */}
-        <div className="flex items-center gap-3 px-6 py-5 border-b border-gray-100">
-          <span className="text-2xl">{cfg.icon}</span>
+        <div className="flex items-center gap-3 px-6 py-5 border-b border-gray-100 shrink-0">
+          <span className="text-2xl">🔍</span>
           <div>
-            <h2 className="text-base font-bold text-gray-900">Test Message Preview</h2>
-            <p className="text-xs text-gray-400">{cfg.label} — resolved for a real lead</p>
+            <h2 className="text-base font-bold text-gray-900">Test Message for Lead</h2>
+            <p className="text-xs text-gray-400">See exactly what a lead would receive — fully resolved</p>
           </div>
           <button onClick={onClose} className="ml-auto text-gray-400 hover:text-gray-700 transition-colors">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -912,39 +922,86 @@ function TestMessageModal({
           </button>
         </div>
 
-        <div className="px-6 py-5 space-y-4">
+        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
+
+          {/* Step picker */}
+          {messageSteps.length === 0 ? (
+            <p className="text-sm text-amber-600 bg-amber-50 px-4 py-3 rounded-xl">
+              No message steps in this sequence yet. Add a Connection Request, Message, or InMail step first.
+            </p>
+          ) : (
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-1.5">Step to preview</label>
+              <div className="grid gap-2">
+                {messageSteps.map(s => {
+                  const cfg = STEP_CFG[s.type]
+                  const isSelected = s.id === selectedStepId
+                  return (
+                    <button
+                      key={s.id}
+                      onClick={() => { setSelectedStepId(s.id); setResult(null); setErr('') }}
+                      className={[
+                        'flex items-center gap-3 px-4 py-3 rounded-xl border-2 text-left transition-all',
+                        isSelected
+                          ? 'border-violet-400 bg-violet-50'
+                          : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50',
+                      ].join(' ')}
+                    >
+                      <span className="text-lg shrink-0">{cfg.icon}</span>
+                      <div className="flex-1 min-w-0">
+                        <p className={`text-xs font-bold uppercase tracking-wider mb-0.5 ${isSelected ? 'text-violet-600' : 'text-gray-500'}`}>
+                          {cfg.label}
+                        </p>
+                        <p className="text-sm text-gray-700 truncate">
+                          {s.message_template
+                            ? s.message_template.substring(0, 70) + (s.message_template.length > 70 ? '…' : '')
+                            : <span className="italic text-gray-400">No message set yet</span>}
+                        </p>
+                      </div>
+                      {s.ai_generation_mode && (
+                        <span className="text-[10px] font-semibold text-violet-600 bg-violet-100 px-2 py-0.5 rounded-full shrink-0">✨ AI</span>
+                      )}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
           {/* Lead picker */}
-          <div>
-            <label className="block text-sm font-semibold text-gray-700 mb-1.5">Select a lead</label>
-            {leadsLoading ? (
-              <p className="text-xs text-gray-400">Loading leads…</p>
-            ) : campaignLeads.length === 0 ? (
-              <p className="text-xs text-amber-600 bg-amber-50 px-3 py-2 rounded-lg">
-                No leads in this campaign yet. Add leads first to test previews.
-              </p>
-            ) : (
-              <select
-                value={leadId}
-                onChange={e => { setLeadId(e.target.value); setResult(null); setErr('') }}
-                className="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-violet-500"
-              >
-                <option value="">— pick a lead —</option>
-                {campaignLeads.map(cl => (
-                  <option key={cl.lead.id} value={cl.lead.id}>
-                    {cl.lead.first_name} {cl.lead.last_name}
-                    {cl.lead.company ? ` · ${cl.lead.company}` : ''}
-                    {cl.lead.title ? ` (${cl.lead.title})` : ''}
-                  </option>
-                ))}
-              </select>
-            )}
-          </div>
+          {messageSteps.length > 0 && (
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-1.5">Lead to preview for</label>
+              {leadsLoading ? (
+                <p className="text-xs text-gray-400">Loading leads…</p>
+              ) : campaignLeads.length === 0 ? (
+                <p className="text-xs text-amber-600 bg-amber-50 px-3 py-2.5 rounded-xl">
+                  No leads in this campaign yet. Go to the <strong>Leads</strong> tab and add some first.
+                </p>
+              ) : (
+                <select
+                  value={leadId}
+                  onChange={e => { setLeadId(e.target.value); setResult(null); setErr('') }}
+                  className="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-violet-500"
+                >
+                  <option value="">— pick a lead —</option>
+                  {campaignLeads.map(cl => (
+                    <option key={cl.lead.id} value={cl.lead.id}>
+                      {cl.lead.first_name} {cl.lead.last_name}
+                      {cl.lead.company ? ` · ${cl.lead.company}` : ''}
+                      {cl.lead.title ? ` (${cl.lead.title})` : ''}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+          )}
 
           {/* Generate button */}
-          {campaignLeads.length > 0 && (
+          {messageSteps.length > 0 && campaignLeads.length > 0 && (
             <button
               onClick={handlePreview}
-              disabled={!leadId || loading}
+              disabled={!canGenerate || loading}
               className="w-full py-2.5 bg-violet-600 text-white text-sm font-semibold rounded-xl hover:bg-violet-700 disabled:opacity-50 transition-colors"
             >
               {loading ? '⏳ Generating preview…' : '✨ Generate Preview'}
@@ -952,40 +1009,36 @@ function TestMessageModal({
           )}
 
           {err && (
-            <p className="text-xs text-red-500 bg-red-50 px-3 py-2 rounded-lg">{err}</p>
+            <p className="text-xs text-red-500 bg-red-50 px-3 py-2.5 rounded-xl">{err}</p>
           )}
 
           {/* Result */}
           {result && (
-            <div className="space-y-3">
+            <div className="space-y-2">
               <div className="bg-gray-50 rounded-xl border border-gray-200 p-4">
                 <div className="flex items-center justify-between mb-2">
                   <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
-                    {result.lead_name}
-                    {result.lead_company ? ` · ${result.lead_company}` : ''}
+                    {result.lead_name}{result.lead_company ? ` · ${result.lead_company}` : ''}
                   </p>
-                  <button
-                    onClick={copyToClipboard}
-                    className="text-xs text-gray-500 hover:text-gray-700 transition-colors"
-                  >
-                    {copied ? '✓ Copied' : 'Copy'}
+                  <button onClick={copyToClipboard} className="text-xs text-violet-600 hover:text-violet-800 font-medium transition-colors">
+                    {copied ? '✓ Copied!' : 'Copy'}
                   </button>
                 </div>
                 {result.subject && (
-                  <p className="text-xs font-semibold text-gray-700 mb-2 border-b border-gray-200 pb-2">
+                  <p className="text-xs font-semibold text-gray-700 mb-2 pb-2 border-b border-gray-200">
                     Subject: {result.subject}
                   </p>
                 )}
                 <p className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">{result.preview}</p>
               </div>
               <p className="text-[10px] text-gray-400 text-center">
-                This is a live preview with real lead data. No message was sent.
+                Live preview only — no message was sent.
               </p>
             </div>
           )}
         </div>
 
-        <div className="px-6 pb-5">
+        <div className="px-6 pb-5 shrink-0">
           <button
             onClick={onClose}
             className="w-full py-2.5 border-2 border-gray-200 text-sm font-semibold text-gray-700 rounded-xl hover:bg-gray-50 transition-colors"
@@ -1009,6 +1062,7 @@ function FlowCanvas({ sequence, campaignId }: { sequence: Sequence; campaignId: 
   const [steps, setSteps] = useState<SequenceStep[]>(sequence.sequence_steps)
   const [editingStep, setEditingStep] = useState<SequenceStep | null>(null)
   const [testingStep, setTestingStep] = useState<SequenceStep | null>(null)
+  const [showTestModal, setShowTestModal] = useState(false)
   const [showTemplates, setShowTemplates] = useState(false)
   const [generating, setGenerating] = useState(false)
   const [generateErr, setGenerateErr] = useState('')
@@ -1172,6 +1226,12 @@ function FlowCanvas({ sequence, campaignId }: { sequence: Sequence; campaignId: 
           {generating ? '⏳ Generating…' : '✨ Generate with AI'}
         </button>
         <button
+          onClick={() => setShowTestModal(true)}
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-white text-xs font-medium text-violet-700 border border-violet-200 rounded-lg shadow-sm hover:bg-violet-50 hover:border-violet-300 transition-colors"
+        >
+          🔍 Test Message
+        </button>
+        <button
           onClick={() => setShowTemplates(true)}
           className="flex items-center gap-1.5 px-3 py-1.5 bg-white text-xs font-medium text-gray-700 border border-gray-200 rounded-lg shadow-sm hover:bg-gray-50 hover:border-gray-300 transition-colors"
         >
@@ -1225,10 +1285,20 @@ function FlowCanvas({ sequence, campaignId }: { sequence: Sequence; campaignId: 
 
       {testingStep && (
         <TestMessageModal
-          step={testingStep}
+          initialStep={testingStep}
+          allSteps={steps}
           sequenceId={sequence.id}
           campaignId={campaignId}
           onClose={() => setTestingStep(null)}
+        />
+      )}
+
+      {showTestModal && (
+        <TestMessageModal
+          allSteps={steps}
+          sequenceId={sequence.id}
+          campaignId={campaignId}
+          onClose={() => setShowTestModal(false)}
         />
       )}
 
