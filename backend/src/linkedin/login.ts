@@ -941,39 +941,29 @@ async function runLogin(key: string, email: string, password: string): Promise<v
           }
         }
 
-        // Every ~6s navigate to feed to detect cookie issuance after push approval.
-        // This is what makes auto-detection work without any user button click.
-        if (pollCount % 3 === 0) {
-          try {
-            await page.goto('https://www.linkedin.com/feed/', {
-              waitUntil: 'domcontentloaded',
-              timeout:   10_000,
-            })
-            await DELAY(1_500)
-            const feedCookies = await context.cookies()
-            if (feedCookies.find(c => c.name === 'li_at')) {
-              await saveCookies(context, session.accountId)
-              session.status = 'success'
-              await browser.close()
-              return
-            }
-            // If redirected back to login/challenge, return to challenge page
-            const feedUrl = page.url()
-            if (feedUrl.includes('login') || feedUrl.includes('challenge') || feedUrl.includes('checkpoint') || feedUrl.includes('not-found') || feedUrl.includes('404')) {
-              await page.goto(challengeUrl, {
-                waitUntil: 'domcontentloaded',
-                timeout:   10_000,
-              }).catch(() => {})
-              await DELAY(1_000)
-            }
-          } catch { /* keep polling */ }
+        // Do NOT navigate to /feed/ proactively — LinkedIn counts each attempt and
+        // will block with tooManyAttempts. Instead, let LinkedIn's own page JS detect
+        // the push approval and redirect the browser automatically.
+        // We just check if the URL has moved away from the challenge page (success).
+        const currentUrlCheck = page.url()
+        const leftChallenge =
+          !currentUrlCheck.includes('/checkpoint') &&
+          !currentUrlCheck.includes('/challenge') &&
+          !currentUrlCheck.includes('verification') &&
+          !currentUrlCheck.includes('/login')
+        if (leftChallenge) {
+          const autoRedirectCookies = await context.cookies()
+          if (autoRedirectCookies.find(c => c.name === 'li_at')) {
+            await saveCookies(context, session.accountId)
+            session.status = 'success'
+            await browser.close()
+            return
+          }
         }
 
-        // Click challenge buttons on the first 3 polls to trigger the push notification,
-        // but never re-click on later polls (avoids repeated push/email notifications).
-        // Specifically exclude "Send verification code" / "Request verification code" buttons
-        // after the first poll — those send EMAIL/SMS codes, not push notifications.
-        if (pollCount <= 3) {
+        // Click once on the very first poll to trigger the push notification.
+        // Never re-click — repeated clicks send repeated notifications.
+        if (pollCount === 1) {
           try {
             const continueBtn = await page.$(
               'button:has-text("Continue"), button:has-text("Send verification code"), ' +
@@ -986,17 +976,7 @@ async function runLogin(key: string, email: string, password: string): Promise<v
             )
             if (continueBtn) {
               const btnText = (await continueBtn.evaluate((el: Element) => (el as HTMLElement).textContent?.trim()) ?? '').toLowerCase()
-              const isCancel = btnText.includes('cancel') || btnText.includes('back')
-              // After first poll, skip buttons that send email/SMS codes (they spam notifications)
-              const isRepeatSpammer = pollCount > 1 && (
-                btnText.includes('send verification') ||
-                btnText.includes('request verification') ||
-                btnText.includes('send a verification') ||
-                btnText.includes('request a verification') ||
-                btnText.includes('get a verification') ||
-                btnText.includes('send code')
-              )
-              if (!isCancel && !isRepeatSpammer) {
+              if (!btnText.includes('cancel') && !btnText.includes('back')) {
                 await continueBtn.click()
                 await DELAY(2000)
                 const hintEl2 = await page.$('.secondary-action, .challenge-main-content p, h1, h2')
