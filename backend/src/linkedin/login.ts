@@ -458,47 +458,48 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     await DELAY(500 + Math.random() * 300)
     await dismissBanners()
 
-    // Use page.evaluate to submit credentials via DOM form submission
-    // This avoids any password field keyboard interaction
-    const submitResult = await page.evaluate(async (args: { email: string; pass: string }) => {
+    // Use page.evaluate to submit credentials by:
+    // 1. Setting the email/password fields via React native setter (nativeInputValueSetter)
+    // 2. Submitting the EXISTING login form (which already has CSRF token etc.)
+    // This avoids creating a new form without CSRF token.
+    const submitResult = await page.evaluate((args: { email: string; pass: string }) => {
       try {
-        // Extract CSRF token from existing form
-        const existingForm = document.querySelector('form') as HTMLFormElement | null
-        const csrfInput    = document.querySelector('input[name="loginCsrfParam"]') as HTMLInputElement | null
-        const csrf         = csrfInput?.value ?? ''
+        // Find the email and password inputs
+        const emailInput = document.querySelector(
+          '#username, input[name="session_key"], input[autocomplete="username"], input[type="text"]:not([type="hidden"])'
+        ) as HTMLInputElement | null
+        const passInput = document.querySelector(
+          '#password, input[name="session_password"], input[autocomplete="current-password"], input[type="password"]'
+        ) as HTMLInputElement | null
 
-        // Also try JSESSIONID cookie as fallback CSRF
-        const jsessionMatch = document.cookie.match(/JSESSIONID="?([^";]+)"?/)
-        const jsessionCsrf  = jsessionMatch ? jsessionMatch[1] : ''
-        const csrfToken     = csrf || jsessionCsrf
-
-        // Get form action (submit URL)
-        const formAction = existingForm?.action ?? 'https://www.linkedin.com/checkpoint/lg/login-submit'
-
-        // Create a hidden form and submit it
-        const form = document.createElement('form')
-        form.method  = 'POST'
-        form.action  = formAction
-        form.style.display = 'none'
-
-        const addField = (name: string, value: string) => {
-          const input = document.createElement('input')
-          input.type  = 'hidden'
-          input.name  = name
-          input.value = value
-          form.appendChild(input)
+        // Set values using React's native input value setter (triggers React state update)
+        const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
+        const setVal = (el: HTMLInputElement, val: string) => {
+          if (nativeInputValueSetter) nativeInputValueSetter.call(el, val)
+          else el.value = val
+          el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: val }))
+          el.dispatchEvent(new Event('change', { bubbles: true }))
         }
 
-        addField('session_key',      args.email)
-        addField('session_password', args.pass)
-        if (csrfToken) addField('loginCsrfParam', csrfToken)
-        addField('isJsEnabled', 'true')
-        addField('loginFlow',   'REMEMBER_ME_OPTIN')
+        if (emailInput) setVal(emailInput, args.email)
+        if (passInput)  setVal(passInput,  args.pass)
 
-        document.body.appendChild(form)
-        form.submit()
+        // Get the existing form (which has the CSRF token as hidden input)
+        const form = (passInput?.closest('form') ?? document.querySelector('form')) as HTMLFormElement | null
 
-        return { ok: true, formAction, csrfLen: csrfToken.length }
+        // Get diagnostic info
+        const formAction   = form?.action ?? ''
+        const formInputs   = form ? Array.from(form.querySelectorAll('input')).map((i: Element) => {
+          const inp = i as HTMLInputElement
+          return `${inp.name}(${inp.type})=${inp.value.substring(0, 20)}`
+        }) : []
+        const emailVal = emailInput?.value ?? ''
+        const passLen  = passInput?.value?.length ?? 0
+
+        // Submit the existing form
+        if (form) form.submit()
+
+        return { ok: !!form, formAction, emailFound: !!emailInput, passFound: !!passInput, emailVal, passLen, formInputs }
       } catch (e2) {
         return { error: String(e2) }
       }
