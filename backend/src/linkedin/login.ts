@@ -582,14 +582,33 @@ async function runLogin(key: string, email: string, password: string): Promise<v
 
     // Still on login page — credentials rejected or form empty
     if (url.includes('/login')) {
-      const loginText = await page.evaluate(() => (document.body?.innerText ?? '').substring(0, 400)).catch(() => '')
+      // Wait a bit more for the page to fully render after redirect
+      await DELAY(3000)
+      const loginText = await page.evaluate(() => (document.body?.innerText ?? '').substring(0, 800)).catch(() => '')
       const lc = loginText.toLowerCase()
+      // Take a screenshot for diagnosis
+      let screenshotB64 = ''
+      try {
+        const buf = await page.screenshot({ type: 'png', fullPage: false })
+        screenshotB64 = buf.toString('base64')
+      } catch { /* ok */ }
+      // Save to debug_log
+      await supabase.from('linkedin_accounts').update({
+        debug_log: {
+          label: 'post-submit-login-page',
+          url,
+          pageText: loginText,
+          screenshot: screenshotB64,
+          capturedAt: new Date().toISOString(),
+          submitDiag: submitDiag.substring(0, 500),
+        }
+      }).eq('id', session.accountId)
       if (lc.includes('incorrect') || lc.includes('wrong') || lc.includes('please enter a password') || lc.includes('check your email')) {
         session.status = 'error'
-        session.error  = `Incorrect email or password. ${submitDiag}`
+        session.error  = `Incorrect email or password. Page: ${loginText.substring(0, 150)}`
       } else {
         session.status = 'error'
-        session.error  = `Stayed on /login. ${submitDiag}. Page: ${loginText.substring(0, 80)}`
+        session.error  = `Stayed on /login. Page: ${loginText.substring(0, 150)}`
       }
       await browser.close()
       return
