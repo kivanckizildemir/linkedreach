@@ -593,18 +593,20 @@ async function runLogin(key: string, email: string, password: string): Promise<v
 
     try {
       // context.request shares the browser context's cookies and IP (BrightData residential)
+      // Follow redirects (maxRedirects: 5) so all intermediate cookies get set in the browser
+      // context (including chp_token from the challenge redirect).
       const apiResponse = await context.request.post(formAction, {
         form: postFields,
         headers: {
           'Referer': page.url(),
           'Origin': 'https://www.linkedin.com',
         },
-        maxRedirects: 0,  // Don't follow redirects — capture the Location header
+        maxRedirects: 5,
       })
 
       loginResponseStatus = apiResponse.status()
-      loginResponseUrl = apiResponse.headers()['location'] ?? ''
-      // Playwright's APIResponse doesn't expose Set-Cookie easily — get from context cookies
+      loginResponseUrl = apiResponse.url()  // Final URL after following redirects
+      // Get cookies from browser context (now includes all redirect chain cookies)
       const responseCookies = await context.cookies('https://www.linkedin.com')
       loginResponseCookies = responseCookies.map(c => `${c.name}=${c.value}`)
 
@@ -615,7 +617,7 @@ async function runLogin(key: string, email: string, password: string): Promise<v
           label: 'playwright-post-result',
           formAction,
           loginResponseStatus,
-          loginResponseUrl,
+          loginResponseFinalUrl: loginResponseUrl,
           postFields: Object.keys(postFields),
           cookieNames: responseCookies.map(c => c.name),
           capturedAt: new Date().toISOString(),
