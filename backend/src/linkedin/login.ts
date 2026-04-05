@@ -968,20 +968,34 @@ async function runLogin(key: string, email: string, password: string): Promise<v
           } catch { /* keep polling */ }
         }
 
-        // Only click "Continue" once on the very first poll — never re-click Send/Request
-        // buttons or LinkedIn will fire repeated push/email notifications
-        if (pollCount === 1) {
+        // Click challenge buttons on the first 3 polls to trigger the push notification,
+        // but never re-click on later polls (avoids repeated push/email notifications).
+        // Specifically exclude "Send verification code" / "Request verification code" buttons
+        // after the first poll — those send EMAIL/SMS codes, not push notifications.
+        if (pollCount <= 3) {
           try {
             const continueBtn = await page.$(
-              'button:has-text("Continue"), ' +
+              'button:has-text("Continue"), button:has-text("Send verification code"), ' +
+              'button:has-text("Send a verification code"), button:has-text("Request a verification code"), ' +
+              'button:has-text("Send code"), button:has-text("Get a verification code"), ' +
+              'button:has-text("Request verification"), button:has-text("Send"), ' +
               'button[data-litms-control-urn="challenge|primary-action"], ' +
-              'button.primary-action-new'
+              'button.primary-action-new, ' +
+              'form button[type="submit"]'
             )
             if (continueBtn) {
-              const btnText = await continueBtn.evaluate((el: Element) => (el as HTMLElement).textContent?.trim())
-              if (btnText && !btnText.toLowerCase().includes('cancel') && !btnText.toLowerCase().includes('back')
-                  && !btnText.toLowerCase().includes('send') && !btnText.toLowerCase().includes('code')
-                  && !btnText.toLowerCase().includes('verif')) {
+              const btnText = (await continueBtn.evaluate((el: Element) => (el as HTMLElement).textContent?.trim()) ?? '').toLowerCase()
+              const isCancel = btnText.includes('cancel') || btnText.includes('back')
+              // After first poll, skip buttons that send email/SMS codes (they spam notifications)
+              const isRepeatSpammer = pollCount > 1 && (
+                btnText.includes('send verification') ||
+                btnText.includes('request verification') ||
+                btnText.includes('send a verification') ||
+                btnText.includes('request a verification') ||
+                btnText.includes('get a verification') ||
+                btnText.includes('send code')
+              )
+              if (!isCancel && !isRepeatSpammer) {
                 await continueBtn.click()
                 await DELAY(2000)
                 const hintEl2 = await page.$('.secondary-action, .challenge-main-content p, h1, h2')
