@@ -146,10 +146,10 @@ async function handleSettingsUpdate(req: Request, res: Response) {
     return
   }
 
-  // Upsert (auto-create if not exists)
+  // Upsert (auto-create if not exists), conflict on user_id unique constraint
   const { data, error } = await supabase
     .from('user_settings')
-    .upsert({ user_id: req.user.id, ...updates, updated_at: new Date().toISOString() })
+    .upsert({ user_id: req.user.id, ...updates, updated_at: new Date().toISOString() }, { onConflict: 'user_id' })
     .select()
     .single()
 
