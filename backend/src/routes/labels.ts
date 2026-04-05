@@ -65,6 +65,38 @@ labelsRouter.delete('/:id', async (req: Request, res: Response) => {
   res.status(204).send()
 })
 
+// GET /api/labels/assignments — all label assignments for this user's leads (batch, avoids N+1)
+labelsRouter.get('/assignments', async (req: Request, res: Response) => {
+  // Step 1: get all lead IDs for this user
+  const { data: userLeads, error: leadsErr } = await supabase
+    .from('leads')
+    .select('id')
+    .eq('user_id', req.user.id)
+
+  if (leadsErr) { res.status(500).json({ error: leadsErr.message }); return }
+
+  const leadIds = (userLeads ?? []).map((l: { id: string }) => l.id)
+  if (leadIds.length === 0) { res.json({ data: {} }); return }
+
+  // Step 2: fetch all assignments for those leads in one query
+  const { data, error } = await supabase
+    .from('lead_label_assignments')
+    .select('lead_id, label:lead_labels(id, name, color)')
+    .in('lead_id', leadIds)
+
+  if (error) { res.status(500).json({ error: error.message }); return }
+
+  // Group by lead_id (Supabase returns label as an array from the join)
+  const grouped: Record<string, Array<{ id: string; name: string; color: string }>> = {}
+  for (const row of (data ?? []) as unknown as Array<{ lead_id: string; label: Array<{ id: string; name: string; color: string }> | null }>) {
+    const labels = Array.isArray(row.label) ? row.label : row.label ? [row.label] : []
+    if (labels.length === 0) continue
+    if (!grouped[row.lead_id]) grouped[row.lead_id] = []
+    grouped[row.lead_id].push(...labels)
+  }
+  res.json({ data: grouped })
+})
+
 // GET /api/labels/lead/:leadId — get labels for a lead
 labelsRouter.get('/lead/:leadId', async (req: Request, res: Response) => {
   const { data, error } = await supabase

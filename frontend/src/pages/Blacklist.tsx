@@ -111,7 +111,7 @@ export function Blacklist() {
                     : 'text-gray-600 hover:bg-gray-100',
                 ].join(' ')}
               >
-                {t === '' ? 'All' : `${TYPE_ICONS[t]} ${t}s`}
+                {t === '' ? 'All' : `${TYPE_ICONS[t]} ${t === 'company' ? 'Companies' : t + 's'}`}
               </button>
             ))}
           </div>

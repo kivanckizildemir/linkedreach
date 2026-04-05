@@ -134,7 +134,7 @@ export function Campaigns() {
             {filtered.map(c => (
               <div
                 key={c.id}
-                className="px-6 py-4 flex items-center justify-between hover:bg-gray-50 transition-colors group"
+                className="relative px-6 py-4 flex items-center justify-between hover:bg-gray-50 transition-colors group"
               >
                 {/* Clickable main area */}
                 <div

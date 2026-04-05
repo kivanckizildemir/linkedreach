@@ -1,8 +1,8 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, type FormEvent } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { fetchLeads, requalifyLead, qualifyAllLeads, importLeads, startSalesNavImport, getScrapeStatus, fetchLeadNotes, addLeadNote, deleteLeadNote, personaliseOpeningLine, fetchLeadCampaigns, bulkDeleteLeads } from '../api/leads'
+import { fetchLeads, requalifyLead, qualifyAllLeads, importLeads, startSalesNavImport, getScrapeStatus, fetchLeadNotes, addLeadNote, deleteLeadNote, personaliseOpeningLine, fetchLeadCampaigns, bulkDeleteLeads, createManualLead } from '../api/leads'
 import type { Lead, LeadNote, LeadCampaignMembership } from '../api/leads'
-import { fetchLabels, fetchLeadLabels, assignLabel, removeLabel, createLabel, type LeadLabel } from '../api/labels'
+import { fetchLabels, fetchLeadLabels, fetchAllLeadLabelAssignments, assignLabel, removeLabel, createLabel, type LeadLabel } from '../api/labels'
 import { fetchAccounts } from '../api/accounts'
 import { addLeadsToCampaign } from '../api/campaigns'
 import * as XLSX from 'xlsx'
@@ -64,6 +64,7 @@ export function Leads() {
 
   const [showManageLabels, setShowManageLabels] = useState(false)
   const [detailLead, setDetailLead] = useState<Lead | null>(null)
+  const [showManualAdd, setShowManualAdd] = useState(false)
 
   const { data: leads = [], isLoading } = useQuery({
     queryKey: ['leads', { search, icp_flag: icpFlag }],
@@ -99,6 +100,20 @@ export function Leads() {
     queryKey: ['labels'],
     queryFn: fetchLabels,
   })
+
+  // Batch-fetch all lead label assignments to avoid N+1 per-lead queries
+  const { data: allLeadLabels = {} } = useQuery({
+    queryKey: ['lead-labels-all'],
+    queryFn: fetchAllLeadLabelAssignments,
+    staleTime: 60_000,
+  })
+  useEffect(() => {
+    if (Object.keys(allLeadLabels).length > 0) {
+      for (const [leadId, lbls] of Object.entries(allLeadLabels)) {
+        queryClient.setQueryData(['lead-labels', leadId], lbls)
+      }
+    }
+  }, [allLeadLabels, queryClient])
 
   const { data: campaigns = [] } = useQuery({
     queryKey: ['campaigns'],
@@ -188,7 +203,10 @@ export function Leads() {
           >
             Import from Sales Nav
           </button>
-          <button className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors">
+          <button
+            onClick={() => setShowManualAdd(true)}
+            className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors"
+          >
             Add Lead
           </button>
         </div>
@@ -406,6 +424,16 @@ export function Leads() {
         )}
       </div>
 
+      {showManualAdd && (
+        <ManualAddLeadModal
+          onClose={() => setShowManualAdd(false)}
+          onAdded={() => {
+            setShowManualAdd(false)
+            void queryClient.invalidateQueries({ queryKey: ['leads'] })
+          }}
+        />
+      )}
+
       {showCsvModal && (
         <CsvImportModal
           onClose={() => setShowCsvModal(false)}
@@ -492,6 +520,134 @@ export function Leads() {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+// ── Manual Add Lead Modal ────────────────────────────────────────────────────
+
+function ManualAddLeadModal({ onClose, onAdded }: { onClose: () => void; onAdded: () => void }) {
+  const [form, setForm] = useState({
+    first_name: '', last_name: '', linkedin_url: '',
+    title: '', company: '', location: '',
+  })
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  async function handleSubmit(e: FormEvent) {
+    e.preventDefault()
+    if (!form.first_name.trim() || !form.last_name.trim() || !form.linkedin_url.trim()) {
+      setError('First name, last name, and LinkedIn URL are required')
+      return
+    }
+    setLoading(true)
+    setError('')
+    try {
+      await createManualLead({
+        first_name: form.first_name.trim(),
+        last_name: form.last_name.trim(),
+        linkedin_url: form.linkedin_url.trim(),
+        title: form.title.trim() || undefined,
+        company: form.company.trim() || undefined,
+        location: form.location.trim() || undefined,
+      })
+      onAdded()
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6">
+        <h2 className="text-lg font-semibold text-gray-900 mb-4">Add Lead Manually</h2>
+        <form onSubmit={handleSubmit} className="space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">First Name *</label>
+              <input
+                autoFocus
+                type="text"
+                value={form.first_name}
+                onChange={e => setForm(f => ({ ...f, first_name: e.target.value }))}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="Jane"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">Last Name *</label>
+              <input
+                type="text"
+                value={form.last_name}
+                onChange={e => setForm(f => ({ ...f, last_name: e.target.value }))}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="Smith"
+              />
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-700 mb-1">LinkedIn URL *</label>
+            <input
+              type="text"
+              value={form.linkedin_url}
+              onChange={e => setForm(f => ({ ...f, linkedin_url: e.target.value }))}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              placeholder="https://linkedin.com/in/janesmith"
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">Title</label>
+              <input
+                type="text"
+                value={form.title}
+                onChange={e => setForm(f => ({ ...f, title: e.target.value }))}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="CEO"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1">Company</label>
+              <input
+                type="text"
+                value={form.company}
+                onChange={e => setForm(f => ({ ...f, company: e.target.value }))}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="Acme Corp"
+              />
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-700 mb-1">Location</label>
+            <input
+              type="text"
+              value={form.location}
+              onChange={e => setForm(f => ({ ...f, location: e.target.value }))}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              placeholder="London, UK"
+            />
+          </div>
+          {error && <p className="text-xs text-red-600">{error}</p>}
+          <div className="flex gap-3 pt-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex-1 py-2.5 border border-gray-200 text-sm font-medium rounded-lg hover:bg-gray-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={loading}
+              className="flex-1 py-2.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-60 transition-colors"
+            >
+              {loading ? 'Adding…' : 'Add Lead'}
+            </button>
+          </div>
+        </form>
+      </div>
     </div>
   )
 }

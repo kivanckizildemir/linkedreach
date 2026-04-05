@@ -49,6 +49,14 @@ export async function fetchLeadLabels(leadId: string): Promise<LeadLabel[]> {
   return data ?? []
 }
 
+// Fetch all label assignments for all leads at once (avoids N+1 on the Leads page)
+export async function fetchAllLeadLabelAssignments(): Promise<Record<string, LeadLabel[]>> {
+  const res = await apiFetch('/api/labels/assignments')
+  if (!res.ok) throw new Error(await parseErrorResponse(res))
+  const { data } = await res.json() as { data: Record<string, LeadLabel[]> }
+  return data ?? {}
+}
+
 export async function assignLabel(leadId: string, labelId: string): Promise<void> {
   const res = await apiFetch(`/api/labels/lead/${leadId}`, {
     method: 'POST',

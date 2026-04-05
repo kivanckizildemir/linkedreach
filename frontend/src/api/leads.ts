@@ -153,6 +153,24 @@ export async function bulkDeleteLeads(ids: string[]): Promise<{ deleted: number 
   return res.json() as Promise<{ deleted: number }>
 }
 
+export async function createManualLead(lead: {
+  linkedin_url: string
+  first_name: string
+  last_name: string
+  title?: string
+  company?: string
+  location?: string
+}): Promise<Lead> {
+  const res = await apiFetch('/api/leads', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(lead),
+  })
+  if (!res.ok) throw new Error(await parseErrorResponse(res))
+  const { data } = await res.json() as { data: Lead }
+  return data
+}
+
 export async function fetchLeads(params: {
   icp_flag?: string
   search?: string

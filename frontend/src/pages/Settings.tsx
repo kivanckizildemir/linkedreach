@@ -53,7 +53,7 @@ async function updateSettings(
   updates: Partial<Omit<UserSettings, 'id' | 'user_id' | 'created_at' | 'updated_at'>>
 ): Promise<UserSettings> {
   const res = await apiFetch('/api/settings', {
-    method: 'PATCH',
+    method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(updates),
   })

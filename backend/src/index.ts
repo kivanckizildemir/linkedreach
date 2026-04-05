@@ -23,7 +23,12 @@ dotenv.config()
 const app = express()
 const PORT = process.env.PORT || 3001
 
-app.use(cors())
+app.use(cors({
+  origin: true,          // reflect any origin (all are allowed)
+  methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: false,
+}))
 app.use(express.json())
 
 app.get('/api/health', (_req, res) => {

@@ -1,11 +1,30 @@
-import { NavLink, Outlet, useNavigate } from 'react-router-dom'
+import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom'
+import { useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useAuth } from '../contexts/AuthContext'
 import { fetchUnreadCount } from '../api/inbox'
 
+const PAGE_TITLES: Record<string, string> = {
+  '/': 'Dashboard',
+  '/campaigns': 'Campaigns',
+  '/leads': 'Leads',
+  '/inbox': 'Inbox',
+  '/accounts': 'Accounts',
+  '/templates': 'Templates',
+  '/blacklist': 'Blacklist',
+  '/settings': 'Settings',
+}
+
 export function Layout() {
   const { user, signOut } = useAuth()
   const navigate = useNavigate()
+  const location = useLocation()
+
+  useEffect(() => {
+    const base = location.pathname.split('/').slice(0, 2).join('/') || '/'
+    const title = PAGE_TITLES[base] ?? 'LinkedReach'
+    document.title = `${title} | LinkedReach`
+  }, [location.pathname])
 
   const { data: unreadCount = 0 } = useQuery({
     queryKey: ['inbox-unread'],

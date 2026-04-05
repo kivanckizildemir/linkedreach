@@ -124,8 +124,8 @@ Respond ONLY with valid JSON, no markdown:
   }
 })
 
-// PATCH /api/settings — update user settings
-settingsRouter.patch('/', async (req: Request, res: Response) => {
+// Shared handler for PATCH and POST /api/settings
+async function handleSettingsUpdate(req: Request, res: Response) {
   const allowed = [
     'icp_config',
     'timezone',
@@ -155,4 +155,10 @@ settingsRouter.patch('/', async (req: Request, res: Response) => {
 
   if (error) { res.status(500).json({ error: error.message }); return }
   res.json({ data })
-})
+}
+
+// PATCH /api/settings — update user settings
+settingsRouter.patch('/', handleSettingsUpdate)
+
+// POST /api/settings — alias for PATCH (proxy-friendly for Cloudflare)
+settingsRouter.post('/', handleSettingsUpdate)
