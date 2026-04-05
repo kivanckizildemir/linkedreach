@@ -12,6 +12,7 @@ import { Accounts } from './pages/Accounts'
 import { Blacklist } from './pages/Blacklist'
 import { Templates } from './pages/Templates'
 import { Settings } from './pages/Settings'
+import { SequenceBuilder } from './pages/SequenceBuilder'
 import { Login } from './pages/Login'
 import { Signup } from './pages/Signup'
 
@@ -40,6 +41,7 @@ function App() {
                 <Route path="/" element={<Dashboard />} />
                 <Route path="/campaigns" element={<Campaigns />} />
                 <Route path="/campaigns/:id" element={<CampaignDetail />} />
+                <Route path="/campaigns/:id/sequence" element={<SequenceBuilder />} />
                 <Route path="/leads" element={<Leads />} />
                 <Route path="/inbox" element={<Inbox />} />
                 <Route path="/accounts" element={<Accounts />} />

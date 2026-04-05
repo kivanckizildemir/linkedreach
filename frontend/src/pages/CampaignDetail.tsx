@@ -286,6 +286,12 @@ export function CampaignDetail() {
             {t === 'leads' ? `Leads (${total})` : 'Settings'}
           </button>
         ))}
+        <button
+          onClick={() => navigate(`/campaigns/${id}/sequence`)}
+          className="px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors border-transparent text-gray-500 hover:text-gray-700"
+        >
+          Sequence
+        </button>
       </div>
 
       {tab === 'leads' && <>
