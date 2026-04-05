@@ -2,6 +2,8 @@ import { Router } from 'express'
 import type { Request, Response } from 'express'
 import { supabase } from '../lib/supabase'
 import { requireAuth } from '../middleware/auth'
+import { generateMessage } from '../ai/generate-message'
+import type { MessageType, Approach } from '../ai/generate-message'
 
 export const messageTemplatesRouter = Router()
 messageTemplatesRouter.use(requireAuth)
@@ -87,6 +89,45 @@ messageTemplatesRouter.patch('/:id', async (req: Request, res: Response) => {
 
   if (error) { res.status(500).json({ error: error.message }); return }
   res.json({ data })
+})
+
+// POST /api/message-templates/generate
+messageTemplatesRouter.post('/generate', async (req: Request, res: Response) => {
+  const { type, approach, product_index } = req.body as {
+    type?: MessageType
+    approach?: Approach
+    product_index?: number
+  }
+
+  if (!type || !approach) {
+    res.status(400).json({ error: 'type and approach are required' })
+    return
+  }
+
+  // Fetch user's ICP config
+  const { data: settings, error: settingsError } = await supabase
+    .from('user_settings')
+    .select('icp_config')
+    .eq('user_id', req.user.id)
+    .single()
+
+  if (settingsError || !settings) {
+    res.status(500).json({ error: 'Could not load your ICP settings' })
+    return
+  }
+
+  try {
+    const result = await generateMessage({
+      type,
+      approach,
+      icp_config: settings.icp_config as Record<string, unknown> as Parameters<typeof generateMessage>[0]['icp_config'],
+      product_index,
+    })
+    res.json({ data: result })
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'AI generation failed'
+    res.status(500).json({ error: msg })
+  }
 })
 
 // DELETE /api/message-templates/:id
