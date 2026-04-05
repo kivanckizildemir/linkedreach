@@ -9,7 +9,6 @@ import {
   connectAccount,
   getConnectStatus,
   verifyConnectCode,
-  interactWithSession,
   type LinkedInAccount,
 } from '../api/accounts'
 import {
@@ -98,8 +97,7 @@ export function Accounts() {
   const [tab, setTab] = useState<PageTab>('accounts')
   const [showAddAccount, setShowAddAccount] = useState(false)
   const [sessionAccountId, setSessionAccountId] = useState<string | null>(null)
-  const [browserLoginId, setBrowserLoginId] = useState<string | null>(null)
-  const [quickLoginId, setQuickLoginId] = useState<string | null>(null)
+  const [connectingAccountId, setConnectingAccountId] = useState<string | null>(null)
   const queryClient = useQueryClient()
 
   const { data: accounts = [], isLoading } = useQuery({
@@ -269,7 +267,7 @@ export function Accounts() {
                                 </button>
                               )}
                               <button
-                                onClick={() => setQuickLoginId(account.id)}
+                                onClick={() => setConnectingAccountId(account.id)}
                                 className="text-xs text-indigo-700 hover:underline font-medium"
                               >
                                 Connect
@@ -332,23 +330,12 @@ export function Accounts() {
         />
       )}
 
-      {browserLoginId && (
-        <BrowserLoginModal
-          accountId={browserLoginId}
-          onClose={() => setBrowserLoginId(null)}
+      {connectingAccountId && (
+        <ConnectModal
+          accountId={connectingAccountId}
+          onClose={() => setConnectingAccountId(null)}
           onSaved={() => {
-            setBrowserLoginId(null)
-            void queryClient.invalidateQueries({ queryKey: ['accounts'] })
-          }}
-        />
-      )}
-
-      {quickLoginId && (
-        <QuickLoginModal
-          accountId={quickLoginId}
-          onClose={() => setQuickLoginId(null)}
-          onSaved={() => {
-            setQuickLoginId(null)
+            setConnectingAccountId(null)
             void queryClient.invalidateQueries({ queryKey: ['accounts'] })
           }}
         />
@@ -776,231 +763,17 @@ function SetSessionModal({
   )
 }
 
-// BROWSER_VIEWPORT_* must match the context dimensions set in login.ts
-const BROWSER_W = 1280
-const BROWSER_H = 800
+// ── Connect Modal ─────────────────────────────────────────────────────────────
+// HeyReach-style 3-method picker:
+//   1. Infinite Login  — credentials + TOTP secret → auto-reconnect forever
+//   2. Credentials     — email + password only
+//   3. Quick Login     — grab li_at cookie from real browser
 
-function PushStep({
-  accountId,
-  sessionKey,
-  hint,
-  onCancel,
-  onCheckNow,
-}: {
-  accountId: string
-  sessionKey: string
-  hint: string
-  onCancel: () => void
-  onCheckNow: () => Promise<void>
-}) {
-  const [screenshotUrl, setScreenshotUrl]     = useState<string | null>(null)
-  const [screenshotLoading, setScreenshotLoading] = useState(false)
-  const [keyboardFocused, setKeyboardFocused] = useState(false)
-  const [interacting, setInteracting]         = useState(false)
-  const [checking, setChecking]               = useState(false)
-  const [liveUrl, setLiveUrl]                 = useState('')
-  const screenshotRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const urlPollRef    = useRef<ReturnType<typeof setInterval> | null>(null)
-  const imgRef        = useRef<HTMLImageElement | null>(null)
-  const keyInputRef   = useRef<HTMLInputElement | null>(null)
+type ConnectMethod = 'select' | 'infinite' | 'credentials' | 'cookie'
+type ConnectStep   = 'form' | 'connecting' | 'push' | 'verify' | 'done' | 'error'
+type CookieStep    = 'open' | 'copy' | 'paste'
 
-  const isSecurityCheck =
-    hint.toLowerCase().includes('security') ||
-    hint.toLowerCase().includes('verification') ||
-    hint.toLowerCase().includes('verify') ||
-    hint.toLowerCase().includes('check')
-
-  // ── Screenshot polling ────────────────────────────────────────────────────
-
-  const fetchScreenshot = useRef(async () => {
-    if (!sessionKey) return
-    setScreenshotLoading(true)
-    try {
-      const res = await apiFetch(`/api/accounts/${accountId}/connect-screenshot/${sessionKey}`)
-      if (res.ok) {
-        const blob = await res.blob()
-        const url  = URL.createObjectURL(blob)
-        setScreenshotUrl(prev => { if (prev) URL.revokeObjectURL(prev); return url })
-      }
-    } catch { /* ignore */ }
-    finally { setScreenshotLoading(false) }
-  }).current
-
-  useEffect(() => {
-    if (!sessionKey) return
-    void fetchScreenshot()
-    screenshotRef.current = setInterval(() => { void fetchScreenshot() }, 2000)
-    return () => { if (screenshotRef.current) { clearInterval(screenshotRef.current); screenshotRef.current = null } }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionKey])
-
-  // ── Live URL polling (every 3s) ───────────────────────────────────────────
-  useEffect(() => {
-    if (!sessionKey) return
-    const poll = async () => {
-      try {
-        const res = await apiFetch(`/api/accounts/${accountId}/connect-debug/${sessionKey}`)
-        if (res.ok) {
-          const data = await res.json() as { url?: string }
-          if (data.url) {
-            const clean = data.url.replace(/^https?:\/\//, '').split('?')[0]
-            setLiveUrl(clean.length > 55 ? clean.substring(0, 55) + '…' : clean)
-          }
-        }
-      } catch { /* ignore */ }
-    }
-    void poll()
-    urlPollRef.current = setInterval(() => { void poll() }, 3000)
-    return () => { if (urlPollRef.current) { clearInterval(urlPollRef.current); urlPollRef.current = null } }
-  }, [accountId, sessionKey])
-
-  // ── Interaction helpers ───────────────────────────────────────────────────
-
-  async function sendInteraction(action: Parameters<typeof interactWithSession>[2]) {
-    if (interacting) return
-    setInteracting(true)
-    try { await interactWithSession(accountId, sessionKey, action) }
-    catch { /* ignore */ }
-    finally { setInteracting(false) }
-  }
-
-  function handleScreenshotClick(e: React.MouseEvent<HTMLImageElement>) {
-    const img  = imgRef.current
-    if (!img) return
-    const rect = img.getBoundingClientRect()
-    const x    = Math.round(((e.clientX - rect.left) / rect.width)  * BROWSER_W)
-    const y    = Math.round(((e.clientY - rect.top)  / rect.height) * BROWSER_H)
-    void sendInteraction({ type: 'click', x, y })
-    // Focus the keyboard relay input after clicking
-    keyInputRef.current?.focus()
-  }
-
-  function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
-    e.preventDefault()
-    const key = e.key
-    if (key === 'Backspace' || key === 'Enter' || key === 'Tab' ||
-        key === 'ArrowLeft' || key === 'ArrowRight' || key === 'ArrowUp' || key === 'ArrowDown' ||
-        key === 'Delete' || key === 'Home' || key === 'End' || key === 'Escape') {
-      void sendInteraction({ type: 'key', key })
-    } else if (key.length === 1) {
-      void sendInteraction({ type: 'type', text: key })
-    }
-  }
-
-  // ── Render ────────────────────────────────────────────────────────────────
-
-  return (
-    <div className="space-y-3">
-      {/* Status banner */}
-      <div className={`border rounded-xl px-4 py-3 flex items-center gap-2 ${isSecurityCheck ? 'bg-amber-50 border-amber-200' : 'bg-blue-50 border-blue-200'}`}>
-        <svg className={`w-4 h-4 animate-spin flex-shrink-0 ${isSecurityCheck ? 'text-amber-500' : 'text-blue-500'}`} fill="none" viewBox="0 0 24 24">
-          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-        </svg>
-        <div className="min-w-0">
-          <p className={`text-sm font-medium ${isSecurityCheck ? 'text-amber-900' : 'text-blue-900'}`}>
-            {isSecurityCheck ? 'Security challenge — interact below' : 'Signing in…'}
-          </p>
-          {hint && hint !== 'Signing in to LinkedIn…' && (
-            <p className={`text-xs mt-0.5 ${isSecurityCheck ? 'text-amber-700' : 'text-blue-700'}`}>{hint}</p>
-          )}
-        </div>
-        <span className="ml-auto text-[10px] text-gray-400 whitespace-nowrap">
-          {screenshotLoading ? 'refreshing…' : '● live'}
-        </span>
-      </div>
-
-      {/* "I approved it" — only for push-notification step (not interactive security check) */}
-      {!isSecurityCheck && (
-        <button
-          type="button"
-          disabled={checking}
-          onClick={async () => { setChecking(true); try { await onCheckNow() } finally { setChecking(false) } }}
-          className="w-full py-2.5 bg-green-600 text-white text-sm font-semibold rounded-xl hover:bg-green-700 disabled:opacity-60 transition-colors flex items-center justify-center gap-2"
-        >
-          {checking ? (
-            <>
-              <svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-              </svg>
-              Checking…
-            </>
-          ) : (
-            <>
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
-              </svg>
-              I approved it — check now
-            </>
-          )}
-        </button>
-      )}
-
-      {/* Interactive screenshot */}
-      <div className="border border-gray-200 rounded-xl overflow-hidden bg-gray-900">
-        <div className="flex items-center justify-between px-3 py-1.5 bg-gray-800">
-          <span className="text-[11px] text-gray-400 font-mono truncate max-w-[260px]">
-            {liveUrl || 'linkedin.com'}
-          </span>
-          <span className={`text-[10px] px-1.5 py-0.5 rounded ${keyboardFocused ? 'bg-green-600 text-white' : 'bg-gray-600 text-gray-300'}`}>
-            {keyboardFocused ? 'keyboard active' : 'click to type'}
-          </span>
-        </div>
-
-        {screenshotUrl ? (
-          <div className="relative">
-            <img
-              ref={imgRef}
-              src={screenshotUrl}
-              alt="Live browser"
-              className="w-full block cursor-crosshair select-none"
-              draggable={false}
-              onClick={handleScreenshotClick}
-            />
-            {interacting && (
-              <div className="absolute inset-0 bg-white/10 pointer-events-none" />
-            )}
-          </div>
-        ) : (
-          <div className="h-40 flex items-center justify-center">
-            <p className="text-xs text-gray-500">{screenshotLoading ? 'Loading…' : 'Waiting for browser…'}</p>
-          </div>
-        )}
-
-        {/* Invisible keyboard relay input — focused by clicking on screenshot */}
-        <div className="px-3 py-2 bg-gray-800 border-t border-gray-700">
-          <input
-            ref={keyInputRef}
-            type="text"
-            value=""
-            readOnly
-            onFocus={() => setKeyboardFocused(true)}
-            onBlur={() => setKeyboardFocused(false)}
-            onKeyDown={handleKeyDown}
-            placeholder={keyboardFocused ? 'Typing goes to the browser…' : 'Click the browser image above, then type here'}
-            className="w-full bg-gray-700 text-gray-200 text-xs px-2.5 py-1.5 rounded outline-none placeholder:text-gray-500 focus:ring-1 focus:ring-green-500 cursor-text"
-          />
-        </div>
-      </div>
-
-      <p className="text-[11px] text-gray-400 text-center">
-        Click anywhere on the browser image to interact · keyboard input is relayed in real-time
-      </p>
-
-      <button type="button" onClick={onCancel}
-        className="w-full py-2 border border-gray-200 text-sm text-gray-600 rounded-lg hover:bg-gray-50">
-        Cancel
-      </button>
-    </div>
-  )
-}
-
-// ── Quick Login Modal ────────────────────────────────────────────────────────
-// Opens LinkedIn in the user's real browser, then captures the li_at cookie
-// via a one-liner console command. No Playwright / proxy required.
-
-function QuickLoginModal({
+function ConnectModal({
   accountId,
   onClose,
   onSaved,
@@ -1009,217 +782,53 @@ function QuickLoginModal({
   onClose: () => void
   onSaved: () => void
 }) {
-  const SNIPPET = `copy(document.cookie.match(/li_at=([^;]+)/)?.[1] ?? 'not found')`
+  const [method, setMethod]       = useState<ConnectMethod>('select')
+  const [step, setStep]           = useState<ConnectStep>('form')
+  const [cookieStep, setCookieStep] = useState<CookieStep>('open')
 
-  const [step, setStep] = useState<'open' | 'copy' | 'paste'>('open')
-  const [cookieVal, setCookieVal] = useState('')
-  const [error, setError] = useState('')
-  const [saving, setSaving] = useState(false)
-  const [copied, setCopied] = useState(false)
-
-  function openLinkedIn() {
-    window.open('https://www.linkedin.com/login', '_blank', 'noopener,noreferrer')
-    setStep('copy')
-  }
-
-  function copySnippet() {
-    void navigator.clipboard.writeText(SNIPPET).then(() => {
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-    })
-  }
-
-  async function handleSave() {
-    const val = cookieVal.trim()
-    if (!val || val === 'not found') {
-      setError('Paste the cookie value — it should be a long string of letters and numbers.')
-      return
-    }
-    setSaving(true)
-    setError('')
-    try {
-      // Build a minimal Playwright-compatible cookie array from just the li_at value
-      const cookies = JSON.stringify([{
-        name: 'li_at',
-        value: val,
-        domain: '.linkedin.com',
-        path: '/',
-        httpOnly: true,
-        secure: true,
-        sameSite: 'None',
-        expires: -1,
-      }])
-      await updateAccount(accountId, { cookies, status: 'active' } as Parameters<typeof updateAccount>[1])
-      onSaved()
-    } catch (err) {
-      setError((err as Error).message)
-      setSaving(false)
-    }
-  }
-
-  return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md">
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
-          <div>
-            <h2 className="text-lg font-semibold text-gray-900">Connect LinkedIn Account</h2>
-            <p className="text-xs text-gray-500 mt-0.5">Sign in with your real browser — takes 30 seconds</p>
-          </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors">
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-
-        {/* Steps */}
-        <div className="px-6 py-5 space-y-5">
-
-          {/* Step 1 */}
-          <div className={`flex gap-4 ${step !== 'open' ? 'opacity-50' : ''}`}>
-            <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold shrink-0 mt-0.5 ${step === 'open' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-500'}`}>1</div>
-            <div className="flex-1">
-              <p className="text-sm font-medium text-gray-900">Open LinkedIn and log in</p>
-              <p className="text-xs text-gray-500 mt-0.5">Sign in with your normal browser — no proxies, no bots.</p>
-              <button
-                onClick={openLinkedIn}
-                className="mt-2.5 inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors"
-              >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                </svg>
-                Open LinkedIn Login
-              </button>
-            </div>
-          </div>
-
-          {/* Step 2 */}
-          <div className={`flex gap-4 ${step === 'open' ? 'opacity-40 pointer-events-none' : ''}`}>
-            <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold shrink-0 mt-0.5 ${step === 'copy' ? 'bg-blue-600 text-white' : step === 'paste' ? 'bg-green-500 text-white' : 'bg-gray-200 text-gray-500'}`}>
-              {step === 'paste' ? '✓' : '2'}
-            </div>
-            <div className="flex-1">
-              <p className="text-sm font-medium text-gray-900">Copy your session cookie</p>
-              <p className="text-xs text-gray-500 mt-0.5">Once logged in, press <kbd className="px-1 py-0.5 bg-gray-100 rounded text-[10px] font-mono">F12</kbd> → Console tab → paste this command and press Enter:</p>
-              <div className="mt-2 bg-gray-900 rounded-lg px-3.5 py-2.5 flex items-center gap-2">
-                <code className="text-green-400 text-xs font-mono flex-1 break-all">{SNIPPET}</code>
-                <button
-                  onClick={copySnippet}
-                  title="Copy command"
-                  className="shrink-0 text-gray-400 hover:text-white transition-colors"
-                >
-                  {copied
-                    ? <svg className="w-4 h-4 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
-                    : <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
-                  }
-                </button>
-              </div>
-              <p className="text-[11px] text-gray-400 mt-1.5">The command copies your <code className="font-mono">li_at</code> cookie to your clipboard automatically.</p>
-              {step === 'copy' && (
-                <button onClick={() => setStep('paste')} className="mt-2 text-xs text-blue-600 hover:text-blue-800 font-medium">
-                  Done → paste it below ↓
-                </button>
-              )}
-            </div>
-          </div>
-
-          {/* Step 3 */}
-          <div className={`flex gap-4 ${step !== 'paste' ? 'opacity-40 pointer-events-none' : ''}`}>
-            <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold shrink-0 mt-0.5 ${step === 'paste' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-500'}`}>3</div>
-            <div className="flex-1">
-              <p className="text-sm font-medium text-gray-900">Paste the cookie value</p>
-              <p className="text-xs text-gray-500 mt-0.5">Paste the value that was copied to your clipboard:</p>
-              <textarea
-                autoFocus={step === 'paste'}
-                value={cookieVal}
-                onChange={e => setCookieVal(e.target.value)}
-                placeholder="AQEDAQbj…"
-                rows={3}
-                className="mt-2 w-full px-3 py-2.5 border border-gray-300 rounded-lg text-xs font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
-              />
-              {error && <p className="mt-1.5 text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
-            </div>
-          </div>
-        </div>
-
-        {/* Footer */}
-        <div className="px-6 pb-5 flex gap-3">
-          <button onClick={onClose} className="flex-1 py-2.5 border border-gray-200 text-sm font-medium rounded-lg hover:bg-gray-50 transition-colors">
-            Cancel
-          </button>
-          <button
-            onClick={() => void handleSave()}
-            disabled={saving || step !== 'paste' || !cookieVal.trim()}
-            className="flex-1 py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
-          >
-            {saving ? 'Saving…' : 'Connect Account'}
-          </button>
-        </div>
-
-        {/* Escape hatch to old method */}
-        <p className="px-6 pb-4 text-center text-[11px] text-gray-400">
-          Prefer automated login?{' '}
-          <button
-            onClick={() => { onClose(); }}
-            className="text-gray-500 hover:text-gray-700 underline"
-          >
-            Use the advanced browser method
-          </button>
-        </p>
-      </div>
-    </div>
-  )
-}
-
-function BrowserLoginModal({
-  accountId,
-  onClose,
-  onSaved,
-}: {
-  accountId: string
-  onClose: () => void
-  onSaved: () => void
-}) {
-  type Tab  = 'signin' | 'import'
-  type Step = 'form' | 'loading' | 'push' | 'verify' | 'done' | 'error'
-
-  const [tab, setTab]         = useState<Tab>('signin')
-  const [step, setStep]       = useState<Step>('form')
-  const [email, setEmail]     = useState('')
-  const [password, setPassword] = useState('')
+  // credentials form
+  const [email, setEmail]         = useState('')
+  const [password, setPassword]   = useState('')
   const [totpSecret, setTotpSecret] = useState('')
-  const [code, setCode]       = useState('')
-  const [hint, setHint]       = useState('')
+
+  // verify step
+  const [code, setCode]           = useState('')
+  const [hint, setHint]           = useState('')
   const [sessionKey, setSessionKey] = useState('')
-  const [error, setError]     = useState('')
-  const [cookieJson, setCookieJson] = useState('')
-  const [importError, setImportError] = useState('')
-  const [importSaving, setImportSaving] = useState(false)
-  const [detectedCountry, setDetectedCountry] = useState<string | null>(null)
+  const [error, setError]         = useState('')
+
+  // cookie method
+  const [cookieVal, setCookieVal] = useState('')
+  const [cookieError, setCookieError] = useState('')
+  const [cookieSaving, setCookieSaving] = useState(false)
+  const [snippetCopied, setSnippetCopied] = useState(false)
+
+  const [checking, setChecking]   = useState(false)
+
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  // Stop all polling when the modal unmounts (prevents ghost intervals after close)
+  const SNIPPET = `copy(document.cookie.match(/li_at=([^;]+)/)?.[1] ?? 'not found')`
+
+  // Cleanup polling on unmount
   useEffect(() => {
     return () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null } }
   }, [])
 
-  // Auto-detect country via Cloudflare trace on modal open
+  // Auto-detect country when a credentials method is chosen
   useEffect(() => {
+    if (method !== 'infinite' && method !== 'credentials') return
     const SUPPORTED = new Set(['us','gb','de','fr','nl','ca','au','sg','in','ae','tr'])
     fetch('https://www.cloudflare.com/cdn-cgi/trace')
       .then(r => r.text())
       .then(text => {
         const match = text.match(/^loc=([A-Z]{2})$/m)
         if (!match) return
-        const code = match[1].toLowerCase()
-        if (!SUPPORTED.has(code)) return
-        setDetectedCountry(code)
-        // Silently persist to account so proxy routing uses the right country
-        void updateAccount(accountId, { proxy_country: code })
+        const c = match[1].toLowerCase()
+        if (!SUPPORTED.has(c)) return
+        void updateAccount(accountId, { proxy_country: c })
       })
       .catch(() => { /* non-critical */ })
-  }, [accountId])
+  }, [accountId, method])
 
   function stopPolling() {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
@@ -1242,25 +851,22 @@ function BrowserLoginModal({
   function startPolling(key: string) {
     stopPolling()
     pollRef.current = setInterval(async () => {
-      try {
-        const s = await getConnectStatus(accountId, key)
-        await handleStatusResult(s)
-      } catch { /* network blip, keep polling */ }
+      try { await handleStatusResult(await getConnectStatus(accountId, key)) }
+      catch { /* network blip */ }
     }, 2000)
   }
 
   async function handleCheckNow() {
-    try {
-      const s = await getConnectStatus(accountId, sessionKey)
-      await handleStatusResult(s)
-    } catch { /* ignore */ }
+    try { await handleStatusResult(await getConnectStatus(accountId, sessionKey)) }
+    catch { /* ignore */ }
   }
 
   async function handleSignIn(e: React.FormEvent) {
     e.preventDefault()
-    setStep('loading'); setError('')
+    setStep('connecting'); setError('')
     try {
-      const result = await connectAccount(accountId, email, password, totpSecret || undefined)
+      const secret = method === 'infinite' ? totpSecret || undefined : undefined
+      const result = await connectAccount(accountId, email, password, secret)
       setSessionKey(result.session_key)
       setStep('push'); setHint('Signing in to LinkedIn…')
       startPolling(result.session_key)
@@ -1271,7 +877,7 @@ function BrowserLoginModal({
 
   async function handleVerify(e: React.FormEvent) {
     e.preventDefault()
-    setStep('loading'); setError('')
+    setStep('connecting'); setError('')
     try {
       const result = await verifyConnectCode(accountId, sessionKey, code)
       if (result.status === 'success') {
@@ -1284,204 +890,379 @@ function BrowserLoginModal({
     }
   }
 
-  async function handleImport(e: React.FormEvent) {
-    e.preventDefault()
-    setImportError('')
-    const raw = cookieJson.trim()
-    if (!raw) { setImportError('Paste your cookies JSON first.'); return }
-    let parsed: unknown
-    try { parsed = JSON.parse(raw) }
-    catch { setImportError('Invalid JSON — copy the full output from Cookie Editor.'); return }
-
-    type C = { name: string; value: string; domain?: string; path?: string; httpOnly?: boolean; secure?: boolean; sameSite?: string; expirationDate?: number; expires?: number }
-    const arr = (Array.isArray(parsed) ? parsed : [parsed]) as C[]
-    if (!arr.find(c => c.name === 'li_at')) {
-      setImportError('No li_at cookie found. Export from linkedin.com while logged in.'); return
+  async function handleCookieSave() {
+    const val = cookieVal.trim()
+    if (!val || val === 'not found') {
+      setCookieError('Paste the cookie value — it should be a long string of letters and numbers.')
+      return
     }
-    const playwright = arr.map(c => ({
-      name: c.name, value: c.value,
-      domain: c.domain ?? '.linkedin.com', path: c.path ?? '/',
-      httpOnly: c.httpOnly ?? false, secure: c.secure ?? true,
-      sameSite: (c.sameSite ?? 'None') as 'None' | 'Lax' | 'Strict',
-      expires: c.expirationDate ?? c.expires ?? -1,
-    }))
-    setImportSaving(true)
+    setCookieSaving(true); setCookieError('')
     try {
-      await updateAccount(accountId, { cookies: JSON.stringify(playwright), status: 'active' } as Parameters<typeof updateAccount>[1])
-      setStep('done'); setTimeout(onSaved, 1500)
+      const cookies = JSON.stringify([{
+        name: 'li_at', value: val,
+        domain: '.linkedin.com', path: '/',
+        httpOnly: true, secure: true, sameSite: 'None', expires: -1,
+      }])
+      await updateAccount(accountId, { cookies, status: 'active' } as Parameters<typeof updateAccount>[1])
+      onSaved()
     } catch (err) {
-      setImportError((err as Error).message); setImportSaving(false)
+      setCookieError((err as Error).message); setCookieSaving(false)
     }
   }
 
-  return (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6 space-y-5">
+  function copySnippet() {
+    void navigator.clipboard.writeText(SNIPPET).then(() => {
+      setSnippetCopied(true); setTimeout(() => setSnippetCopied(false), 2000)
+    })
+  }
 
-        <div className="flex items-start justify-between">
-          <div>
-            <h2 className="text-lg font-semibold text-gray-900">Connect LinkedIn Account</h2>
-            <p className="mt-0.5 text-sm text-gray-500">Sign in once — we manage your session forever.</p>
+  // ── Shared header ─────────────────────────────────────────────────────────
+
+  const headerTitle =
+    method === 'select'      ? 'Connect LinkedIn Account'
+    : method === 'infinite'  ? 'Infinite Login'
+    : method === 'credentials' ? 'Credentials Login'
+    : 'Quick Login'
+
+  const headerSub =
+    method === 'select'      ? 'Choose how you want to connect'
+    : method === 'infinite'  ? 'Auto-reconnect forever with your 2FA secret'
+    : method === 'credentials' ? 'Sign in with email & password'
+    : 'Grab your session cookie from the browser'
+
+  // ── Shared done / error ───────────────────────────────────────────────────
+
+  if (step === 'done') {
+    return (
+      <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+        <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-8 flex flex-col items-center gap-4">
+          <div className="w-14 h-14 rounded-full bg-green-100 flex items-center justify-center">
+            <svg className="w-7 h-7 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+            </svg>
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 mt-0.5">
+          <div className="text-center">
+            <p className="text-lg font-semibold text-gray-900">Connected!</p>
+            <p className="text-sm text-gray-500 mt-1">Account is now active and ready to run campaigns.</p>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md">
+
+        {/* Header */}
+        <div className="flex items-start justify-between px-6 py-4 border-b border-gray-100">
+          <div className="flex items-center gap-3">
+            {method !== 'select' && step === 'form' && (
+              <button
+                onClick={() => { setMethod('select'); setStep('form'); setError('') }}
+                className="text-gray-400 hover:text-gray-600 transition-colors -ml-1"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                </svg>
+              </button>
+            )}
+            <div>
+              <h2 className="text-lg font-semibold text-gray-900">{headerTitle}</h2>
+              <p className="text-xs text-gray-500 mt-0.5">{headerSub}</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors mt-0.5">
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
             </svg>
           </button>
         </div>
 
-        {/* ── Done ── */}
-        {step === 'done' && (
-          <div className="flex items-center gap-3 bg-green-50 border border-green-200 rounded-xl p-4">
-            <svg className="w-5 h-5 text-green-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-            </svg>
-            <p className="text-sm font-medium text-green-900">Connected! Account is now active.</p>
-          </div>
-        )}
+        <div className="px-6 py-5">
 
-        {/* ── Push notification / security check waiting ── */}
-        {step === 'push' && (
-          <PushStep
-            accountId={accountId}
-            sessionKey={sessionKey}
-            hint={hint}
-            onCancel={() => { stopPolling(); setStep('form') }}
-            onCheckNow={handleCheckNow}
-          />
-        )}
+          {/* ── Method picker ── */}
+          {method === 'select' && (
+            <div className="space-y-3">
+              {/* Infinite Login */}
+              <button
+                onClick={() => setMethod('infinite')}
+                className="w-full text-left border-2 border-blue-500 rounded-xl p-4 hover:bg-blue-50 transition-colors group"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-semibold text-gray-900">Infinite Login</span>
+                      <span className="text-[10px] font-bold px-2 py-0.5 bg-blue-600 text-white rounded-full uppercase tracking-wide">Your Best Choice</span>
+                    </div>
+                    <p className="mt-1 text-xs text-gray-500">
+                      Enter your credentials + 2FA secret key. We generate TOTP codes automatically — your session never expires.
+                    </p>
+                  </div>
+                  <svg className="w-5 h-5 text-blue-500 flex-shrink-0 mt-0.5 group-hover:translate-x-0.5 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  </svg>
+                </div>
+              </button>
 
-        {/* ── 2FA code entry ── */}
-        {step === 'verify' && (
-          <form onSubmit={handleVerify} className="space-y-4">
-            <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
-              <p className="text-sm font-medium text-amber-900">Verification code required</p>
-              <p className="text-xs text-amber-700 mt-1">{hint}</p>
+              {/* Credentials Login */}
+              <button
+                onClick={() => setMethod('credentials')}
+                className="w-full text-left border border-gray-200 rounded-xl p-4 hover:bg-gray-50 transition-colors group"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex-1">
+                    <span className="text-sm font-semibold text-gray-900">Credentials Login</span>
+                    <p className="mt-1 text-xs text-gray-500">
+                      Email &amp; password only. You may be asked to approve a push notification or enter a 2FA code manually.
+                    </p>
+                  </div>
+                  <svg className="w-5 h-5 text-gray-400 flex-shrink-0 mt-0.5 group-hover:translate-x-0.5 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  </svg>
+                </div>
+              </button>
+
+              {/* Quick Login */}
+              <button
+                onClick={() => setMethod('cookie')}
+                className="w-full text-left border border-gray-200 rounded-xl p-4 hover:bg-gray-50 transition-colors group"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex-1">
+                    <span className="text-sm font-semibold text-gray-900">Quick Login</span>
+                    <p className="mt-1 text-xs text-gray-500">
+                      Log in with your real browser, then copy your session cookie in one command. Fast and no password needed.
+                    </p>
+                  </div>
+                  <svg className="w-5 h-5 text-gray-400 flex-shrink-0 mt-0.5 group-hover:translate-x-0.5 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  </svg>
+                </div>
+              </button>
             </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1.5">Enter code</label>
-              <input autoFocus type="text" inputMode="numeric" maxLength={8}
-                value={code} onChange={e => setCode(e.target.value)}
-                placeholder="123456"
-                className="w-full px-3.5 py-2.5 border border-gray-300 rounded-lg text-sm text-center tracking-widest focus:outline-none focus:ring-2 focus:ring-blue-500" />
-            </div>
-            {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg p-3">{error}</p>}
-            <button type="submit"
-              className="w-full py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-blue-700">
-              Verify
-            </button>
-          </form>
-        )}
+          )}
 
-        {/* ── Error state ── */}
-        {step === 'error' && (
-          <div className="space-y-4">
-            <div className="bg-red-50 border border-red-200 rounded-xl p-4">
-              <p className="text-sm font-medium text-red-900">Connection failed</p>
-              <p className="text-xs text-red-700 mt-1">{error}</p>
-            </div>
-            <button type="button" onClick={() => { setStep('form'); setError('') }}
-              className="w-full py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-blue-700">
-              Try Again
-            </button>
-          </div>
-        )}
-
-        {/* ── Main form (signin + import tabs) ── */}
-        {(step === 'form' || step === 'loading') && (
-          <>
-            <div className="flex gap-1 p-1 bg-gray-100 rounded-xl">
-              {(['signin', 'import'] as Tab[]).map(t => (
-                <button key={t} type="button"
-                  onClick={() => { setTab(t); setError(''); setImportError('') }}
-                  className={['flex-1 py-2 text-sm font-medium rounded-lg transition-colors',
-                    tab === t ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'].join(' ')}>
-                  {t === 'signin' ? 'Sign In' : 'Paste Cookies'}
-                </button>
-              ))}
-            </div>
-
-            {/* Sign In tab */}
-            {tab === 'signin' && (
-              <form onSubmit={handleSignIn} className="space-y-4">
+          {/* ── Credentials form (Infinite + Credentials methods) ── */}
+          {(method === 'infinite' || method === 'credentials') && step === 'form' && (
+            <form onSubmit={handleSignIn} className="space-y-4">
+              {method === 'infinite' && (
                 <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 text-xs text-blue-800">
-                  <span className="font-semibold">Infinite Login:</span> add your 2FA secret key below and we'll never ask for a verification code again.
+                  With your 2FA secret saved, we generate verification codes automatically — your session reconnects silently on expiry.
                 </div>
+              )}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">LinkedIn email</label>
+                <input required type="email" autoFocus value={email} onChange={e => setEmail(e.target.value)}
+                  placeholder="you@example.com"
+                  className="w-full px-3.5 py-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">Password</label>
+                <input required type="password" value={password} onChange={e => setPassword(e.target.value)}
+                  placeholder="••••••••"
+                  className="w-full px-3.5 py-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </div>
+              {method === 'infinite' && (
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1.5">LinkedIn email</label>
-                  <input required type="email" autoFocus value={email} onChange={e => setEmail(e.target.value)}
-                    placeholder="you@example.com"
-                    className="w-full px-3.5 py-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1.5">Password</label>
-                  <input required type="password" value={password} onChange={e => setPassword(e.target.value)}
-                    placeholder="••••••••"
-                    className="w-full px-3.5 py-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    2FA secret key <span className="text-gray-400 font-normal">(optional — for Infinite Login)</span>
-                  </label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">2FA secret key</label>
                   <input type="text" value={totpSecret} onChange={e => setTotpSecret(e.target.value)}
-                    placeholder="e.g. JBSWY3DPEHPK3PXP"
+                    placeholder="JBSWY3DPEHPK3PXP"
                     className="w-full px-3.5 py-2.5 border border-gray-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                  <p className="mt-1 text-xs text-gray-400">
-                    Find it in LinkedIn Settings → Sign in &amp; Security → Two-step verification → Authenticator app setup (the QR code secret).
+                  <p className="mt-1.5 text-xs text-gray-400">
+                    LinkedIn Settings → Sign in &amp; Security → Two-step verification → Authenticator app → the raw secret shown during setup.
                   </p>
                 </div>
-                {detectedCountry && (
-                  <div className="flex items-center gap-2 text-xs text-gray-500 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2">
-                    <span>📍</span>
-                    <span>Location detected: <strong className="text-gray-700">{detectedCountry.toUpperCase()}</strong> — proxy routing set automatically</span>
-                  </div>
-                )}
-                {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg p-3">{error}</p>}
-                <div className="flex gap-3 pt-1">
-                  <button type="button" onClick={onClose}
-                    className="flex-1 py-2.5 border border-gray-300 text-sm font-medium rounded-lg hover:bg-gray-50">
-                    Cancel
-                  </button>
-                  <button type="submit" disabled={step === 'loading'}
-                    className="flex-1 py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-blue-700 disabled:opacity-60">
-                    {step === 'loading' ? 'Connecting…' : 'Connect'}
-                  </button>
-                </div>
-              </form>
-            )}
+              )}
+              {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg p-3">{error}</p>}
+              <div className="flex gap-3 pt-1">
+                <button type="button" onClick={onClose}
+                  className="flex-1 py-2.5 border border-gray-200 text-sm font-medium rounded-lg hover:bg-gray-50 transition-colors">
+                  Cancel
+                </button>
+                <button type="submit"
+                  className="flex-1 py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-blue-700 transition-colors">
+                  Connect
+                </button>
+              </div>
+            </form>
+          )}
 
-            {/* Paste Cookies tab */}
-            {tab === 'import' && (
-              <form onSubmit={handleImport} className="space-y-4">
-                <div className="bg-gray-50 rounded-xl p-4 text-xs text-gray-600 space-y-1.5">
-                  <p className="font-medium text-gray-700">Export cookies from your browser:</p>
-                  <ol className="list-decimal list-inside space-y-1">
-                    <li>Install <strong>Cookie Editor</strong> extension for Chrome</li>
-                    <li>Go to <strong>linkedin.com</strong> while logged in</li>
-                    <li>Click Cookie Editor → <strong>Export (JSON)</strong></li>
-                    <li>Paste below</li>
-                  </ol>
+          {/* ── Connecting spinner ── */}
+          {(method === 'infinite' || method === 'credentials') && step === 'connecting' && (
+            <div className="py-8 flex flex-col items-center gap-3">
+              <svg className="w-8 h-8 animate-spin text-blue-500" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+              </svg>
+              <p className="text-sm text-gray-600">Signing in to LinkedIn…</p>
+            </div>
+          )}
+
+          {/* ── Push notification waiting ── */}
+          {(method === 'infinite' || method === 'credentials') && step === 'push' && (
+            <div className="space-y-4">
+              <div className={`border rounded-xl px-4 py-4 ${hint.toLowerCase().includes('security') || hint.toLowerCase().includes('verif') ? 'bg-amber-50 border-amber-200' : 'bg-blue-50 border-blue-200'}`}>
+                <div className="flex items-center gap-2 mb-1">
+                  <svg className="w-4 h-4 animate-spin flex-shrink-0 text-blue-500" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                  </svg>
+                  <p className="text-sm font-semibold text-gray-900">Waiting for approval…</p>
                 </div>
-                <div>
-                  <label className="block text-xs font-medium text-gray-700 mb-1.5">Cookie JSON</label>
-                  <textarea required value={cookieJson} onChange={e => setCookieJson(e.target.value)}
-                    placeholder={'[{"name":"li_at","value":"AQE..."}]'}
-                    rows={5}
-                    className="w-full px-3 py-2.5 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono resize-none" />
-                </div>
-                {importError && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg p-3">{importError}</p>}
-                <div className="flex gap-3">
-                  <button type="button" onClick={onClose}
-                    className="flex-1 py-2.5 border border-gray-300 text-sm font-medium rounded-lg hover:bg-gray-50">Cancel</button>
-                  <button type="submit" disabled={importSaving}
-                    className="flex-1 py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-blue-700 disabled:opacity-60">
-                    {importSaving ? 'Saving…' : 'Import & Connect'}
+                {hint && hint !== 'Signing in to LinkedIn…' && (
+                  <p className="text-xs text-gray-600 ml-6">{hint}</p>
+                )}
+              </div>
+              <p className="text-xs text-gray-500 text-center">
+                Check your phone for a LinkedIn push notification and tap <strong>Yes, it's me</strong>.
+              </p>
+              <button
+                type="button"
+                disabled={checking}
+                onClick={async () => { setChecking(true); try { await handleCheckNow() } finally { setChecking(false) } }}
+                className="w-full py-2.5 bg-green-600 text-white text-sm font-semibold rounded-xl hover:bg-green-700 disabled:opacity-60 transition-colors flex items-center justify-center gap-2"
+              >
+                {checking ? (
+                  <>
+                    <svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                    </svg>
+                    Checking…
+                  </>
+                ) : (
+                  <>
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                    </svg>
+                    I approved it — check now
+                  </>
+                )}
+              </button>
+              <button type="button" onClick={() => { stopPolling(); setStep('form') }}
+                className="w-full py-2 border border-gray-200 text-sm text-gray-500 rounded-lg hover:bg-gray-50 transition-colors">
+                Cancel
+              </button>
+            </div>
+          )}
+
+          {/* ── 2FA code entry ── */}
+          {(method === 'infinite' || method === 'credentials') && step === 'verify' && (
+            <form onSubmit={handleVerify} className="space-y-4">
+              <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
+                <p className="text-sm font-medium text-amber-900">Verification code required</p>
+                {hint && <p className="text-xs text-amber-700 mt-1">{hint}</p>}
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">Enter code</label>
+                <input autoFocus type="text" inputMode="numeric" maxLength={8}
+                  value={code} onChange={e => setCode(e.target.value)}
+                  placeholder="123456"
+                  className="w-full px-3.5 py-2.5 border border-gray-300 rounded-lg text-sm text-center tracking-widest focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </div>
+              {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg p-3">{error}</p>}
+              <button type="submit"
+                className="w-full py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-blue-700">
+                Verify
+              </button>
+            </form>
+          )}
+
+          {/* ── Error state ── */}
+          {(method === 'infinite' || method === 'credentials') && step === 'error' && (
+            <div className="space-y-4">
+              <div className="bg-red-50 border border-red-200 rounded-xl p-4">
+                <p className="text-sm font-medium text-red-900">Connection failed</p>
+                <p className="text-xs text-red-700 mt-1">{error}</p>
+              </div>
+              <button type="button" onClick={() => { setStep('form'); setError('') }}
+                className="w-full py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-blue-700">
+                Try Again
+              </button>
+            </div>
+          )}
+
+          {/* ── Cookie method ── */}
+          {method === 'cookie' && (
+            <div className="space-y-5">
+
+              {/* Step 1 */}
+              <div className={`flex gap-4 ${cookieStep !== 'open' ? 'opacity-50' : ''}`}>
+                <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold shrink-0 mt-0.5 ${cookieStep === 'open' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-500'}`}>1</div>
+                <div className="flex-1">
+                  <p className="text-sm font-medium text-gray-900">Open LinkedIn and log in</p>
+                  <p className="text-xs text-gray-500 mt-0.5">Sign in with your normal browser — no proxies, no bots.</p>
+                  <button
+                    onClick={() => { window.open('https://www.linkedin.com/login', '_blank', 'noopener,noreferrer'); setCookieStep('copy') }}
+                    className="mt-2.5 inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                    </svg>
+                    Open LinkedIn
                   </button>
                 </div>
-              </form>
-            )}
-          </>
-        )}
+              </div>
+
+              {/* Step 2 */}
+              <div className={`flex gap-4 ${cookieStep === 'open' ? 'opacity-40 pointer-events-none' : ''}`}>
+                <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold shrink-0 mt-0.5 ${cookieStep === 'copy' ? 'bg-blue-600 text-white' : cookieStep === 'paste' ? 'bg-green-500 text-white' : 'bg-gray-200 text-gray-500'}`}>
+                  {cookieStep === 'paste' ? '✓' : '2'}
+                </div>
+                <div className="flex-1">
+                  <p className="text-sm font-medium text-gray-900">Copy your session cookie</p>
+                  <p className="text-xs text-gray-500 mt-0.5">Press <kbd className="px-1 py-0.5 bg-gray-100 rounded text-[10px] font-mono">F12</kbd> → Console → paste this and press Enter:</p>
+                  <div className="mt-2 bg-gray-900 rounded-lg px-3.5 py-2.5 flex items-center gap-2">
+                    <code className="text-green-400 text-xs font-mono flex-1 break-all">{SNIPPET}</code>
+                    <button onClick={copySnippet} title="Copy command" className="shrink-0 text-gray-400 hover:text-white transition-colors">
+                      {snippetCopied
+                        ? <svg className="w-4 h-4 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
+                        : <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
+                      }
+                    </button>
+                  </div>
+                  {cookieStep === 'copy' && (
+                    <button onClick={() => setCookieStep('paste')} className="mt-2 text-xs text-blue-600 hover:text-blue-800 font-medium">
+                      Done → paste it below ↓
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Step 3 */}
+              <div className={`flex gap-4 ${cookieStep !== 'paste' ? 'opacity-40 pointer-events-none' : ''}`}>
+                <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold shrink-0 mt-0.5 ${cookieStep === 'paste' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-500'}`}>3</div>
+                <div className="flex-1">
+                  <p className="text-sm font-medium text-gray-900">Paste the cookie value</p>
+                  <textarea
+                    autoFocus={cookieStep === 'paste'}
+                    value={cookieVal}
+                    onChange={e => setCookieVal(e.target.value)}
+                    placeholder="AQEDAQbj…"
+                    rows={3}
+                    className="mt-2 w-full px-3 py-2.5 border border-gray-300 rounded-lg text-xs font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                  />
+                  {cookieError && <p className="mt-1.5 text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{cookieError}</p>}
+                </div>
+              </div>
+
+              <div className="flex gap-3 pt-1">
+                <button onClick={onClose} className="flex-1 py-2.5 border border-gray-200 text-sm font-medium rounded-lg hover:bg-gray-50 transition-colors">
+                  Cancel
+                </button>
+                <button
+                  onClick={() => void handleCookieSave()}
+                  disabled={cookieSaving || cookieStep !== 'paste' || !cookieVal.trim()}
+                  className="flex-1 py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                >
+                  {cookieSaving ? 'Saving…' : 'Connect Account'}
+                </button>
+              </div>
+            </div>
+          )}
+
+        </div>
       </div>
     </div>
   )
