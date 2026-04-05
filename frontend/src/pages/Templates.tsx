@@ -99,7 +99,7 @@ async function deleteTemplate(id: string): Promise<void> {
   await apiFetch(`/api/message-templates/${id}`, { method: 'DELETE' })
 }
 
-const EMPTY_FORM = { name: '', type: 'message' as const, subject: '', body: '' }
+const EMPTY_FORM: { name: string; type: MessageTemplate['type']; subject: string; body: string } = { name: '', type: 'message', subject: '', body: '' }
 
 export function Templates() {
   const [typeFilter, setTypeFilter] = useState<string>('')

@@ -4,7 +4,7 @@ import { fetchLeads, requalifyLead, qualifyAllLeads, importLeads, startSalesNavI
 import type { Lead, LeadNote, LeadCampaignMembership } from '../api/leads'
 import { fetchLabels, fetchLeadLabels, assignLabel, removeLabel, createLabel, type LeadLabel } from '../api/labels'
 import { fetchAccounts } from '../api/accounts'
-import { fetchCampaigns, addLeadsToCampaign } from '../api/campaigns'
+import { addLeadsToCampaign } from '../api/campaigns'
 import * as XLSX from 'xlsx'
 
 const FLAG_COLORS: Record<NonNullable<Lead['icp_flag']>, string> = {
@@ -61,7 +61,7 @@ export function Leads() {
   const [showAddToCampaign, setShowAddToCampaign] = useState(false)
   const [targetCampaignId, setTargetCampaignId] = useState('')
   const [notesLead, setNotesLead] = useState<Lead | null>(null)
-  const [labelsLead, setLabelsLead] = useState<Lead | null>(null)
+
   const [showManageLabels, setShowManageLabels] = useState(false)
   const [detailLead, setDetailLead] = useState<Lead | null>(null)
 
@@ -149,8 +149,8 @@ export function Leads() {
                 const rows = leads.map(l => [
                   l.first_name, l.last_name, l.title ?? '', l.company ?? '',
                   l.linkedin_url, l.icp_flag ?? '', l.icp_score ?? '',
-                  (l as Record<string,unknown>).email ?? '', (l as Record<string,unknown>).location ?? '',
-                  (l as Record<string,unknown>).industry ?? '',
+                  (l as unknown as Record<string,unknown>).email ?? '', (l as unknown as Record<string,unknown>).location ?? '',
+                  (l as unknown as Record<string,unknown>).industry ?? '',
                 ])
                 const csv = [headers, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n')
                 const blob = new Blob([csv], { type: 'text/csv' })
