@@ -44,14 +44,15 @@ interface SalesNavApiLead {
 }
 
 interface SalesNavApiResponse {
-  elements?:  SalesNavApiLead[]
-  results?:   SalesNavApiLead[]
-  paging?:    { total: number; start: number; count: number }
-  total?:     number
+  elements?:     SalesNavApiLead[]
+  results?:      SalesNavApiLead[]
+  leadResults?:  SalesNavApiLead[]   // returned by some saved-search endpoints
+  paging?:       { total: number; start: number; count: number }
+  total?:        number
 }
 
 function parseApiLeads(data: SalesNavApiResponse, searchUrl: string): ScrapedLead[] {
-  const items = data.elements ?? data.results ?? []
+  const items = data.elements ?? data.results ?? data.leadResults ?? []
   const leads: ScrapedLead[] = []
 
   for (const item of items) {
@@ -165,18 +166,40 @@ export async function scrapeSalesNavSearch(
   const interceptedPages = new Map<number, SalesNavApiResponse>()
   let totalFromApi = 0
 
+  // Strip sessionId — it is tied to the original browser session and breaks
+  // when re-used in a different Playwright context
+  const cleanSearchUrl = (() => {
+    const u = new URL(searchUrl)
+    u.searchParams.delete('sessionId')
+    return u.toString()
+  })()
+
   page.on('response', async (response) => {
     try {
       const rUrl = response.url()
-      if (!rUrl.includes('salesApiLeadSearch') && !rUrl.includes('salesApiSearch')) return
+      // Broad match: catch any LinkedIn sales/lead search API response regardless of
+      // exact endpoint name — LinkedIn uses different paths across SPA versions
+      const isSalesSearch =
+        rUrl.includes('salesApiLeadSearch') ||
+        rUrl.includes('salesApiSearch') ||
+        rUrl.includes('leadSearch') ||
+        rUrl.includes('blendedSearch') ||
+        rUrl.includes('peopleSearch') ||
+        (rUrl.includes('linkedin.com') && rUrl.includes('/sales/api/') &&
+         (rUrl.includes('search') || rUrl.includes('lead')))
+      if (!isSalesSearch) return
       if (response.status() !== 200) return
 
+      console.log(`[sales-nav] Captured API response: ${rUrl.substring(0, 160)}`)
       const json = await response.json() as SalesNavApiResponse
       const start = Number(new URL(rUrl).searchParams.get('start') ?? '0')
       const pageNum = Math.floor(start / 25)
       interceptedPages.set(pageNum, json)
       if (json.paging?.total) totalFromApi = json.paging.total
-      console.log(`[sales-nav] API intercepted page ${pageNum}: ${(json.elements ?? json.results ?? []).length} leads`)
+      const count = (json.elements ?? json.results ?? json.leadResults ?? []).length
+      console.log(`[sales-nav] API intercepted page ${pageNum}: ${count} leads`)
+      // Signal browser context so waitForFunction can exit early
+      try { await page.evaluate(() => { (window as unknown as Record<string, boolean>).__lrApiCaptured = true }) } catch { /* ok */ }
     } catch { /* not JSON or irrelevant */ }
   })
 
@@ -195,15 +218,19 @@ export async function scrapeSalesNavSearch(
   try { await page.waitForLoadState('networkidle', { timeout: 15_000 }) } catch { /* ok */ }
   await DELAY(2000)
 
-  // Navigate to the search URL — this triggers the API call
-  console.log('[sales-nav] Navigating to search URL…')
-  await safeNavigate(page, searchUrl, accountId)
+  // Navigate to the search URL (sessionId stripped) — this triggers the API call
+  console.log(`[sales-nav] Navigating to search URL: ${cleanSearchUrl.substring(0, 120)}`)
+  await safeNavigate(page, cleanSearchUrl, accountId)
 
   if (page.url().includes('/sales/contract-chooser')) {
     try {
       await page.waitForURL(u => !u.toString().includes('/sales/contract-chooser'), { timeout: 20_000 })
     } catch { /* proceed */ }
   }
+
+  // Wait for network to settle so XHR/fetch search calls have time to fire and be captured
+  try { await page.waitForLoadState('networkidle', { timeout: 15_000 }) } catch { /* ok */ }
+  await DELAY(2000)
 
   // Wait for either API response or DOM results (up to 45s)
   console.log('[sales-nav] Waiting for results…')
@@ -240,7 +267,7 @@ export async function scrapeSalesNavSearch(
         // Need to paginate — click next or navigate to next page URL
         if (pageNum === 0) break // First page already loaded, no data = end
 
-        const nextUrl = new URL(searchUrl)
+        const nextUrl = new URL(cleanSearchUrl)
         nextUrl.searchParams.set('page', String(pageNum + 1))
         await safeNavigate(page, nextUrl.toString(), accountId)
         try { await page.waitForLoadState('networkidle', { timeout: 20_000 }) } catch { /* ok */ }
