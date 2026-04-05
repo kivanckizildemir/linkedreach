@@ -7,7 +7,7 @@
     "dev": "tsx watch --env-file=.env src/index.ts",
     "workers": "tsx watch --env-file=.env src/workers/index.ts",
     "build": "tsc",
-    "start": "node dist/index.js"
+    "start": "node dist/combined.js"
   },
   "keywords": [],
   "author": "",
