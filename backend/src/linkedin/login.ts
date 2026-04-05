@@ -665,7 +665,56 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       return
     }
 
-    // Navigate the browser to the redirect URL (challenge or next page)
+    // If credentials were accepted and we have a challenge URL, but BrightData blocks
+    // navigation to /checkpoint pages — set needs_verification so the user can complete
+    // verification manually (or the system can handle it via the interactive browser UI).
+    if (isChallenge) {
+      console.log('[LOGIN DEBUG] Challenge URL obtained:', url)
+      // Try to navigate the browser to the challenge URL
+      let postNavUrl = page.url()
+      let postNavText = ''
+      if (url) {
+        const navUrl = url.startsWith('http') ? url : `https://www.linkedin.com${url}`
+        console.log('[LOGIN DEBUG] Navigating browser to challenge:', navUrl)
+        try {
+          await page.goto(navUrl, { waitUntil: 'domcontentloaded', timeout: 20_000 })
+          await DELAY(2000)
+        } catch (navErr) {
+          console.log('[LOGIN DEBUG] Navigation error (ok):', String(navErr).substring(0, 100))
+        }
+        postNavUrl = page.url()
+        postNavText = await page.evaluate(() => (document.body?.innerText ?? '').substring(0, 300)).catch(() => '') as string
+        console.log('[LOGIN DEBUG] Post-nav URL:', postNavUrl)
+      }
+
+      const finalCookies = await context.cookies()
+      if (finalCookies.find(c => c.name === 'li_at')) {
+        await saveCookies(context, session.accountId)
+        session.status = 'success'
+        await browser.close()
+        return
+      }
+
+      await supabase.from('linkedin_accounts').update({
+        debug_log: {
+          label: 'challenge',
+          challengeUrl: url,
+          postNavUrl,
+          postNavText: postNavText.substring(0, 300),
+          postStatus: loginResponseStatus,
+          capturedAt: new Date().toISOString(),
+        }
+      }).eq('id', session.accountId)
+
+      // BrightData blocks /checkpoint pages. Set pending_push to indicate LinkedIn challenge
+      // is required. The user should approve the LinkedIn push notification or complete
+      // the verification via the interactive browser UI.
+      session.status = 'pending_push'
+      session.hint   = 'LinkedIn requires verification. Check your phone for a notification or open the challenge URL: ' + url.substring(0, 100)
+      return
+    }
+
+    // Navigate the browser to the redirect URL (non-challenge pages)
     if (url) {
       const navUrl = url.startsWith('http') ? url : `https://www.linkedin.com${url}`
       console.log('[LOGIN DEBUG] Navigating browser to:', navUrl)
@@ -689,7 +738,6 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       return
     }
 
-    // Save post-navigation diagnostic (includes POST result for full context)
     await supabase.from('linkedin_accounts').update({
       debug_log: {
         label: 'post-nav',
