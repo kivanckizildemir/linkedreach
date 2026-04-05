@@ -565,8 +565,37 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       loginResponseStatus = response.status
       loginResponseUrl = response.headers.get('location') ?? ''
       loginResponseCookies = response.headers.getSetCookie?.() ?? []
+
+      // Also capture response body for debugging (first 500 chars)
+      let responseBodyPreview = ''
+      try {
+        if (response.status !== 303 && response.status !== 302 && response.status !== 301) {
+          const bodyText = await response.text()
+          responseBodyPreview = bodyText.substring(0, 500)
+        }
+      } catch { /* ok */ }
+
       console.log('[LOGIN DEBUG] POST response status:', loginResponseStatus, 'location:', loginResponseUrl)
       console.log('[LOGIN DEBUG] Set-Cookie headers:', loginResponseCookies.length)
+      if (responseBodyPreview) console.log('[LOGIN DEBUG] Response body preview:', responseBodyPreview.substring(0, 200))
+
+      // Save all headers for diagnosis
+      const allHeaders: Record<string, string> = {}
+      response.headers.forEach((v: string, k: string) => { allHeaders[k] = v.substring(0, 100) })
+
+      await supabase.from('linkedin_accounts').update({
+        debug_log: {
+          label: 'direct-post-result-v2',
+          formAction,
+          loginResponseStatus,
+          loginResponseUrl,
+          loginResponseCookies: loginResponseCookies.map(c => c.split(';')[0].substring(0, 50)),
+          allHeaders,
+          responseBodyPreview: responseBodyPreview.substring(0, 300),
+          postFields: Object.keys(postFields),
+          capturedAt: new Date().toISOString(),
+        }
+      }).eq('id', session.accountId)
 
     } catch (fetchErr) {
       loginError = String(fetchErr)
