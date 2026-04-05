@@ -186,6 +186,17 @@ function TagInput({
 
 // ─── ProductCard ──────────────────────────────────────────────────────────────
 
+async function extractProductFromUrl(url: string): Promise<{ name: string; description: string; target_use_case: string }> {
+  const res = await apiFetch('/api/settings/extract-product', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url }),
+  })
+  const body = await res.json() as { data?: { name: string; description: string; target_use_case: string }; error?: string }
+  if (!res.ok) throw new Error(body.error ?? 'Extraction failed')
+  return body.data!
+}
+
 function ProductCard({
   product,
   onChange,
@@ -195,8 +206,65 @@ function ProductCard({
   onChange: (p: Product) => void
   onRemove: () => void
 }) {
+  const [url, setUrl] = useState('')
+  const [extracting, setExtracting] = useState(false)
+  const [extractError, setExtractError] = useState('')
+
+  async function handleExtract() {
+    if (!url.trim()) return
+    setExtracting(true)
+    setExtractError('')
+    try {
+      const result = await extractProductFromUrl(url.trim())
+      onChange({ ...product, ...result })
+      setUrl('')
+    } catch (err: unknown) {
+      setExtractError(err instanceof Error ? err.message : 'Failed to extract')
+    } finally {
+      setExtracting(false)
+    }
+  }
+
   return (
     <div className="rounded-xl border border-gray-200 bg-gray-50 p-4 space-y-3">
+
+      {/* Website extractor */}
+      <div className="flex gap-2">
+        <div className="flex-1 flex items-center gap-2 px-3 py-2 bg-white border border-gray-200 rounded-lg focus-within:ring-2 focus-within:ring-violet-400 focus-within:border-violet-400 transition-all">
+          <svg className="w-3.5 h-3.5 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" />
+          </svg>
+          <input
+            type="url"
+            value={url}
+            onChange={e => { setUrl(e.target.value); setExtractError('') }}
+            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); void handleExtract() } }}
+            placeholder="Paste website URL to auto-fill…"
+            className="flex-1 text-sm text-gray-700 bg-transparent outline-none placeholder:text-gray-400"
+          />
+        </div>
+        <button
+          type="button"
+          onClick={() => void handleExtract()}
+          disabled={!url.trim() || extracting}
+          className="flex items-center gap-1.5 px-3 py-2 bg-violet-600 text-white text-xs font-semibold rounded-lg hover:bg-violet-700 disabled:opacity-50 transition-colors whitespace-nowrap shrink-0"
+        >
+          {extracting ? (
+            <>
+              <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+              </svg>
+              Reading…
+            </>
+          ) : (
+            <>✨ Extract</>
+          )}
+        </button>
+      </div>
+      {extractError && <p className="text-xs text-red-500">{extractError}</p>}
+
+      {/* Name + remove */}
       <div className="flex items-center justify-between gap-3">
         <input
           type="text"
@@ -216,6 +284,8 @@ function ProductCard({
           </svg>
         </button>
       </div>
+
+      {/* Description */}
       <div>
         <label className="block text-xs font-medium text-gray-500 mb-1">Description</label>
         <textarea
@@ -226,6 +296,8 @@ function ProductCard({
           className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
         />
       </div>
+
+      {/* Target use case */}
       <div>
         <label className="block text-xs font-medium text-gray-500 mb-1">Target Use Case / Ideal Customer</label>
         <textarea
