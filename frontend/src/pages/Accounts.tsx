@@ -99,6 +99,7 @@ export function Accounts() {
   const [showAddAccount, setShowAddAccount] = useState(false)
   const [sessionAccountId, setSessionAccountId] = useState<string | null>(null)
   const [browserLoginId, setBrowserLoginId] = useState<string | null>(null)
+  const [quickLoginId, setQuickLoginId] = useState<string | null>(null)
   const queryClient = useQueryClient()
 
   const { data: accounts = [], isLoading } = useQuery({
@@ -268,7 +269,7 @@ export function Accounts() {
                                 </button>
                               )}
                               <button
-                                onClick={() => setBrowserLoginId(account.id)}
+                                onClick={() => setQuickLoginId(account.id)}
                                 className="text-xs text-indigo-700 hover:underline font-medium"
                               >
                                 Connect
@@ -337,6 +338,17 @@ export function Accounts() {
           onClose={() => setBrowserLoginId(null)}
           onSaved={() => {
             setBrowserLoginId(null)
+            void queryClient.invalidateQueries({ queryKey: ['accounts'] })
+          }}
+        />
+      )}
+
+      {quickLoginId && (
+        <QuickLoginModal
+          accountId={quickLoginId}
+          onClose={() => setQuickLoginId(null)}
+          onSaved={() => {
+            setQuickLoginId(null)
             void queryClient.invalidateQueries({ queryKey: ['accounts'] })
           }}
         />
@@ -980,6 +992,182 @@ function PushStep({
         className="w-full py-2 border border-gray-200 text-sm text-gray-600 rounded-lg hover:bg-gray-50">
         Cancel
       </button>
+    </div>
+  )
+}
+
+// ── Quick Login Modal ────────────────────────────────────────────────────────
+// Opens LinkedIn in the user's real browser, then captures the li_at cookie
+// via a one-liner console command. No Playwright / proxy required.
+
+function QuickLoginModal({
+  accountId,
+  onClose,
+  onSaved,
+}: {
+  accountId: string
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const SNIPPET = `copy(document.cookie.match(/li_at=([^;]+)/)?.[1] ?? 'not found')`
+
+  const [step, setStep] = useState<'open' | 'copy' | 'paste'>('open')
+  const [cookieVal, setCookieVal] = useState('')
+  const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [copied, setCopied] = useState(false)
+
+  function openLinkedIn() {
+    window.open('https://www.linkedin.com/login', '_blank', 'noopener,noreferrer')
+    setStep('copy')
+  }
+
+  function copySnippet() {
+    void navigator.clipboard.writeText(SNIPPET).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    })
+  }
+
+  async function handleSave() {
+    const val = cookieVal.trim()
+    if (!val || val === 'not found') {
+      setError('Paste the cookie value — it should be a long string of letters and numbers.')
+      return
+    }
+    setSaving(true)
+    setError('')
+    try {
+      // Build a minimal Playwright-compatible cookie array from just the li_at value
+      const cookies = JSON.stringify([{
+        name: 'li_at',
+        value: val,
+        domain: '.linkedin.com',
+        path: '/',
+        httpOnly: true,
+        secure: true,
+        sameSite: 'None',
+        expires: -1,
+      }])
+      await updateAccount(accountId, { cookies, status: 'active' } as Parameters<typeof updateAccount>[1])
+      onSaved()
+    } catch (err) {
+      setError((err as Error).message)
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md">
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+          <div>
+            <h2 className="text-lg font-semibold text-gray-900">Connect LinkedIn Account</h2>
+            <p className="text-xs text-gray-500 mt-0.5">Sign in with your real browser — takes 30 seconds</p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors">
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Steps */}
+        <div className="px-6 py-5 space-y-5">
+
+          {/* Step 1 */}
+          <div className={`flex gap-4 ${step !== 'open' ? 'opacity-50' : ''}`}>
+            <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold shrink-0 mt-0.5 ${step === 'open' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-500'}`}>1</div>
+            <div className="flex-1">
+              <p className="text-sm font-medium text-gray-900">Open LinkedIn and log in</p>
+              <p className="text-xs text-gray-500 mt-0.5">Sign in with your normal browser — no proxies, no bots.</p>
+              <button
+                onClick={openLinkedIn}
+                className="mt-2.5 inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                </svg>
+                Open LinkedIn Login
+              </button>
+            </div>
+          </div>
+
+          {/* Step 2 */}
+          <div className={`flex gap-4 ${step === 'open' ? 'opacity-40 pointer-events-none' : ''}`}>
+            <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold shrink-0 mt-0.5 ${step === 'copy' ? 'bg-blue-600 text-white' : step === 'paste' ? 'bg-green-500 text-white' : 'bg-gray-200 text-gray-500'}`}>
+              {step === 'paste' ? '✓' : '2'}
+            </div>
+            <div className="flex-1">
+              <p className="text-sm font-medium text-gray-900">Copy your session cookie</p>
+              <p className="text-xs text-gray-500 mt-0.5">Once logged in, press <kbd className="px-1 py-0.5 bg-gray-100 rounded text-[10px] font-mono">F12</kbd> → Console tab → paste this command and press Enter:</p>
+              <div className="mt-2 bg-gray-900 rounded-lg px-3.5 py-2.5 flex items-center gap-2">
+                <code className="text-green-400 text-xs font-mono flex-1 break-all">{SNIPPET}</code>
+                <button
+                  onClick={copySnippet}
+                  title="Copy command"
+                  className="shrink-0 text-gray-400 hover:text-white transition-colors"
+                >
+                  {copied
+                    ? <svg className="w-4 h-4 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
+                    : <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
+                  }
+                </button>
+              </div>
+              <p className="text-[11px] text-gray-400 mt-1.5">The command copies your <code className="font-mono">li_at</code> cookie to your clipboard automatically.</p>
+              {step === 'copy' && (
+                <button onClick={() => setStep('paste')} className="mt-2 text-xs text-blue-600 hover:text-blue-800 font-medium">
+                  Done → paste it below ↓
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Step 3 */}
+          <div className={`flex gap-4 ${step !== 'paste' ? 'opacity-40 pointer-events-none' : ''}`}>
+            <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold shrink-0 mt-0.5 ${step === 'paste' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-500'}`}>3</div>
+            <div className="flex-1">
+              <p className="text-sm font-medium text-gray-900">Paste the cookie value</p>
+              <p className="text-xs text-gray-500 mt-0.5">Paste the value that was copied to your clipboard:</p>
+              <textarea
+                autoFocus={step === 'paste'}
+                value={cookieVal}
+                onChange={e => setCookieVal(e.target.value)}
+                placeholder="AQEDAQbj…"
+                rows={3}
+                className="mt-2 w-full px-3 py-2.5 border border-gray-300 rounded-lg text-xs font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+              />
+              {error && <p className="mt-1.5 text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
+            </div>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="px-6 pb-5 flex gap-3">
+          <button onClick={onClose} className="flex-1 py-2.5 border border-gray-200 text-sm font-medium rounded-lg hover:bg-gray-50 transition-colors">
+            Cancel
+          </button>
+          <button
+            onClick={() => void handleSave()}
+            disabled={saving || step !== 'paste' || !cookieVal.trim()}
+            className="flex-1 py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
+          >
+            {saving ? 'Saving…' : 'Connect Account'}
+          </button>
+        </div>
+
+        {/* Escape hatch to old method */}
+        <p className="px-6 pb-4 text-center text-[11px] text-gray-400">
+          Prefer automated login?{' '}
+          <button
+            onClick={() => { onClose(); }}
+            className="text-gray-500 hover:text-gray-700 underline"
+          >
+            Use the advanced browser method
+          </button>
+        </p>
+      </div>
     </div>
   )
 }
