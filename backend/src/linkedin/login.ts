@@ -695,6 +695,18 @@ async function runLogin(key: string, email: string, password: string): Promise<v
         console.log('[LOGIN DEBUG] Post-nav URL:', postNavUrl, 'text:', postNavText.substring(0, 150))
       }
 
+      // If the proxy redirected us back to the login page instead of the challenge page,
+      // we can't complete 2FA through it. Ask the user to use Quick Login instead.
+      const proxyBlockedChallenge =
+        postNavUrl.includes('/login') &&
+        (postNavUrl.includes('?') || postNavUrl === 'https://www.linkedin.com/login')
+      if (proxyBlockedChallenge) {
+        session.status = 'error'
+        session.error  = 'LinkedIn requires verification but the proxy is blocking the challenge page. Please use Quick Login (cookie method) to connect this account.'
+        await browser.close()
+        return
+      }
+
       const finalCookies = await context.cookies()
       if (finalCookies.find(c => c.name === 'li_at')) {
         await saveCookies(context, session.accountId)
@@ -710,7 +722,8 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       ).catch(() => null))
       const isEmailChallenge = textLower.includes('email') || textLower.includes('sent a code') || textLower.includes('check your inbox')
       const isPhoneChallenge = textLower.includes('text message') || textLower.includes('sms') || (textLower.includes('phone') && !textLower.includes('approve'))
-      const isAppPush       = textLower.includes('approve') || textLower.includes('notification') || textLower.includes('linked') || postNavText.length < 30
+      // Deliberately excludes 'linked' to avoid false-positive on the login page
+      const isAppPush = textLower.includes('approve') || textLower.includes('tap') || textLower.includes('notification') || postNavText.length < 30
 
       // Auto-click "Send verification code" if visible (email/phone OTP challenge)
       if (!hasPinInputNow && (isEmailChallenge || isPhoneChallenge)) {
