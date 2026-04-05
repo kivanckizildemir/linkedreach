@@ -610,7 +610,14 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       const responseCookies = await context.cookies('https://www.linkedin.com')
       loginResponseCookies = responseCookies.map(c => `${c.name}=${c.value}`)
 
-      console.log('[LOGIN DEBUG] POST response status:', loginResponseStatus, 'location:', loginResponseUrl)
+      // Capture response body to see what LinkedIn returned
+      let responseBodyText = ''
+      try {
+        responseBodyText = (await apiResponse.text()).substring(0, 500)
+      } catch { /* ok */ }
+
+      console.log('[LOGIN DEBUG] POST response status:', loginResponseStatus, 'finalUrl:', loginResponseUrl)
+      console.log('[LOGIN DEBUG] Response body preview:', responseBodyText.substring(0, 200))
 
       await supabase.from('linkedin_accounts').update({
         debug_log: {
@@ -618,6 +625,7 @@ async function runLogin(key: string, email: string, password: string): Promise<v
           formAction,
           loginResponseStatus,
           loginResponseFinalUrl: loginResponseUrl,
+          responseBodyPreview: responseBodyText,
           postFields: Object.keys(postFields),
           cookieNames: responseCookies.map(c => c.name),
           capturedAt: new Date().toISOString(),
