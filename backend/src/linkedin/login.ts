@@ -650,12 +650,29 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       return
     }
 
-    // If login-submit or success pages — navigate the browser to the redirect URL
-    // to allow 2FA/challenge handling in the browser
-    if (isChallenge || isLoginSubmit || url) {
-      // Navigate the browser to the redirect location
+    // Inject all cookies from the login response into the browser context
+    // (especially chp_token which is needed for the challenge page)
+    for (const setCookie of loginResponseCookies) {
       try {
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20_000 })
+        const [nameVal] = setCookie.split(';')
+        const eqIdx = nameVal.indexOf('=')
+        if (eqIdx < 0) continue
+        const name = nameVal.substring(0, eqIdx).trim()
+        const value = nameVal.substring(eqIdx + 1).trim()
+        if (name && value) {
+          await context.addCookies([{
+            name, value, domain: '.linkedin.com', path: '/',
+            httpOnly: false, secure: true, sameSite: 'Lax',
+          }]).catch(() => {})
+        }
+      } catch { /* ok */ }
+    }
+
+    // Navigate the browser to the redirect URL (challenge or next page)
+    if (url) {
+      const navUrl = url.startsWith('http') ? url : `https://www.linkedin.com${url}`
+      try {
+        await page.goto(navUrl, { waitUntil: 'domcontentloaded', timeout: 20_000 })
         await DELAY(2000)
       } catch { /* ok — page may redirect further */ }
     }
@@ -716,12 +733,17 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       return
     }
 
-    // Push notification challenge — poll for up to 3 minutes
+    // Push notification / unknown challenge — get page text for better hint
     let hint = ''
     try {
       const hintEl = await page.$('.secondary-action, .challenge-main-content p, [data-test-id="challenge-description"], h1, h2')
       if (hintEl) hint = (await hintEl.innerText()).trim()
     } catch { /* ok */ }
+    if (!hint) {
+      try {
+        hint = await page.evaluate(() => (document.body?.innerText ?? '').substring(0, 200)).catch(() => '') as string
+      } catch { /* ok */ }
+    }
 
     // Store the original challenge URL so we can return to it if needed
     const challengeUrl = page.url()
