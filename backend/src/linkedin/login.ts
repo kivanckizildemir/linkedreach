@@ -277,11 +277,12 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     session.context = context
     session.page    = page
 
-    // Navigate to login — force English locale to bypass language selection pages
-    // on country-specific subdomains (e.g. pe.linkedin.com from Peruvian residential IPs).
-    // Use load (all resources) so the React SPA has time to hydrate and render form inputs.
-    // networkidle can time out on BrightData (ongoing background requests never stop).
-    await page.goto('https://www.linkedin.com/login?_l=en_US', { waitUntil: 'load', timeout: 45_000 })
+    // Navigate to LinkedIn's classic server-rendered login page (not the React SPA).
+    // The SPA version uses React-generated IDs and BrightData blocks keyboard input
+    // on its password fields. The classic /uas/login page uses traditional HTML
+    // with #username / #password IDs and server-side rendering — BrightData
+    // should have different (or no) restrictions on these fields.
+    await page.goto('https://www.linkedin.com/uas/login?_l=en_US', { waitUntil: 'load', timeout: 45_000 })
     await DELAY(2000 + Math.random() * 500)
 
     // ── Snapshot immediately after first navigation ───────────────────────────
@@ -365,14 +366,14 @@ async function runLogin(key: string, email: string, password: string): Promise<v
         })
       if (englishLink) await DELAY(1500)
       // Navigate directly to English login regardless
-      await page.goto('https://www.linkedin.com/login?_l=en_US', { waitUntil: 'load', timeout: 45_000 })
+      await page.goto('https://www.linkedin.com/uas/login?_l=en_US', { waitUntil: 'load', timeout: 45_000 })
       await DELAY(2000)
     }
 
     // If redirected away from login (e.g. already-logged-in BrightData session), navigate back
     if (!page.url().includes('/login')) {
       console.log(`[LOGIN DEBUG] redirected to ${page.url()} — navigating back to /login`)
-      await page.goto('https://www.linkedin.com/login?_l=en_US', { waitUntil: 'load', timeout: 45_000 })
+      await page.goto('https://www.linkedin.com/uas/login?_l=en_US', { waitUntil: 'load', timeout: 45_000 })
       await DELAY(2000)
     }
 
