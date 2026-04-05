@@ -277,12 +277,12 @@ function ProductCard({
 
   // Safely coerce legacy products that may be missing new fields
   const p: Product = {
-    one_liner: '',
-    usps: [],
-    differentiators: [],
-    tone_of_voice: 'professional',
-    website_url: '',
     ...product,
+    one_liner: product.one_liner ?? '',
+    usps: product.usps ?? [],
+    differentiators: product.differentiators ?? [],
+    tone_of_voice: product.tone_of_voice ?? 'professional',
+    website_url: product.website_url ?? '',
   }
 
   async function handleExtract() {

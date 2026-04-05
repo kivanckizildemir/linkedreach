@@ -610,10 +610,9 @@ const nodeTypes = {
 
 // ── Edit modal ────────────────────────────────────────────────────────────────
 
-function EditModal({ step, sequenceId, campaignId, onSave, onDelete, onClose, onTest }: {
+function EditModal({ step, sequenceId, onSave, onDelete, onClose, onTest }: {
   step: SequenceStep
   sequenceId: string
-  campaignId: string
   onSave: (updates: Partial<SequenceStep>) => void
   onDelete: (id: string) => void
   onClose: () => void
@@ -873,8 +872,6 @@ function TestMessageModal({
   const [err, setErr] = useState('')
   const [copied, setCopied] = useState(false)
 
-  const selectedStep = allSteps.find(s => s.id === selectedStepId) ?? null
-
   const { data: campaignLeads = [], isLoading: leadsLoading } = useQuery({
     queryKey: ['campaign-leads', campaignId],
     queryFn: () => fetchCampaignLeads(campaignId),
@@ -1089,6 +1086,7 @@ function FlowCanvas({ sequence, campaignId }: { sequence: Sequence; campaignId: 
       condition: type === 'react_post' ? { reaction: 'like' } : type === 'fork' ? { type: 'replied' } : type === 'wait' ? { wait_unit: 'days' } : null,
       parent_step_id: parentId,
       branch,
+      ai_generation_mode: false,
     })
     // Immediately add to local state for instant render, then refresh parent cache
     setSteps(prev => [...prev, newStep])
@@ -1275,7 +1273,6 @@ function FlowCanvas({ sequence, campaignId }: { sequence: Sequence; campaignId: 
         <EditModal
           step={editingStep}
           sequenceId={sequence.id}
-          campaignId={campaignId}
           onSave={updates => updateMutation.mutate({ id: editingStep.id, updates })}
           onDelete={onDelete}
           onClose={() => setEditingStep(null)}
@@ -1452,6 +1449,7 @@ function TemplatesModal({
           subject: tStep.subject ?? null,
           wait_days: tStep.wait_days ?? null,
           condition: tStep.condition ?? null,
+          ai_generation_mode: false,
         })
         createdIds.push(created.id)
       }
