@@ -1199,6 +1199,11 @@ function BrowserLoginModal({
   const [detectedCountry, setDetectedCountry] = useState<string | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
+  // Stop all polling when the modal unmounts (prevents ghost intervals after close)
+  useEffect(() => {
+    return () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null } }
+  }, [])
+
   // Auto-detect country via Cloudflare trace on modal open
   useEffect(() => {
     const SUPPORTED = new Set(['us','gb','de','fr','nl','ca','au','sg','in','ae','tr'])
