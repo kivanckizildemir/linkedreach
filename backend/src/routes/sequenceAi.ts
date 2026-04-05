@@ -62,14 +62,18 @@ async function getProductFromSettings(
   return product ?? null
 }
 
-/** Fetch campaign-level product_id. */
-async function getCampaignProductId(campaignId: string): Promise<string | null> {
+/** Fetch campaign-level context (product_id, message_approach, message_tone). */
+async function getCampaignContext(campaignId: string): Promise<{ product_id: string | null; message_approach: string | null; message_tone: string | null }> {
   const { data } = await supabase
     .from('campaigns')
-    .select('product_id')
+    .select('product_id, message_approach, message_tone')
     .eq('id', campaignId)
     .single()
-  return (data as { product_id?: string | null } | null)?.product_id ?? null
+  return {
+    product_id: (data as any)?.product_id ?? null,
+    message_approach: (data as any)?.message_approach ?? null,
+    message_tone: (data as any)?.message_tone ?? null,
+  }
 }
 
 /** Fetch ICP notes for the user. */
@@ -116,7 +120,8 @@ sequenceAiRouter.post('/:sequenceId/generate-all', async (req: Request, res: Res
   if (!seq) { res.status(404).json({ error: 'Sequence not found' }); return }
 
   // Resolve product
-  const productId = bodyProductId ?? await getCampaignProductId(seq.campaign_id)
+  const campaignCtx = await getCampaignContext(seq.campaign_id)
+  const productId = bodyProductId ?? campaignCtx.product_id
   if (!productId) {
     res.status(400).json({ error: 'No product selected for this campaign. Go to campaign Settings and pick a product.' })
     return
@@ -181,6 +186,8 @@ sequenceAiRouter.post('/:sequenceId/generate-all', async (req: Request, res: Res
         prior_messages: priorMsgs,
         icp_notes: icpNotes,
         resolve_variables: false,
+        approach: campaignCtx.message_approach,
+        tone: campaignCtx.message_tone,
       })
 
       // Update the step in the database
@@ -233,7 +240,8 @@ sequenceAiRouter.post('/:sequenceId/steps/:stepId/generate', async (req: Request
   const seq = await getOwnedSequence(sequenceId, req.user.id)
   if (!seq) { res.status(404).json({ error: 'Sequence not found' }); return }
 
-  const productId = bodyProductId ?? await getCampaignProductId(seq.campaign_id)
+  const campaignCtx2 = await getCampaignContext(seq.campaign_id)
+  const productId = bodyProductId ?? campaignCtx2.product_id
   if (!productId) {
     res.status(400).json({ error: 'No product selected for this campaign.' })
     return
@@ -290,6 +298,8 @@ sequenceAiRouter.post('/:sequenceId/steps/:stepId/generate', async (req: Request
     prior_messages: priorMsgs,
     icp_notes: icpNotes,
     resolve_variables: false,
+    approach: campaignCtx2.message_approach,
+    tone: campaignCtx2.message_tone,
   })
 
   const { data: updated, error: updateErr } = await supabase
@@ -335,8 +345,9 @@ sequenceAiRouter.post('/:sequenceId/steps/:stepId/preview', async (req: Request,
 
   if (leadErr || !lead) { res.status(404).json({ error: 'Lead not found' }); return }
 
-  // Get product
-  const productId = await getCampaignProductId(seq.campaign_id)
+  // Get product + approach/tone
+  const campaignCtx3 = await getCampaignContext(seq.campaign_id)
+  const productId = campaignCtx3.product_id
   const product: ProductContext = productId
     ? (await getProductFromSettings(req.user.id, productId)) ?? { name: 'our product' }
     : { name: 'our product' }
@@ -423,6 +434,8 @@ sequenceAiRouter.post('/:sequenceId/steps/:stepId/preview', async (req: Request,
       prior_messages: priorMsgs,
       icp_notes: icpNotes,
       resolve_variables: true,   // ← substitutes real values, no {{placeholders}}
+      approach: campaignCtx3.message_approach,
+      tone: campaignCtx3.message_tone,
     })
 
     res.json({

@@ -2,6 +2,26 @@ import Anthropic from '@anthropic-ai/sdk'
 
 const ai = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
+// ─── Approach & Tone guidance maps ───────────────────────────────────────────
+
+const APPROACH_GUIDANCE: Record<string, string> = {
+  pain_based:          'Open by identifying a specific pain or frustration the lead likely faces. Make them feel understood before presenting any solution.',
+  value_first:         'Lead immediately with the key outcome or benefit. What changes for them after using this product?',
+  curiosity:           'Open with a hook, surprising stat, or open-ended question that makes them want to know more. Do not reveal everything upfront.',
+  social_proof:        'Reference a similar company, role, or result early. Use specificity — generic claims are ignored.',
+  direct:              'No warm-up. State clearly who you are, what you offer, and what you want. Respect their time.',
+  consultative:        'Ask a genuine question about their situation. Position yourself as an advisor exploring fit, not a seller pushing a product.',
+  hyper_personalised:  'Reference something specific from their LinkedIn profile, recent post, or company news. Show you did your homework.',
+}
+
+const TONE_GUIDANCE: Record<string, string> = {
+  professional:   'Use clear, precise business language. Avoid slang and contractions.',
+  conversational: 'Write like you are talking to a peer over coffee. Use contractions, keep sentences short.',
+  bold:           'Be direct and confident. Strong verbs, no hedging language.',
+  empathetic:     'Acknowledge their reality. Warm, human, not pushy.',
+  witty:          'Light touch of personality or humour where appropriate. Do not overdo it.',
+}
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type SequenceStepType = 'connect' | 'message' | 'inmail' | 'follow_up'
@@ -42,6 +62,8 @@ export interface GenerateSequenceMessageInput {
   prior_messages: PriorMessage[]
   icp_notes?: string
   resolve_variables?: boolean            // true = substitute real values, false = keep {{placeholders}}
+  approach?: string | null
+  tone?: string | null
 }
 
 export interface GenerateSequenceMessageResult {
@@ -99,7 +121,7 @@ function stepConstraints(type: SequenceStepType, position: number): string {
 // ─── Prompt builder ───────────────────────────────────────────────────────────
 
 function buildPrompt(input: GenerateSequenceMessageInput): string {
-  const { step_type, position_in_sequence, product, lead, prior_messages, icp_notes, resolve_variables } = input
+  const { step_type, position_in_sequence, product, lead, prior_messages, icp_notes, resolve_variables, approach, tone } = input
 
   const lines: string[] = []
 
@@ -119,6 +141,21 @@ function buildPrompt(input: GenerateSequenceMessageInput): string {
   }
   if (product.tone_of_voice) lines.push(`Tone of voice: ${product.tone_of_voice}`)
   lines.push('')
+
+  // ── Approach block ──
+  if (approach) {
+    lines.push('━━━ OUTREACH APPROACH ━━━')
+    lines.push(`Use the following strategic angle for this message: ${approach}`)
+    if (APPROACH_GUIDANCE[approach]) lines.push(APPROACH_GUIDANCE[approach])
+    lines.push('')
+  }
+
+  // ── Tone block ──
+  if (tone) {
+    lines.push('━━━ TONE ━━━')
+    lines.push(`Write in a ${tone} tone.${TONE_GUIDANCE[tone] ? ' ' + TONE_GUIDANCE[tone] : ''}`)
+    lines.push('')
+  }
 
   // ── Lead block ──
   lines.push('━━━ LEAD PROFILE ━━━')

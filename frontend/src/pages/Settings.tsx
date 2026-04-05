@@ -32,6 +32,7 @@ interface IcpConfig {
   notes: string
   products_services: Product[]
   custom_criteria: CustomCriterion[]
+  default_ai_mode?: boolean
 }
 
 interface UserSettings {
@@ -532,6 +533,7 @@ const DEFAULT_ICP: IcpConfig = {
   notes: '',
   products_services: [],
   custom_criteria: [],
+  default_ai_mode: false,
 }
 
 export function Settings() {
@@ -640,6 +642,60 @@ export function Settings() {
         <h1 className="text-2xl font-bold text-gray-900">Settings</h1>
         <p className="mt-1 text-sm text-gray-500">Configure your ICP criteria, sending limits, and preferences</p>
       </div>
+
+      {/* ── Preferences ── */}
+      <section className="bg-white rounded-xl border border-gray-200 p-6 space-y-5">
+        <SectionHeader
+          icon={
+            <svg className="w-5 h-5 text-violet-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+            </svg>
+          }
+          iconBg="bg-violet-50"
+          title="Preferences"
+          subtitle="Default behaviours applied when creating new steps and sequences."
+        />
+
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm font-medium text-gray-800">Default message type</p>
+            <p className="text-xs text-gray-500 mt-0.5">New message steps will default to this mode when added to a sequence.</p>
+          </div>
+          <div className="flex rounded-lg border border-gray-200 overflow-hidden text-sm font-medium shrink-0 ml-4">
+            <button
+              type="button"
+              onClick={() => {
+                setIcp(c => ({ ...c, default_ai_mode: true }))
+                void updateSettings({ icp_config: { ...icp, default_ai_mode: true } })
+              }}
+              className={[
+                'px-4 py-2 transition-colors',
+                icp.default_ai_mode === true
+                  ? 'bg-violet-600 text-white'
+                  : 'text-gray-600 hover:bg-gray-50',
+              ].join(' ')}
+            >
+              ✨ AI Automated
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setIcp(c => ({ ...c, default_ai_mode: false }))
+                void updateSettings({ icp_config: { ...icp, default_ai_mode: false } })
+              }}
+              className={[
+                'px-4 py-2 border-l border-gray-200 transition-colors',
+                icp.default_ai_mode !== true
+                  ? 'bg-gray-800 text-white'
+                  : 'text-gray-600 hover:bg-gray-50',
+              ].join(' ')}
+            >
+              ✍️ Manual
+            </button>
+          </div>
+        </div>
+      </section>
 
       {/* ── ICP: Target Audience ── */}
       <section className="bg-white rounded-xl border border-gray-200 p-6 space-y-5">

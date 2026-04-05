@@ -407,7 +407,7 @@ function StepNodeComp({ data }: NodeProps) {
   return (
     <div
       style={{ width: NW, background: cfg.bg, border: `2px solid ${cfg.border}`, borderLeft: `5px solid ${cfg.color}`, cursor: 'pointer' }}
-      className="rounded-2xl shadow-md"
+      className="rounded-2xl shadow-md relative"
     >
       <Handle type="target" position={Position.Top} className="!w-2 !h-2" style={{ background: cfg.color }} />
 
@@ -417,6 +417,12 @@ function StepNodeComp({ data }: NodeProps) {
           <p className="text-[10px] font-bold uppercase tracking-widest mb-0.5" style={{ color: cfg.color }}>
             {cfg.label}
           </p>
+          {/* AI/Manual badge for message steps */}
+          {(step.type === 'connect' || step.type === 'message' || step.type === 'inmail') && (
+            <span className={`absolute top-2 right-2 text-xs font-semibold px-1.5 py-0.5 rounded-full ${step.ai_generation_mode ? 'bg-violet-100 text-violet-600' : 'bg-gray-100 text-gray-400'}`}>
+              {step.ai_generation_mode ? '✨' : '✍️'}
+            </span>
+          )}
           <div className="text-xs text-gray-700 leading-relaxed">
             {step.type === 'wait' && (() => {
               const val = step.wait_days ?? 1
@@ -664,9 +670,28 @@ function EditModal({ step, sequenceId, onSave, onDelete, onClose, onTest }: {
           <span className="text-2xl">{cfg.icon}</span>
           <h2 className="text-base font-bold text-gray-900">Edit {cfg.label}</h2>
           {isMessage && (
-            <span className={`ml-1 text-[10px] font-semibold px-2 py-0.5 rounded-full ${aiMode ? 'bg-violet-100 text-violet-700' : 'bg-gray-100 text-gray-500'}`}>
-              {aiMode ? '✨ AI' : 'Manual'}
-            </span>
+            <div className="ml-1 flex rounded-lg border border-gray-200 overflow-hidden text-xs font-medium">
+              <button
+                type="button"
+                onClick={() => setAiMode(true)}
+                className={[
+                  'px-3 py-1 transition-colors',
+                  aiMode ? 'bg-violet-600 text-white' : 'text-gray-500 hover:bg-gray-50',
+                ].join(' ')}
+              >
+                ✨ AI Automated
+              </button>
+              <button
+                type="button"
+                onClick={() => setAiMode(false)}
+                className={[
+                  'px-3 py-1 border-l border-gray-200 transition-colors',
+                  !aiMode ? 'bg-gray-800 text-white' : 'text-gray-500 hover:bg-gray-50',
+                ].join(' ')}
+              >
+                ✍️ Manual
+              </button>
+            </div>
           )}
           <button onClick={onClose} className="ml-auto text-gray-400 hover:text-gray-700 transition-colors">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -855,12 +880,16 @@ function TestMessageModal({
   allSteps,
   sequenceId,
   campaignId,
+  campaignApproach,
+  campaignTone,
   onClose,
 }: {
   initialStep?: SequenceStep       // pre-selected when opened from EditModal
   allSteps: SequenceStep[]         // all steps — used to build step picker
   sequenceId: string
   campaignId: string
+  campaignApproach?: string | null
+  campaignTone?: string | null
   onClose: () => void
 }) {
   const messageSteps = allSteps.filter(s => MESSAGE_STEP_TYPES.has(s.type))
@@ -965,6 +994,14 @@ function TestMessageModal({
             </div>
           )}
 
+          {/* Approach/Tone info banner */}
+          {(!campaignApproach || !campaignTone) && messageSteps.length > 0 && (
+            <div className="flex items-start gap-2 bg-blue-50 border border-blue-200 px-4 py-3 rounded-xl text-xs text-blue-700">
+              <span className="shrink-0 mt-0.5">ℹ️</span>
+              <span>For best results, set an Outreach Approach and Tone in campaign Settings before generating a preview.</span>
+            </div>
+          )}
+
           {/* Lead picker */}
           {messageSteps.length > 0 && (
             <div>
@@ -1065,6 +1102,20 @@ function FlowCanvas({ sequence, campaignId }: { sequence: Sequence; campaignId: 
   const [generateErr, setGenerateErr] = useState('')
   const [showGenConfirm, setShowGenConfirm] = useState(false)
 
+  const { data: userSettings } = useQuery({
+    queryKey: ['user-settings'],
+    queryFn: async () => {
+      const { data } = await supabase.from('user_settings').select('icp_config').single()
+      return data as { icp_config: { default_ai_mode?: boolean } } | null
+    },
+  })
+  const defaultAiMode = userSettings?.icp_config?.default_ai_mode ?? false
+
+  const { data: campaignData } = useQuery({
+    queryKey: ['campaign-detail', campaignId],
+    queryFn: () => fetchCampaign(campaignId),
+  })
+
   const invalidate = useCallback(async () => {
     // Bypass the query cache so we always get fresh data after mutations
     const seqs = await fetchSequences(campaignId)
@@ -1086,12 +1137,12 @@ function FlowCanvas({ sequence, campaignId }: { sequence: Sequence; campaignId: 
       condition: type === 'react_post' ? { reaction: 'like' } : type === 'fork' ? { type: 'replied' } : type === 'wait' ? { wait_unit: 'days' } : null,
       parent_step_id: parentId,
       branch,
-      ai_generation_mode: false,
+      ai_generation_mode: (['connect', 'message', 'inmail'].includes(type)) ? defaultAiMode : false,
     })
     // Immediately add to local state for instant render, then refresh parent cache
     setSteps(prev => [...prev, newStep])
     queryClient.invalidateQueries({ queryKey: ['sequences', campaignId] })
-  }, [steps, sequence.id, queryClient, campaignId])
+  }, [steps, sequence.id, queryClient, campaignId, defaultAiMode])
 
   const updateMutation = useMutation({
     mutationFn: ({ id, updates }: { id: string; updates: Partial<SequenceStep> }) => updateStep(id, updates),
@@ -1286,6 +1337,8 @@ function FlowCanvas({ sequence, campaignId }: { sequence: Sequence; campaignId: 
           allSteps={steps}
           sequenceId={sequence.id}
           campaignId={campaignId}
+          campaignApproach={campaignData?.message_approach}
+          campaignTone={campaignData?.message_tone}
           onClose={() => setTestingStep(null)}
         />
       )}
@@ -1295,6 +1348,8 @@ function FlowCanvas({ sequence, campaignId }: { sequence: Sequence; campaignId: 
           allSteps={steps}
           sequenceId={sequence.id}
           campaignId={campaignId}
+          campaignApproach={campaignData?.message_approach}
+          campaignTone={campaignData?.message_tone}
           onClose={() => setShowTestModal(false)}
         />
       )}
@@ -2116,6 +2171,8 @@ function SettingsTab({ campaignId }: { campaignId: string }) {
   const [icpKeywords, setIcpKeywords] = useState('')
   const [defaultAccountId, setDefaultAccountId] = useState('')
   const [productId, setProductId] = useState<string>('')
+  const [messageApproach, setMessageApproach] = useState<string>('')
+  const [messageTone, setMessageTone] = useState<string>('')
   const [saved, setSaved] = useState(false)
   const initialized = useRef(false)
 
@@ -2139,6 +2196,8 @@ function SettingsTab({ campaignId }: { campaignId: string }) {
       setIcpKeywords(icp.keywords ?? '')
       setDefaultAccountId(icp.default_account_id ?? '')
       setProductId(campaign.product_id ?? '')
+      setMessageApproach(campaign.message_approach ?? '')
+      setMessageTone(campaign.message_tone ?? '')
     }
   }, [campaign])
 
@@ -2149,6 +2208,8 @@ function SettingsTab({ campaignId }: { campaignId: string }) {
       daily_connection_limit: connLimit,
       daily_message_limit: msgLimit,
       product_id: productId || null,
+      message_approach: messageApproach || null,
+      message_tone: messageTone || null,
       icp_config: {
         target_roles: icpRoles,
         target_industries: icpIndustries,
@@ -2317,6 +2378,48 @@ function SettingsTab({ campaignId }: { campaignId: string }) {
               })()}
             </div>
           )}
+        </div>
+
+        {/* Outreach Style */}
+        <div className="bg-white rounded-xl border border-gray-200 p-5 space-y-4">
+          <div>
+            <h3 className="text-sm font-semibold text-gray-900">Outreach Style</h3>
+            <p className="text-xs text-gray-500 mt-0.5">
+              The AI will use these settings to shape the strategic angle and tone of every message.
+            </p>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-700 mb-1.5">Approach</label>
+            <select
+              value={messageApproach}
+              onChange={e => setMessageApproach(e.target.value)}
+              className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-500"
+            >
+              <option value="">— no approach selected —</option>
+              <option value="pain_based">🩹 Pain-based — address a problem they face</option>
+              <option value="value_first">💡 Value-first — lead with the outcome/benefit</option>
+              <option value="curiosity">❓ Curiosity — hook with an open question or gap</option>
+              <option value="social_proof">🏆 Social proof — reference similar results</option>
+              <option value="direct">🎯 Direct ask — straight to the point</option>
+              <option value="consultative">🤝 Consultative — ask questions, advisory tone</option>
+              <option value="hyper_personalised">🔍 Hyper-personalised — reference their profile/posts</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-700 mb-1.5">Tone</label>
+            <select
+              value={messageTone}
+              onChange={e => setMessageTone(e.target.value)}
+              className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-500"
+            >
+              <option value="">— no tone selected —</option>
+              <option value="professional">🏢 Professional</option>
+              <option value="conversational">💬 Conversational</option>
+              <option value="bold">⚡ Bold</option>
+              <option value="empathetic">🤗 Empathetic</option>
+              <option value="witty">😄 Witty</option>
+            </select>
+          </div>
         </div>
 
         {/* ICP Config */}
