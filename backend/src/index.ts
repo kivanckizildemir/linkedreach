@@ -14,6 +14,7 @@ import { activityLogRouter } from './routes/activityLog'
 import { labelsRouter } from './routes/labels'
 import { settingsRouter } from './routes/settings'
 import { proxiesRouter } from './routes/proxies'
+import { scraperRouter } from './routes/scraper'
 import { errorHandler, notFound } from './middleware/errors'
 import { testProxyRaw, getLastErrorSnapshot, clearLastErrorSnapshot } from './linkedin/login'
 
@@ -124,6 +125,7 @@ app.use('/api/activity', activityLogRouter)
 app.use('/api/labels', labelsRouter)
 app.use('/api/settings', settingsRouter)
 app.use('/api/proxies', proxiesRouter)
+app.use('/api/scraper', scraperRouter)
 
 app.use(notFound)
 app.use(errorHandler)
