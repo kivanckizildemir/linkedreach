@@ -23,7 +23,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: frontend
-        run: npm install --omit=optional --no-audit --no-fund
+        run: npm install --no-audit --no-fund
 
       - name: Build
         working-directory: frontend
