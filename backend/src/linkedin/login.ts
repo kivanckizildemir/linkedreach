@@ -669,6 +669,14 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     // navigation to /checkpoint pages — set needs_verification so the user can complete
     // verification manually (or the system can handle it via the interactive browser UI).
     if (isChallenge) {
+      // LinkedIn blocks with tooManyAttempts when too many verifications attempted recently
+      if (url.includes('tooManyAttempts')) {
+        session.status = 'error'
+        session.error  = 'LinkedIn has temporarily blocked verification attempts on this account. Please wait 30–60 minutes before trying again.'
+        await browser.close()
+        return
+      }
+
       console.log('[LOGIN DEBUG] Challenge URL obtained:', url)
       // Navigate the browser to the challenge URL so we can inspect the page
       let postNavUrl = page.url()
@@ -797,8 +805,30 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       }
 
       // Push notification (mobile app approval) or unknown challenge.
-      // Stay on the challenge page and poll — do NOT navigate away (causes tooManyAttempts).
-      // LinkedIn's own page JS will auto-redirect after phone approval; we catch it below.
+      // Click the primary action button ONCE to trigger the push notification.
+      // Then stay on the page and poll — do NOT navigate away (causes tooManyAttempts).
+      try {
+        for (const btnSel of [
+          'button[data-litms-control-urn="challenge|primary-action"]',
+          'button.primary-action-new',
+          'button:has-text("Continue")',
+          'button:has-text("Send push")',
+          'button:has-text("Use the app")',
+          'form button[type="submit"]',
+        ]) {
+          const btn = await page.$(btnSel).catch(() => null)
+          if (btn) {
+            const btnText = ((await btn.evaluate((el: Element) => (el as HTMLElement).textContent?.trim()).catch(() => '')) ?? '').toLowerCase()
+            if (!btnText.includes('cancel') && !btnText.includes('back') && !btnText.includes('email') && !btnText.includes('sms') && !btnText.includes('text message')) {
+              console.log('[LOGIN DEBUG] Clicking push trigger button:', btnText)
+              await btn.click()
+              await DELAY(2000)
+              break
+            }
+          }
+        }
+      } catch { /* ok if no button */ }
+
       session.status = 'pending_push'
       session.hint   = isAppPush
         ? 'Open the LinkedIn app on your phone and tap "Yes, it\'s me" to approve the sign-in.'
