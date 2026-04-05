@@ -62,17 +62,19 @@ async function getProductFromSettings(
   return product ?? null
 }
 
-/** Fetch campaign-level context (product_id, message_approach, message_tone). */
+/** Fetch campaign-level context (product_id, message_approach, message_tone).
+ *  approach and tone live inside icp_config JSONB to avoid requiring a migration. */
 async function getCampaignContext(campaignId: string): Promise<{ product_id: string | null; message_approach: string | null; message_tone: string | null }> {
   const { data } = await supabase
     .from('campaigns')
-    .select('product_id, message_approach, message_tone')
+    .select('product_id, icp_config')
     .eq('id', campaignId)
     .single()
+  const icp = (data as any)?.icp_config as Record<string, unknown> | null
   return {
     product_id: (data as any)?.product_id ?? null,
-    message_approach: (data as any)?.message_approach ?? null,
-    message_tone: (data as any)?.message_tone ?? null,
+    message_approach: (icp?.message_approach as string) ?? null,
+    message_tone: (icp?.message_tone as string) ?? null,
   }
 }
 

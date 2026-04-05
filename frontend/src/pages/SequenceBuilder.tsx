@@ -1337,8 +1337,8 @@ function FlowCanvas({ sequence, campaignId }: { sequence: Sequence; campaignId: 
           allSteps={steps}
           sequenceId={sequence.id}
           campaignId={campaignId}
-          campaignApproach={campaignData?.message_approach}
-          campaignTone={campaignData?.message_tone}
+          campaignApproach={(campaignData?.icp_config as Record<string,unknown>)?.message_approach as string | undefined}
+          campaignTone={(campaignData?.icp_config as Record<string,unknown>)?.message_tone as string | undefined}
           onClose={() => setTestingStep(null)}
         />
       )}
@@ -1348,8 +1348,8 @@ function FlowCanvas({ sequence, campaignId }: { sequence: Sequence; campaignId: 
           allSteps={steps}
           sequenceId={sequence.id}
           campaignId={campaignId}
-          campaignApproach={campaignData?.message_approach}
-          campaignTone={campaignData?.message_tone}
+          campaignApproach={(campaignData?.icp_config as Record<string,unknown>)?.message_approach as string | undefined}
+          campaignTone={(campaignData?.icp_config as Record<string,unknown>)?.message_tone as string | undefined}
           onClose={() => setShowTestModal(false)}
         />
       )}
@@ -2189,6 +2189,8 @@ function SettingsTab({ campaignId }: { campaignId: string }) {
         seniority_levels?: string
         keywords?: string
         default_account_id?: string
+        message_approach?: string
+        message_tone?: string
       }
       setIcpRoles(icp.target_roles ?? '')
       setIcpIndustries(icp.target_industries ?? '')
@@ -2196,8 +2198,8 @@ function SettingsTab({ campaignId }: { campaignId: string }) {
       setIcpKeywords(icp.keywords ?? '')
       setDefaultAccountId(icp.default_account_id ?? '')
       setProductId(campaign.product_id ?? '')
-      setMessageApproach(campaign.message_approach ?? '')
-      setMessageTone(campaign.message_tone ?? '')
+      setMessageApproach(icp.message_approach ?? '')
+      setMessageTone(icp.message_tone ?? '')
     }
   }, [campaign])
 

@@ -115,8 +115,6 @@ campaignsRouter.patch('/:id', async (req: Request, res: Response) => {
     'min_icp_score',
     'connection_note',
     'product_id',
-    'message_approach',
-    'message_tone',
   ] as const
   type AllowedKey = (typeof allowed)[number]
 
@@ -124,6 +122,24 @@ campaignsRouter.patch('/:id', async (req: Request, res: Response) => {
   for (const key of allowed) {
     if (key in req.body) {
       updates[key] = req.body[key] as unknown
+    }
+  }
+
+  // message_approach and message_tone are stored inside icp_config JSONB
+  const hasApproachOrTone = 'message_approach' in req.body || 'message_tone' in req.body
+  if (hasApproachOrTone) {
+    const { data: existing } = await supabase
+      .from('campaigns')
+      .select('icp_config')
+      .eq('id', req.params.id)
+      .eq('user_id', req.user.id)
+      .single()
+    const currentIcp = (existing as { icp_config: Record<string, unknown> } | null)?.icp_config ?? {}
+    updates.icp_config = {
+      ...currentIcp,
+      ...(updates.icp_config as Record<string, unknown> ?? {}),
+      ...('message_approach' in req.body ? { message_approach: req.body.message_approach } : {}),
+      ...('message_tone' in req.body ? { message_tone: req.body.message_tone } : {}),
     }
   }
 
