@@ -796,11 +796,75 @@ async function runLogin(key: string, email: string, password: string): Promise<v
         return
       }
 
-      // Push notification (mobile app approval) or unknown challenge
+      // Push notification (mobile app approval) or unknown challenge.
+      // Stay on the challenge page and poll — do NOT navigate away (causes tooManyAttempts).
+      // LinkedIn's own page JS will auto-redirect after phone approval; we catch it below.
       session.status = 'pending_push'
       session.hint   = isAppPush
         ? 'Open the LinkedIn app on your phone and tap "Yes, it\'s me" to approve the sign-in.'
         : `LinkedIn requires verification. Open this URL to complete it: ${url.substring(0, 120)}`
+
+      const pushChallengeUrl = page.url()
+      const PUSH_DEADLINE    = Date.now() + 3 * 60 * 1000
+
+      while (Date.now() < PUSH_DEADLINE) {
+        await DELAY(2_000)
+        try {
+          // Check cookies first (fastest path)
+          const pushCookies = await context.cookies()
+          if (pushCookies.find(c => c.name === 'li_at')) {
+            await saveCookies(context, session.accountId)
+            session.status = 'success'
+            await browser.close()
+            return
+          }
+
+          // Check if LinkedIn's page JS auto-redirected away from challenge
+          const nowUrl = page.url()
+          const leftChallenge =
+            !nowUrl.includes('/checkpoint') &&
+            !nowUrl.includes('/challenge') &&
+            !nowUrl.includes('verification') &&
+            !nowUrl.includes('/login')
+          if (leftChallenge) {
+            const afterRedirectCookies = await context.cookies()
+            if (afterRedirectCookies.find(c => c.name === 'li_at')) {
+              await saveCookies(context, session.accountId)
+              session.status = 'success'
+              await browser.close()
+              return
+            }
+          }
+
+          // Check if PIN input appeared (LinkedIn switched challenge type after push)
+          const pinNow = await page.$('input#input__email_verification_pin, input[name="pin"], input#input__phone_verification_pin').catch(() => null)
+          if (pinNow && session.totpSecret) {
+            try {
+              const totp = speakeasy.totp({ secret: session.totpSecret, encoding: 'base32' })
+              await page.fill('input#input__email_verification_pin, input[name="pin"], input#input__phone_verification_pin', totp)
+              await DELAY(300)
+              const sb = await page.$('button[type="submit"], button:has-text("Submit"), button:has-text("Verify")')
+              if (sb) await sb.click(); else await page.keyboard.press('Enter')
+              await page.waitForLoadState('domcontentloaded', { timeout: 10_000 }).catch(() => {})
+              const totpCookies = await context.cookies()
+              if (totpCookies.find(c => c.name === 'li_at')) {
+                await saveCookies(context, session.accountId)
+                session.status = 'success'
+                await browser.close()
+                return
+              }
+            } catch { /* fall through */ }
+          } else if (pinNow) {
+            session.status = 'needs_verification'
+            session.hint   = 'LinkedIn is asking for a verification code.'
+            return
+          }
+        } catch { /* network blip, keep polling */ }
+      }
+
+      session.status = 'error'
+      session.error  = 'Push notification not approved within 3 minutes. Please try again.'
+      await browser.close()
       return
     }
 
