@@ -292,13 +292,28 @@ leadsRouter.get('/scrape-status/:jobId', async (req: Request, res: Response) => 
   res.json({ state, progress, result, error: failMsg })
 })
 
-// POST /api/leads/qualify-all — queue all unscored leads for AI qualification
+// POST /api/leads/qualify-all — queue leads for AI (re-)qualification
+// Body: { force?: boolean, ids?: string[] }
+//   force=true  → re-score even already-scored leads
+//   ids         → limit to these lead IDs (selected or campaign subset)
 leadsRouter.post('/qualify-all', async (req: Request, res: Response) => {
-  const { data: leads, error } = await supabase
+  const { force, ids } = req.body as { force?: boolean; ids?: string[] }
+
+  let query = supabase
     .from('leads')
     .select('id')
     .eq('user_id', req.user.id)
-    .is('icp_score', null)
+
+  if (ids && ids.length > 0) {
+    query = query.in('id', ids)
+  }
+
+  if (!force) {
+    // Default: only unscored leads
+    query = query.is('icp_score', null)
+  }
+
+  const { data: leads, error } = await query
 
   if (error) {
     res.status(500).json({ error: error.message })
@@ -306,7 +321,7 @@ leadsRouter.post('/qualify-all', async (req: Request, res: Response) => {
   }
 
   if (!leads || leads.length === 0) {
-    res.json({ queued: 0, message: 'No unscored leads' })
+    res.json({ queued: 0, message: 'No leads to score' })
     return
   }
 

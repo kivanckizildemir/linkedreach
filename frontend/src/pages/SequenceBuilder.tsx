@@ -38,7 +38,7 @@ import {
   removeCampaignLead,
   type CampaignLead,
 } from '../api/campaignLeads'
-import { fetchLeads, type Lead } from '../api/leads'
+import { fetchLeads, qualifyAllLeads, type Lead } from '../api/leads'
 import { fetchCampaign, updateCampaign, type Campaign } from '../api/campaigns'
 import {
   PRESET_TEMPLATES,
@@ -1763,6 +1763,7 @@ const ICP_BADGE: Record<NonNullable<Lead['icp_flag']>, { bg: string; label: stri
 function CampaignLeadsTab({ campaignId }: { campaignId: string }) {
   const queryClient = useQueryClient()
   const [showAddModal, setShowAddModal] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
 
   const { data: campaignLeads = [], isLoading } = useQuery({
     queryKey: ['campaign-leads', campaignId],
@@ -1793,19 +1794,62 @@ function CampaignLeadsTab({ campaignId }: { campaignId: string }) {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['campaign-leads', campaignId] }),
   })
 
+  const scoreMutation = useMutation({
+    mutationFn: (opts: { force: boolean; ids?: string[] }) => qualifyAllLeads(opts),
+    onSuccess: (result) => {
+      if (result.queued > 0) {
+        setTimeout(() => queryClient.invalidateQueries({ queryKey: ['campaign-leads', campaignId] }), 7000)
+      }
+    },
+  })
+
+  const allLeadIds = campaignLeads.map(cl => cl.lead.id)
+  const allSelected = campaignLeads.length > 0 && selectedIds.size === campaignLeads.length
+
   return (
     <div className="flex-1 overflow-auto p-6">
       <div className="flex items-center justify-between mb-4">
         <p className="text-sm text-gray-500">
           {campaignLeads.length} lead{campaignLeads.length !== 1 ? 's' : ''} in this campaign
         </p>
-        <button
-          onClick={() => setShowAddModal(true)}
-          className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors"
-        >
-          + Add Leads
-        </button>
+        <div className="flex items-center gap-2">
+          {campaignLeads.length > 0 && (
+            <button
+              onClick={() => scoreMutation.mutate({ force: true, ids: allLeadIds })}
+              disabled={scoreMutation.isPending}
+              className="px-3 py-1.5 border border-violet-300 text-violet-700 text-sm font-medium rounded-lg hover:bg-violet-50 transition-colors disabled:opacity-60"
+            >
+              {scoreMutation.isPending ? '⏳ Queuing…' : `✨ Score All (${campaignLeads.length})`}
+            </button>
+          )}
+          <button
+            onClick={() => setShowAddModal(true)}
+            className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors"
+          >
+            + Add Leads
+          </button>
+        </div>
       </div>
+
+      {/* Selection action bar */}
+      {selectedIds.size > 0 && (
+        <div className="mb-3 flex items-center gap-3 px-4 py-2.5 bg-violet-50 border border-violet-200 rounded-xl text-sm">
+          <span className="font-medium text-violet-800">{selectedIds.size} selected</span>
+          <button
+            onClick={() => scoreMutation.mutate({ force: true, ids: [...selectedIds] })}
+            disabled={scoreMutation.isPending}
+            className="px-3 py-1 bg-violet-600 text-white font-medium rounded-lg hover:bg-violet-700 transition-colors disabled:opacity-60"
+          >
+            {scoreMutation.isPending ? '⏳ Queuing…' : `✨ Score Selected (${selectedIds.size})`}
+          </button>
+          <button
+            onClick={() => setSelectedIds(new Set())}
+            className="ml-auto text-violet-500 hover:text-violet-700 text-xs"
+          >
+            Clear
+          </button>
+        </div>
+      )}
 
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
         {isLoading ? (
@@ -1819,6 +1863,14 @@ function CampaignLeadsTab({ campaignId }: { campaignId: string }) {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-gray-100 text-xs font-medium text-gray-500 uppercase tracking-wide">
+                <th className="px-4 py-3 w-8">
+                  <input
+                    type="checkbox"
+                    checked={allSelected}
+                    onChange={e => setSelectedIds(e.target.checked ? new Set(campaignLeads.map(cl => cl.lead.id)) : new Set())}
+                    className="rounded border-gray-300 text-violet-600"
+                  />
+                </th>
                 <th className="text-left px-4 py-3">Lead</th>
                 <th className="text-left px-4 py-3 hidden md:table-cell">Company</th>
                 <th className="text-left px-4 py-3 hidden lg:table-cell" title={campaignProduct?.name}>
@@ -1831,7 +1883,20 @@ function CampaignLeadsTab({ campaignId }: { campaignId: string }) {
             </thead>
             <tbody className="divide-y divide-gray-50">
               {campaignLeads.map(cl => (
-                <tr key={cl.id} className="hover:bg-gray-50 transition-colors">
+                <tr key={cl.id} className={`hover:bg-gray-50 transition-colors ${selectedIds.has(cl.lead.id) ? 'bg-violet-50' : ''}`}>
+                  <td className="px-4 py-3 w-8">
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.has(cl.lead.id)}
+                      onChange={e => {
+                        const next = new Set(selectedIds)
+                        if (e.target.checked) next.add(cl.lead.id)
+                        else next.delete(cl.lead.id)
+                        setSelectedIds(next)
+                      }}
+                      className="rounded border-gray-300 text-violet-600"
+                    />
+                  </td>
                   <td className="px-4 py-3">
                     <a
                       href={cl.lead.linkedin_url}

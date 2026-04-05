@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, type FormEvent } from 'react'
+import { useState, useRef, useEffect, useCallback, type FormEvent } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { fetchLeads, requalifyLead, qualifyAllLeads, importLeads, startSalesNavImport, getScrapeStatus, fetchLeadNotes, addLeadNote, deleteLeadNote, personaliseOpeningLine, fetchLeadCampaigns, bulkDeleteLeads, createManualLead } from '../api/leads'
 import type { Lead, LeadNote, LeadCampaignMembership } from '../api/leads'
@@ -33,17 +33,29 @@ function ScoreBar({ score }: { score: number }) {
 
 function ReasoningTooltip({ reasoning }: { reasoning: string }) {
   const [show, setShow] = useState(false)
+  const [openUp, setOpenUp] = useState(false)
+  const btnRef = useRef<HTMLButtonElement>(null)
+
+  const handleEnter = useCallback(() => {
+    if (btnRef.current) {
+      const rect = btnRef.current.getBoundingClientRect()
+      setOpenUp(rect.bottom > window.innerHeight - 160)
+    }
+    setShow(true)
+  }, [])
+
   return (
     <div className="relative inline-block">
       <button
-        onMouseEnter={() => setShow(true)}
+        ref={btnRef}
+        onMouseEnter={handleEnter}
         onMouseLeave={() => setShow(false)}
         className="ml-1.5 w-4 h-4 rounded-full bg-gray-200 text-gray-500 text-[10px] font-bold flex items-center justify-center hover:bg-gray-300 transition-colors"
       >
         ?
       </button>
       {show && (
-        <div className="absolute left-6 top-0 z-50 w-64 bg-gray-900 text-white text-xs rounded-xl p-3 shadow-xl leading-relaxed">
+        <div className={`absolute left-6 z-50 w-64 bg-gray-900 text-white text-xs rounded-xl p-3 shadow-xl leading-relaxed ${openUp ? 'bottom-0' : 'top-0'}`}>
           <p className="font-semibold text-gray-300 mb-1 text-[10px] uppercase tracking-wider">AI Reasoning</p>
           {reasoning}
         </div>
@@ -56,6 +68,16 @@ type ProductRef = { id: string; name: string }
 
 function BestFitCell({ lead, products }: { lead: Lead; products: ProductRef[] }) {
   const [show, setShow] = useState(false)
+  const [openUp, setOpenUp] = useState(false)
+  const cellRef = useRef<HTMLDivElement>(null)
+
+  const handleEnter = useCallback(() => {
+    if (cellRef.current) {
+      const rect = cellRef.current.getBoundingClientRect()
+      setOpenUp(rect.bottom > window.innerHeight - 240)
+    }
+    setShow(true)
+  }, [])
 
   const productScores = lead.raw_data?.product_scores
   const bestId        = lead.raw_data?.best_product_id
@@ -78,7 +100,8 @@ function BestFitCell({ lead, products }: { lead: Lead; products: ProductRef[] })
 
   return (
     <div className="relative"
-      onMouseEnter={() => setShow(true)}
+      ref={cellRef}
+      onMouseEnter={handleEnter}
       onMouseLeave={() => setShow(false)}
     >
       <div className="flex items-center gap-1.5 cursor-default">
@@ -92,7 +115,7 @@ function BestFitCell({ lead, products }: { lead: Lead; products: ProductRef[] })
       </div>
 
       {show && hasMultiple && (
-        <div className="absolute left-0 top-full mt-1 z-50 bg-white border border-gray-200 rounded-xl shadow-xl p-3 min-w-[220px]">
+        <div className={`absolute left-0 z-50 bg-white border border-gray-200 rounded-xl shadow-xl p-3 min-w-[220px] ${openUp ? 'bottom-full mb-1' : 'top-full mt-1'}`}>
           <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-2">All Product Scores</p>
           {scoredProducts.map(p => {
             const ps = productScores[p.id]
@@ -151,7 +174,7 @@ export function Leads() {
   })
 
   const qualifyAllMutation = useMutation({
-    mutationFn: qualifyAllLeads,
+    mutationFn: (opts?: { force?: boolean; ids?: string[] }) => qualifyAllLeads(opts),
     onSuccess: (result) => {
       if (result.queued > 0) {
         setTimeout(() => queryClient.invalidateQueries({ queryKey: ['leads'] }), 6000)
@@ -222,15 +245,17 @@ export function Leads() {
           <p className="mt-1 text-sm text-gray-500">Import and manage your lead lists</p>
         </div>
         <div className="flex gap-3">
-          {unscoredCount > 0 && (
+          {leads.length > 0 && (
             <button
-              onClick={() => qualifyAllMutation.mutate()}
+              onClick={() => qualifyAllMutation.mutate({ force: true })}
               disabled={qualifyAllMutation.isPending}
-              className="px-4 py-2 border border-blue-300 text-blue-700 text-sm font-medium rounded-lg hover:bg-blue-50 transition-colors disabled:opacity-60"
+              className="px-4 py-2 border border-violet-300 text-violet-700 text-sm font-medium rounded-lg hover:bg-violet-50 transition-colors disabled:opacity-60"
             >
               {qualifyAllMutation.isPending
-                ? 'Queuing…'
-                : `AI Score All (${unscoredCount})`}
+                ? '⏳ Queuing…'
+                : unscoredCount > 0
+                  ? `✨ Score All (${unscoredCount} unscored)`
+                  : `✨ Re-score All (${leads.length})`}
             </button>
           )}
           {leads.length > 0 && (
@@ -313,6 +338,13 @@ export function Leads() {
       {selectedIds.size > 0 && (
         <div className="mt-4 flex items-center gap-3 px-4 py-3 bg-blue-50 border border-blue-200 rounded-xl">
           <span className="text-sm font-medium text-blue-800">{selectedIds.size} lead{selectedIds.size !== 1 ? 's' : ''} selected</span>
+          <button
+            onClick={() => qualifyAllMutation.mutate({ force: true, ids: [...selectedIds] })}
+            disabled={qualifyAllMutation.isPending}
+            className="px-3 py-1.5 bg-violet-600 text-white text-sm font-medium rounded-lg hover:bg-violet-700 transition-colors disabled:opacity-60"
+          >
+            {qualifyAllMutation.isPending ? '⏳ Queuing…' : `✨ Score Selected (${selectedIds.size})`}
+          </button>
           <button
             onClick={() => setShowAddToCampaign(true)}
             className="px-3 py-1.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors"

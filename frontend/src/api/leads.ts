@@ -36,8 +36,14 @@ export async function requalifyLead(id: string): Promise<void> {
   if (!res.ok) throw new Error(await parseErrorResponse(res))
 }
 
-export async function qualifyAllLeads(): Promise<{ queued: number }> {
-  const res = await apiFetch('/api/leads/qualify-all', { method: 'POST' })
+export async function qualifyAllLeads(
+  opts?: { force?: boolean; ids?: string[] }
+): Promise<{ queued: number }> {
+  const res = await apiFetch('/api/leads/qualify-all', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(opts ?? {}),
+  })
   if (!res.ok) throw new Error(await parseErrorResponse(res))
   return res.json() as Promise<{ queued: number }>
 }
