@@ -89,6 +89,12 @@ export async function connectAccount(
   return res.json() as Promise<ConnectResult>
 }
 
+export async function checkPushApproval(accountId: string, sessionKey: string): Promise<ConnectStatusResult> {
+  const res = await apiFetch(`/api/accounts/${accountId}/connect-check/${sessionKey}`, { method: 'POST' })
+  if (!res.ok) throw new Error(await parseErrorResponse(res))
+  return res.json() as Promise<ConnectStatusResult>
+}
+
 export async function verifyConnectCode(
   accountId: string,
   sessionKey: string,

@@ -968,26 +968,22 @@ async function runLogin(key: string, email: string, password: string): Promise<v
           } catch { /* keep polling */ }
         }
 
-        // Click any intermediate "Continue" / "Send code" buttons on security check pages
-        // Only try on first few polls and after navigations to avoid repeated clicks
-        if (pollCount <= 3 || pollCount % 10 === 1) {
+        // Only click "Continue" once on the very first poll — never re-click Send/Request
+        // buttons or LinkedIn will fire repeated push/email notifications
+        if (pollCount === 1) {
           try {
             const continueBtn = await page.$(
-              'button:has-text("Continue"), button:has-text("Send verification code"), ' +
-              'button:has-text("Send a verification code"), button:has-text("Request a verification code"), ' +
-              'button:has-text("Send code"), button:has-text("Get a verification code"), ' +
-              'button:has-text("Request verification"), button:has-text("Send"), ' +
+              'button:has-text("Continue"), ' +
               'button[data-litms-control-urn="challenge|primary-action"], ' +
-              'button.primary-action-new, ' +
-              'form button[type="submit"]'   // last-resort: any form submit button
+              'button.primary-action-new'
             )
             if (continueBtn) {
               const btnText = await continueBtn.evaluate((el: Element) => (el as HTMLElement).textContent?.trim())
-              // Don't click Cancel or back buttons
-              if (btnText && !btnText.toLowerCase().includes('cancel') && !btnText.toLowerCase().includes('back')) {
+              if (btnText && !btnText.toLowerCase().includes('cancel') && !btnText.toLowerCase().includes('back')
+                  && !btnText.toLowerCase().includes('send') && !btnText.toLowerCase().includes('code')
+                  && !btnText.toLowerCase().includes('verif')) {
                 await continueBtn.click()
                 await DELAY(2000)
-                // Update hint after clicking
                 const hintEl2 = await page.$('.secondary-action, .challenge-main-content p, h1, h2')
                 if (hintEl2) session.hint = (await hintEl2.innerText()).trim()
               }
@@ -1166,6 +1162,29 @@ export function getLoginStatus(sessionKey: string): LoginStatusResult {
     case 'needs_verification': return { status: 'needs_verification', hint: s.hint }
     default:                   return { status: 'pending_push', hint: s.hint, pageUrl: s.page?.url() }
   }
+}
+
+// Called when user taps "I approved it" — navigates to feed immediately to force
+// cookie issuance rather than waiting for the background poll cycle.
+export async function checkPushApproval(sessionKey: string): Promise<LoginStatusResult> {
+  const s = sessions.get(sessionKey)
+  if (!s) return { status: 'not_found' }
+  if (s.status === 'success') return { status: 'success' }
+  if (s.status !== 'pending_push' || !s.page || !s.context) return getLoginStatus(sessionKey)
+
+  try {
+    await s.page.goto('https://www.linkedin.com/feed/', { waitUntil: 'domcontentloaded', timeout: 10_000 })
+    await new Promise(r => setTimeout(r, 2000))
+    const cookies = await s.context.cookies()
+    if (cookies.find(c => c.name === 'li_at')) {
+      await saveCookies(s.context, s.accountId)
+      s.status = 'success'
+      await s.browser?.close()
+      return { status: 'success' }
+    }
+  } catch { /* ignore — background poll will catch it */ }
+
+  return getLoginStatus(sessionKey)
 }
 
 export async function submitVerificationCode(

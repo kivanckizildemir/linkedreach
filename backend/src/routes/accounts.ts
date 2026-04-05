@@ -3,7 +3,7 @@ import type { Request, Response } from 'express'
 import { supabase } from '../lib/supabase'
 import { requireAuth } from '../middleware/auth'
 import type { AccountStatus } from '../types'
-import { startLogin, submitVerificationCode, getLoginStatus, getSessionScreenshot, getSessionPageInfo, getSessionDebugSnapshot, interactWithPage, testProxyRaw } from '../linkedin/login'
+import { startLogin, submitVerificationCode, getLoginStatus, checkPushApproval, getSessionScreenshot, getSessionPageInfo, getSessionDebugSnapshot, interactWithPage, testProxyRaw } from '../linkedin/login'
 // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-explicit-any
 const { chromium } = require('playwright-extra') as any
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -156,6 +156,12 @@ accountsRouter.post('/:id/connect', async (req: Request, res: Response) => {
 // GET /api/accounts/:id/connect-status/:sessionKey — poll login status
 accountsRouter.get('/:id/connect-status/:sessionKey', async (req: Request, res: Response) => {
   const result = getLoginStatus(String(req.params.sessionKey))
+  res.json(result)
+})
+
+// POST /api/accounts/:id/connect-check/:sessionKey — user tapped approve; navigate to feed immediately
+accountsRouter.post('/:id/connect-check/:sessionKey', async (req: Request, res: Response) => {
+  const result = await checkPushApproval(String(req.params.sessionKey))
   res.json(result)
 })
 

@@ -8,6 +8,7 @@ import {
   deleteAccount,
   connectAccount,
   getConnectStatus,
+  checkPushApproval,
   verifyConnectCode,
   type LinkedInAccount,
 } from '../api/accounts'
@@ -856,7 +857,7 @@ function ConnectModal({
   }
 
   async function handleCheckNow() {
-    try { await handleStatusResult(await getConnectStatus(accountId, sessionKey)) }
+    try { await handleStatusResult(await checkPushApproval(accountId, sessionKey)) }
     catch { /* ignore */ }
   }
 
