@@ -1150,7 +1150,7 @@ export function startLogin(
 
 export type LoginStatusResult =
   | { status: 'starting' }
-  | { status: 'pending_push';       hint: string }
+  | { status: 'pending_push';       hint: string; pageUrl?: string }
   | { status: 'needs_verification'; hint: string }
   | { status: 'success' }
   | { status: 'error';    message: string }
@@ -1164,7 +1164,7 @@ export function getLoginStatus(sessionKey: string): LoginStatusResult {
     case 'success':            return { status: 'success' }
     case 'error':              return { status: 'error', message: s.error ?? 'Login failed.' }
     case 'needs_verification': return { status: 'needs_verification', hint: s.hint }
-    default:                   return { status: 'pending_push', hint: s.hint }
+    default:                   return { status: 'pending_push', hint: s.hint, pageUrl: s.page?.url() }
   }
 }
 

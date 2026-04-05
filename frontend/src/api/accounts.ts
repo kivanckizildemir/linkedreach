@@ -62,7 +62,7 @@ export type ConnectResult =
 
 export type ConnectStatusResult =
   | { status: 'starting' }
-  | { status: 'pending_push';       hint: string }
+  | { status: 'pending_push';       hint: string; pageUrl?: string }
   | { status: 'needs_verification'; hint: string }
   | { status: 'success' }
   | { status: 'error';   message: string }

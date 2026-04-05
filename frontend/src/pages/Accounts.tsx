@@ -773,17 +773,22 @@ function PushStep({
   sessionKey,
   hint,
   onCancel,
+  onCheckNow,
 }: {
   accountId: string
   sessionKey: string
   hint: string
   onCancel: () => void
+  onCheckNow: () => Promise<void>
 }) {
   const [screenshotUrl, setScreenshotUrl]     = useState<string | null>(null)
   const [screenshotLoading, setScreenshotLoading] = useState(false)
   const [keyboardFocused, setKeyboardFocused] = useState(false)
   const [interacting, setInteracting]         = useState(false)
+  const [checking, setChecking]               = useState(false)
+  const [liveUrl, setLiveUrl]                 = useState('')
   const screenshotRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const urlPollRef    = useRef<ReturnType<typeof setInterval> | null>(null)
   const imgRef        = useRef<HTMLImageElement | null>(null)
   const keyInputRef   = useRef<HTMLInputElement | null>(null)
 
@@ -816,6 +821,26 @@ function PushStep({
     return () => { if (screenshotRef.current) { clearInterval(screenshotRef.current); screenshotRef.current = null } }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionKey])
+
+  // ── Live URL polling (every 3s) ───────────────────────────────────────────
+  useEffect(() => {
+    if (!sessionKey) return
+    const poll = async () => {
+      try {
+        const res = await apiFetch(`/api/accounts/${accountId}/connect-debug/${sessionKey}`)
+        if (res.ok) {
+          const data = await res.json() as { url?: string }
+          if (data.url) {
+            const clean = data.url.replace(/^https?:\/\//, '').split('?')[0]
+            setLiveUrl(clean.length > 55 ? clean.substring(0, 55) + '…' : clean)
+          }
+        }
+      } catch { /* ignore */ }
+    }
+    void poll()
+    urlPollRef.current = setInterval(() => { void poll() }, 3000)
+    return () => { if (urlPollRef.current) { clearInterval(urlPollRef.current); urlPollRef.current = null } }
+  }, [accountId, sessionKey])
 
   // ── Interaction helpers ───────────────────────────────────────────────────
 
@@ -865,18 +890,47 @@ function PushStep({
             {isSecurityCheck ? 'Security challenge — interact below' : 'Signing in…'}
           </p>
           {hint && hint !== 'Signing in to LinkedIn…' && (
-            <p className={`text-xs mt-0.5 truncate ${isSecurityCheck ? 'text-amber-700' : 'text-blue-700'}`}>{hint}</p>
+            <p className={`text-xs mt-0.5 ${isSecurityCheck ? 'text-amber-700' : 'text-blue-700'}`}>{hint}</p>
           )}
         </div>
         <span className="ml-auto text-[10px] text-gray-400 whitespace-nowrap">
-          {screenshotLoading ? 'updating…' : 'live'}
+          {screenshotLoading ? 'refreshing…' : '● live'}
         </span>
       </div>
+
+      {/* "I approved it" — only for push-notification step (not interactive security check) */}
+      {!isSecurityCheck && (
+        <button
+          type="button"
+          disabled={checking}
+          onClick={async () => { setChecking(true); try { await onCheckNow() } finally { setChecking(false) } }}
+          className="w-full py-2.5 bg-green-600 text-white text-sm font-semibold rounded-xl hover:bg-green-700 disabled:opacity-60 transition-colors flex items-center justify-center gap-2"
+        >
+          {checking ? (
+            <>
+              <svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+              </svg>
+              Checking…
+            </>
+          ) : (
+            <>
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+              </svg>
+              I approved it — check now
+            </>
+          )}
+        </button>
+      )}
 
       {/* Interactive screenshot */}
       <div className="border border-gray-200 rounded-xl overflow-hidden bg-gray-900">
         <div className="flex items-center justify-between px-3 py-1.5 bg-gray-800">
-          <span className="text-[11px] text-gray-400 font-mono">linkedin.com</span>
+          <span className="text-[11px] text-gray-400 font-mono truncate max-w-[260px]">
+            {liveUrl || 'linkedin.com'}
+          </span>
           <span className={`text-[10px] px-1.5 py-0.5 rounded ${keyboardFocused ? 'bg-green-600 text-white' : 'bg-gray-600 text-gray-300'}`}>
             {keyboardFocused ? 'keyboard active' : 'click to type'}
           </span>
@@ -978,24 +1032,35 @@ function BrowserLoginModal({
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
   }
 
+  async function handleStatusResult(s: Awaited<ReturnType<typeof getConnectStatus>>) {
+    if (s.status === 'success') {
+      stopPolling(); setStep('done'); setTimeout(onSaved, 1500)
+    } else if (s.status === 'needs_verification') {
+      stopPolling(); setHint(s.hint); setStep('verify')
+    } else if (s.status === 'error') {
+      stopPolling(); setError(s.message); setStep('error')
+    } else if (s.status === 'not_found') {
+      stopPolling(); setError('Session expired. Please try again.'); setStep('error')
+    } else if (s.status === 'pending_push') {
+      setHint(s.hint)
+    }
+  }
+
   function startPolling(key: string) {
     stopPolling()
     pollRef.current = setInterval(async () => {
       try {
         const s = await getConnectStatus(accountId, key)
-        if (s.status === 'success') {
-          stopPolling(); setStep('done'); setTimeout(onSaved, 1500)
-        } else if (s.status === 'needs_verification') {
-          stopPolling(); setHint(s.hint); setStep('verify')
-        } else if (s.status === 'error') {
-          stopPolling(); setError(s.message); setStep('error')
-        } else if (s.status === 'not_found') {
-          stopPolling(); setError('Session expired. Please try again.'); setStep('error')
-        } else if (s.status === 'pending_push') {
-          setHint(s.hint)
-        }
+        await handleStatusResult(s)
       } catch { /* network blip, keep polling */ }
-    }, 3000)
+    }, 2000)
+  }
+
+  async function handleCheckNow() {
+    try {
+      const s = await getConnectStatus(accountId, sessionKey)
+      await handleStatusResult(s)
+    } catch { /* ignore */ }
   }
 
   async function handleSignIn(e: React.FormEvent) {
@@ -1089,6 +1154,7 @@ function BrowserLoginModal({
             sessionKey={sessionKey}
             hint={hint}
             onCancel={() => { stopPolling(); setStep('form') }}
+            onCheckNow={handleCheckNow}
           />
         )}
 
