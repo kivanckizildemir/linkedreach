@@ -64,6 +64,16 @@ const VG = 56        // vertical gap between nodes
 const BX = 320       // horizontal offset from center for fork branches
 const ADD_SZ = 36    // add button size
 
+// ── Message length presets ────────────────────────────────────────────────────
+
+const MESSAGE_LENGTH_PRESETS = [
+  { key: 'micro',     label: 'Micro',     words: 50,  range: '30–60 words',   desc: 'Highest reply rates · single hook, single ask' },
+  { key: 'concise',   label: 'Concise',   words: 80,  range: '60–100 words',  desc: 'LinkedIn best practice for cold outreach' },
+  { key: 'standard',  label: 'Standard',  words: 130, range: '100–160 words', desc: 'Balanced professional message' },
+  { key: 'detailed',  label: 'Detailed',  words: 180, range: '150–200 words', desc: 'Warm leads & nurture sequences' },
+  { key: 'long_form', label: 'Long-form', words: 250, range: '200–300 words', desc: 'InMail & relationship building' },
+] as const
+
 // ── Step config ───────────────────────────────────────────────────────────────
 
 const STEP_CFG: Record<StepType, { label: string; icon: string; color: string; bg: string; border: string }> = {
@@ -616,23 +626,25 @@ const nodeTypes = {
 
 // ── Edit modal ────────────────────────────────────────────────────────────────
 
-function EditModal({ step, sequenceId, onSave, onDelete, onClose, onTest }: {
+function EditModal({ step, sequenceId, defaultLengthPreset, onSave, onDelete, onClose, onTest }: {
   step: SequenceStep
   sequenceId: string
+  defaultLengthPreset: string
   onSave: (updates: Partial<SequenceStep>) => void
   onDelete: (id: string) => void
   onClose: () => void
   onTest: (step: SequenceStep) => void
 }) {
-  const [msg,       setMsg]  = useState(step.message_template ?? '')
-  const [subject,   setSubj] = useState(step.subject ?? '')
-  const [waitVal,   setWaitVal] = useState(step.wait_days ?? 1)
-  const [waitUnit,  setWaitUnit] = useState<'minutes' | 'hours' | 'days'>((step.condition?.wait_unit as 'minutes' | 'hours' | 'days') ?? 'days')
-  const [forkCond,  setFork] = useState<ForkCondition>((step.condition?.type as ForkCondition) ?? 'replied')
-  const [reaction,  setRct]  = useState<ReactionType>((step.condition?.reaction as ReactionType) ?? 'like')
-  const [aiMode,    setAiMode] = useState(step.ai_generation_mode ?? false)
-  const [regen,     setRegen] = useState(false)
-  const [regenErr,  setRegenErr] = useState('')
+  const [msg,          setMsg]  = useState(step.message_template ?? '')
+  const [subject,      setSubj] = useState(step.subject ?? '')
+  const [waitVal,      setWaitVal] = useState(step.wait_days ?? 1)
+  const [waitUnit,     setWaitUnit] = useState<'minutes' | 'hours' | 'days'>((step.condition?.wait_unit as 'minutes' | 'hours' | 'days') ?? 'days')
+  const [forkCond,     setFork] = useState<ForkCondition>((step.condition?.type as ForkCondition) ?? 'replied')
+  const [reaction,     setRct]  = useState<ReactionType>((step.condition?.reaction as ReactionType) ?? 'like')
+  const [aiMode,       setAiMode] = useState(step.ai_generation_mode ?? false)
+  const [lengthPreset, setLengthPreset] = useState<string>((step.condition?.max_length_preset as string | undefined) ?? defaultLengthPreset)
+  const [regen,        setRegen] = useState(false)
+  const [regenErr,     setRegenErr] = useState('')
   const cfg = STEP_CFG[step.type]
   const isMessage = step.type === 'connect' || step.type === 'message' || step.type === 'inmail'
 
@@ -658,8 +670,8 @@ function EditModal({ step, sequenceId, onSave, onDelete, onClose, onTest }: {
     if (step.type === 'wait')        { u.wait_days = waitVal; u.condition = { wait_unit: waitUnit } }
     if (step.type === 'fork')        u.condition = { type: forkCond }
     if (step.type === 'react_post')  u.condition = { reaction }
-    if (step.type === 'inmail')      { u.subject = subject; u.message_template = msg || null; u.ai_generation_mode = aiMode }
-    if (step.type === 'connect' || step.type === 'message') { u.message_template = msg || null; u.ai_generation_mode = aiMode }
+    if (step.type === 'inmail')      { u.subject = subject; u.message_template = msg || null; u.ai_generation_mode = aiMode; u.condition = { max_length_preset: lengthPreset } }
+    if (step.type === 'connect' || step.type === 'message') { u.message_template = msg || null; u.ai_generation_mode = aiMode; u.condition = { max_length_preset: lengthPreset } }
     onSave(u)
   }
 
@@ -838,6 +850,49 @@ function EditModal({ step, sequenceId, onSave, onDelete, onClose, onTest }: {
                 }
                 <span className="text-xs text-gray-400">{msg.length}{step.type === 'connect' ? '/300' : ''}</span>
               </div>
+            </div>
+          )}
+
+          {/* Message length slider — shown for message/inmail steps only (not connect, which has hard char limit) */}
+          {(step.type === 'message' || step.type === 'inmail') && (
+            <div className="bg-gray-50 border border-gray-100 rounded-xl px-4 py-3">
+              <div className="flex items-center justify-between mb-2">
+                <label className="text-xs font-semibold text-gray-700">Message length</label>
+                {(() => {
+                  const active = MESSAGE_LENGTH_PRESETS.find(p => p.key === lengthPreset)
+                  return active ? (
+                    <span className="text-[11px] font-semibold text-violet-600">{active.label} · {active.range}</span>
+                  ) : null
+                })()}
+              </div>
+              <input
+                type="range"
+                min={0}
+                max={4}
+                step={1}
+                value={MESSAGE_LENGTH_PRESETS.findIndex(p => p.key === lengthPreset)}
+                onChange={e => setLengthPreset(MESSAGE_LENGTH_PRESETS[Number(e.target.value)].key)}
+                className="w-full h-1.5 appearance-none bg-gray-200 rounded-full accent-violet-600 cursor-pointer"
+              />
+              <div className="flex justify-between mt-1.5 px-0.5">
+                {MESSAGE_LENGTH_PRESETS.map(p => (
+                  <span
+                    key={p.key}
+                    className={[
+                      'text-[10px] font-medium transition-colors',
+                      lengthPreset === p.key ? 'text-violet-600' : 'text-gray-400',
+                    ].join(' ')}
+                  >
+                    {p.label}
+                  </span>
+                ))}
+              </div>
+              {(() => {
+                const active = MESSAGE_LENGTH_PRESETS.find(p => p.key === lengthPreset)
+                return active ? (
+                  <p className="text-[10px] text-gray-400 mt-1.5">{active.desc}</p>
+                ) : null
+              })()}
             </div>
           )}
         </div>
@@ -1106,10 +1161,11 @@ function FlowCanvas({ sequence, campaignId }: { sequence: Sequence; campaignId: 
     queryKey: ['user-settings'],
     queryFn: async () => {
       const { data } = await supabase.from('user_settings').select('icp_config').single()
-      return data as { icp_config: { default_ai_mode?: boolean } } | null
+      return data as { icp_config: { default_ai_mode?: boolean; default_message_length?: string } } | null
     },
   })
   const defaultAiMode = userSettings?.icp_config?.default_ai_mode ?? false
+  const defaultLengthPreset = userSettings?.icp_config?.default_message_length ?? 'concise'
 
   const { data: campaignData } = useQuery({
     queryKey: ['campaign-detail', campaignId],
@@ -1324,6 +1380,7 @@ function FlowCanvas({ sequence, campaignId }: { sequence: Sequence; campaignId: 
         <EditModal
           step={editingStep}
           sequenceId={sequence.id}
+          defaultLengthPreset={defaultLengthPreset}
           onSave={updates => updateMutation.mutate({ id: editingStep.id, updates })}
           onDelete={onDelete}
           onClose={() => setEditingStep(null)}

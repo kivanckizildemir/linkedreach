@@ -64,6 +64,7 @@ export interface GenerateSequenceMessageInput {
   resolve_variables?: boolean            // true = substitute real values, false = keep {{placeholders}}
   approach?: string | null
   tone?: string | null
+  max_words?: number | null             // user-defined length constraint (overrides step default)
 }
 
 export interface GenerateSequenceMessageResult {
@@ -120,8 +121,18 @@ function stepConstraints(type: SequenceStepType, position: number): string {
 
 // ─── Prompt builder ───────────────────────────────────────────────────────────
 
+// ─── Message length presets ───────────────────────────────────────────────────
+
+export const MESSAGE_LENGTH_WORDS: Record<string, number> = {
+  micro:     50,
+  concise:   80,
+  standard:  130,
+  detailed:  180,
+  long_form: 250,
+}
+
 function buildPrompt(input: GenerateSequenceMessageInput): string {
-  const { step_type, position_in_sequence, product, lead, prior_messages, icp_notes, resolve_variables, approach, tone } = input
+  const { step_type, position_in_sequence, product, lead, prior_messages, icp_notes, resolve_variables, approach, tone, max_words } = input
 
   const lines: string[] = []
 
@@ -197,6 +208,14 @@ function buildPrompt(input: GenerateSequenceMessageInput): string {
   lines.push('')
   lines.push(stepConstraints(step_type, position_in_sequence))
   lines.push('')
+
+  // ── Length override ──
+  if (max_words && step_type !== 'connect') {
+    lines.push('━━━ LENGTH CONSTRAINT ━━━')
+    lines.push(`HARD LIMIT: Keep this message under ${max_words} words. This is a user-configured constraint — do NOT exceed it under any circumstances.`)
+    lines.push('If the step constraints above specify a longer range, this limit takes precedence.')
+    lines.push('')
+  }
 
   // ── Variable instructions ──
   lines.push('━━━ VARIABLES ━━━')

@@ -32,6 +32,7 @@ interface IcpConfig {
   products_services: Product[]
   custom_criteria: CustomCriterion[]
   default_ai_mode?: boolean
+  default_message_length?: string
 }
 
 interface UserSettings {
@@ -97,6 +98,16 @@ const SUGGESTED_INDUSTRIES = [
   'Telecommunications', 'Media', 'Marketing & Advertising', 'Consulting',
   'Legal', 'Education', 'Non-profit', 'Government',
 ]
+
+// ─── Message length presets ───────────────────────────────────────────────────
+
+const MESSAGE_LENGTH_PRESETS = [
+  { key: 'micro',     label: 'Micro',     words: 50,  range: '30–60 words',   desc: 'Highest reply rates · single hook, single ask' },
+  { key: 'concise',   label: 'Concise',   words: 80,  range: '60–100 words',  desc: 'LinkedIn best practice for cold outreach' },
+  { key: 'standard',  label: 'Standard',  words: 130, range: '100–160 words', desc: 'Balanced professional message' },
+  { key: 'detailed',  label: 'Detailed',  words: 180, range: '150–200 words', desc: 'Warm leads & nurture sequences' },
+  { key: 'long_form', label: 'Long-form', words: 250, range: '200–300 words', desc: 'InMail & relationship building' },
+] as const
 
 const WEIGHT_OPTIONS: { value: CustomCriterion['weight']; label: string; color: string }[] = [
   { value: 'must_have',    label: 'Must Have',    color: 'bg-green-100 text-green-800 border-green-200' },
@@ -500,6 +511,7 @@ const DEFAULT_ICP: IcpConfig = {
   products_services: [],
   custom_criteria: [],
   default_ai_mode: false,
+  default_message_length: 'concise',
 }
 
 export function Settings() {
@@ -660,6 +672,66 @@ export function Settings() {
               ✍️ Manual
             </button>
           </div>
+        </div>
+
+        {/* Message length default */}
+        <div className="pt-2 border-t border-gray-100">
+          <div className="flex items-start justify-between mb-3">
+            <div>
+              <p className="text-sm font-medium text-gray-800">Default message length</p>
+              <p className="text-xs text-gray-500 mt-0.5">AI-generated messages will target this length by default. Override per step in the sequence builder.</p>
+            </div>
+            {(() => {
+              const active = MESSAGE_LENGTH_PRESETS.find(p => p.key === (icp.default_message_length ?? 'concise'))
+              return active ? (
+                <span className="text-xs font-semibold text-violet-600 bg-violet-50 border border-violet-100 rounded-full px-2.5 py-1 shrink-0 ml-4">
+                  {active.range}
+                </span>
+              ) : null
+            })()}
+          </div>
+          <input
+            type="range"
+            min={0}
+            max={4}
+            step={1}
+            value={MESSAGE_LENGTH_PRESETS.findIndex(p => p.key === (icp.default_message_length ?? 'concise'))}
+            onChange={e => {
+              const preset = MESSAGE_LENGTH_PRESETS[Number(e.target.value)]
+              setIcp(c => ({ ...c, default_message_length: preset.key }))
+              void updateSettings({ icp_config: { ...icp, default_message_length: preset.key } })
+            }}
+            className="w-full h-2 appearance-none bg-gray-200 rounded-full accent-violet-600 cursor-pointer"
+          />
+          <div className="flex justify-between mt-2 px-0.5">
+            {MESSAGE_LENGTH_PRESETS.map(p => (
+              <button
+                key={p.key}
+                type="button"
+                onClick={() => {
+                  setIcp(c => ({ ...c, default_message_length: p.key }))
+                  void updateSettings({ icp_config: { ...icp, default_message_length: p.key } })
+                }}
+                className={[
+                  'text-xs font-medium transition-colors',
+                  (icp.default_message_length ?? 'concise') === p.key
+                    ? 'text-violet-600'
+                    : 'text-gray-400 hover:text-gray-600',
+                ].join(' ')}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+          {(() => {
+            const active = MESSAGE_LENGTH_PRESETS.find(p => p.key === (icp.default_message_length ?? 'concise'))
+            return active ? (
+              <div className="mt-3 px-3 py-2 bg-violet-50 border border-violet-100 rounded-lg">
+                <p className="text-xs font-semibold text-violet-700">{active.label} · {active.range} · ~{active.words} words</p>
+                <p className="text-xs text-violet-600 mt-0.5">{active.desc}</p>
+              </div>
+            ) : null
+          })()}
         </div>
       </section>
 

@@ -6,12 +6,20 @@ import {
   generateSequenceMessage,
   buildPriorChain,
   getMessagePosition,
+  MESSAGE_LENGTH_WORDS,
   type StepNode,
   type ProductContext,
   type LeadContext,
   type PriorMessage,
   type SequenceStepType,
 } from '../ai/generate-sequence-message'
+
+/** Read max_words from a raw step's condition JSONB. */
+function getStepMaxWords(rawStep: unknown): number | undefined {
+  const cond = (rawStep as { condition?: Record<string, unknown> | null } | null)?.condition
+  const preset = cond?.max_length_preset as string | undefined
+  return preset ? MESSAGE_LENGTH_WORDS[preset] : undefined
+}
 
 export const sequenceAiRouter = Router()
 sequenceAiRouter.use(requireAuth)
@@ -180,6 +188,7 @@ sequenceAiRouter.post('/:sequenceId/generate-all', async (req: Request, res: Res
     const priorMsgs = buildPriorMessages(step.id, allSteps)
 
     try {
+      const rawStep = rawSteps.find(s => (s.id as string) === step.id)
       const result = await generateSequenceMessage({
         step_type: step.type as SequenceStepType,
         position_in_sequence: position,
@@ -190,6 +199,7 @@ sequenceAiRouter.post('/:sequenceId/generate-all', async (req: Request, res: Res
         resolve_variables: false,
         approach: campaignCtx.message_approach,
         tone: campaignCtx.message_tone,
+        max_words: getStepMaxWords(rawStep),
       })
 
       // Update the step in the database
@@ -292,6 +302,7 @@ sequenceAiRouter.post('/:sequenceId/steps/:stepId/generate', async (req: Request
     opening_line: '{{opening_line}}',
   }
 
+  const rawTargetForSingle = rawSteps.find(s => (s.id as string) === stepId)
   const result = await generateSequenceMessage({
     step_type: targetStep.type as SequenceStepType,
     position_in_sequence: position,
@@ -302,6 +313,7 @@ sequenceAiRouter.post('/:sequenceId/steps/:stepId/generate', async (req: Request
     resolve_variables: false,
     approach: campaignCtx2.message_approach,
     tone: campaignCtx2.message_tone,
+    max_words: getStepMaxWords(rawTargetForSingle),
   })
 
   const { data: updated, error: updateErr } = await supabase
@@ -427,6 +439,7 @@ sequenceAiRouter.post('/:sequenceId/steps/:stepId/preview', async (req: Request,
     }
   }
 
+  const rawTargetForPreview = rawSteps.find(s => (s.id as string) === stepId)
   try {
     const result = await generateSequenceMessage({
       step_type: targetStep.type as SequenceStepType,
@@ -438,6 +451,7 @@ sequenceAiRouter.post('/:sequenceId/steps/:stepId/preview', async (req: Request,
       resolve_variables: true,   // ← substitutes real values, no {{placeholders}}
       approach: campaignCtx3.message_approach,
       tone: campaignCtx3.message_tone,
+      max_words: getStepMaxWords(rawTargetForPreview),
     })
 
     res.json({
