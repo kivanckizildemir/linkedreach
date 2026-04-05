@@ -602,19 +602,6 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       console.error('[LOGIN DEBUG] Fetch error:', loginError)
     }
 
-    await supabase.from('linkedin_accounts').update({
-      debug_log: {
-        label: 'direct-post-result',
-        formAction,
-        postFields: Object.keys(postFields),
-        loginResponseStatus,
-        loginResponseUrl,
-        loginResponseCookies: loginResponseCookies.map(c => c.split(';')[0].substring(0, 40)),
-        loginError,
-        capturedAt: new Date().toISOString(),
-      }
-    }).eq('id', session.accountId)
-
     if (loginError) {
       session.status = 'error'
       session.error  = `Login POST failed: ${loginError.substring(0, 200)}`
@@ -721,7 +708,7 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       return
     }
 
-    // Save post-navigation diagnostic
+    // Save post-navigation diagnostic (includes POST result for full context)
     await supabase.from('linkedin_accounts').update({
       debug_log: {
         label: 'post-nav',
@@ -729,6 +716,9 @@ async function runLogin(key: string, email: string, password: string): Promise<v
         postNavText: postNavText.substring(0, 400),
         cookieNames: finalCookies.map(c => c.name),
         challengeRedirectUrl: url,
+        postStatus: loginResponseStatus,
+        postLocation: loginResponseUrl,
+        postCookies: loginResponseCookies.map(c => c.split(';')[0].substring(0, 50)),
         capturedAt: new Date().toISOString(),
       }
     }).eq('id', session.accountId)
