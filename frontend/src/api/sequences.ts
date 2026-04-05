@@ -16,6 +16,7 @@ export interface SequenceStep {
   condition: Record<string, unknown> | null
   parent_step_id: string | null
   branch: Branch
+  ai_generation_mode: boolean
   created_at: string
   updated_at: string
 }
@@ -68,7 +69,7 @@ export async function createStep(
 
 export async function updateStep(
   id: string,
-  updates: Partial<Pick<SequenceStep, 'type' | 'message_template' | 'subject' | 'wait_days' | 'step_order' | 'condition'>>
+  updates: Partial<Pick<SequenceStep, 'type' | 'message_template' | 'subject' | 'wait_days' | 'step_order' | 'condition' | 'ai_generation_mode'>>
 ): Promise<SequenceStep> {
   const { data, error } = await supabase
     .from('sequence_steps')

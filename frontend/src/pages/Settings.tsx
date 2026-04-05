@@ -7,8 +7,13 @@ import { apiFetch } from '../lib/fetchJson'
 interface Product {
   id: string
   name: string
+  one_liner: string
   description: string
   target_use_case: string
+  usps: string[]
+  differentiators: string[]
+  tone_of_voice: string
+  website_url: string
 }
 
 interface CustomCriterion {
@@ -186,6 +191,13 @@ function TagInput({
 
 // ─── ProductCard ──────────────────────────────────────────────────────────────
 
+const TONE_OPTIONS = [
+  { value: 'professional', label: '🎩 Professional' },
+  { value: 'conversational', label: '💬 Conversational' },
+  { value: 'bold', label: '⚡ Bold' },
+  { value: 'empathetic', label: '🤝 Empathetic' },
+]
+
 async function extractProductFromUrl(url: string): Promise<{ name: string; description: string; target_use_case: string }> {
   const res = await apiFetch('/api/settings/extract-product', {
     method: 'POST',
@@ -197,6 +209,58 @@ async function extractProductFromUrl(url: string): Promise<{ name: string; descr
   return body.data!
 }
 
+/** Inline tag-list editor for USPs and differentiators */
+function TagListInput({
+  items,
+  onChange,
+  placeholder,
+}: {
+  items: string[]
+  onChange: (items: string[]) => void
+  placeholder: string
+}) {
+  const [draft, setDraft] = useState('')
+
+  function add() {
+    const trimmed = draft.trim()
+    if (trimmed && !items.includes(trimmed)) {
+      onChange([...items, trimmed])
+    }
+    setDraft('')
+  }
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex flex-wrap gap-1.5">
+        {items.map((item, i) => (
+          <span key={i} className="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-50 text-blue-700 border border-blue-200 rounded-full text-xs font-medium">
+            {item}
+            <button type="button" onClick={() => onChange(items.filter((_, j) => j !== i))} className="text-blue-400 hover:text-blue-700 leading-none">×</button>
+          </span>
+        ))}
+      </div>
+      <div className="flex gap-1.5">
+        <input
+          type="text"
+          value={draft}
+          onChange={e => setDraft(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); add() } }}
+          placeholder={placeholder}
+          className="flex-1 px-2.5 py-1.5 text-xs border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+        />
+        <button
+          type="button"
+          onClick={add}
+          disabled={!draft.trim()}
+          className="px-2.5 py-1.5 text-xs font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-40 transition-colors"
+        >
+          + Add
+        </button>
+      </div>
+    </div>
+  )
+}
+
 function ProductCard({
   product,
   onChange,
@@ -206,18 +270,29 @@ function ProductCard({
   onChange: (p: Product) => void
   onRemove: () => void
 }) {
-  const [url, setUrl] = useState('')
+  const [urlDraft, setUrlDraft] = useState(product.website_url ?? '')
   const [extracting, setExtracting] = useState(false)
   const [extractError, setExtractError] = useState('')
+  const [expanded, setExpanded] = useState(!product.name)
+
+  // Safely coerce legacy products that may be missing new fields
+  const p: Product = {
+    one_liner: '',
+    usps: [],
+    differentiators: [],
+    tone_of_voice: 'professional',
+    website_url: '',
+    ...product,
+  }
 
   async function handleExtract() {
-    if (!url.trim()) return
+    const url = urlDraft.trim()
+    if (!url) return
     setExtracting(true)
     setExtractError('')
     try {
-      const result = await extractProductFromUrl(url.trim())
-      onChange({ ...product, ...result })
-      setUrl('')
+      const result = await extractProductFromUrl(url)
+      onChange({ ...p, ...result, website_url: url })
     } catch (err: unknown) {
       setExtractError(err instanceof Error ? err.message : 'Failed to extract')
     } finally {
@@ -226,88 +301,150 @@ function ProductCard({
   }
 
   return (
-    <div className="rounded-xl border border-gray-200 bg-gray-50 p-4 space-y-3">
-
-      {/* Website extractor */}
-      <div className="flex gap-2">
-        <div className="flex-1 flex items-center gap-2 px-3 py-2 bg-white border border-gray-200 rounded-lg focus-within:ring-2 focus-within:ring-violet-400 focus-within:border-violet-400 transition-all">
-          <svg className="w-3.5 h-3.5 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" />
-          </svg>
-          <input
-            type="url"
-            value={url}
-            onChange={e => { setUrl(e.target.value); setExtractError('') }}
-            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); void handleExtract() } }}
-            placeholder="Paste website URL to auto-fill…"
-            className="flex-1 text-sm text-gray-700 bg-transparent outline-none placeholder:text-gray-400"
-          />
-        </div>
+    <div className="rounded-xl border border-gray-200 bg-gray-50 overflow-hidden">
+      {/* Header row — always visible */}
+      <div className="flex items-center gap-2 px-4 py-3">
         <button
           type="button"
-          onClick={() => void handleExtract()}
-          disabled={!url.trim() || extracting}
-          className="flex items-center gap-1.5 px-3 py-2 bg-violet-600 text-white text-xs font-semibold rounded-lg hover:bg-violet-700 disabled:opacity-50 transition-colors whitespace-nowrap shrink-0"
+          onClick={() => setExpanded(e => !e)}
+          className="text-gray-400 hover:text-gray-600 transition-colors"
         >
-          {extracting ? (
-            <>
-              <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-              </svg>
-              Reading…
-            </>
-          ) : (
-            <>✨ Extract</>
-          )}
+          <svg className={`w-4 h-4 transition-transform ${expanded ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 18l6-6-6-6" />
+          </svg>
         </button>
-      </div>
-      {extractError && <p className="text-xs text-red-500">{extractError}</p>}
-
-      {/* Name + remove */}
-      <div className="flex items-center justify-between gap-3">
         <input
           type="text"
-          value={product.name}
-          onChange={e => onChange({ ...product, name: e.target.value })}
+          value={p.name}
+          onChange={e => onChange({ ...p, name: e.target.value })}
           placeholder="Product / service name"
-          className="flex-1 text-sm font-semibold text-gray-900 bg-transparent border-b border-gray-300 focus:border-blue-500 outline-none pb-0.5 placeholder:font-normal placeholder:text-gray-400"
+          className="flex-1 text-sm font-semibold text-gray-900 bg-transparent outline-none placeholder:font-normal placeholder:text-gray-400"
         />
-        <button
-          type="button"
-          onClick={onRemove}
-          className="text-gray-400 hover:text-red-500 transition-colors shrink-0"
-          title="Remove"
-        >
+        {p.tone_of_voice && (
+          <span className="text-xs text-gray-400 hidden sm:block capitalize">{p.tone_of_voice}</span>
+        )}
+        <button type="button" onClick={onRemove} className="text-gray-400 hover:text-red-500 transition-colors shrink-0" title="Remove">
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
           </svg>
         </button>
       </div>
 
-      {/* Description */}
-      <div>
-        <label className="block text-xs font-medium text-gray-500 mb-1">Description</label>
-        <textarea
-          rows={2}
-          value={product.description}
-          onChange={e => onChange({ ...product, description: e.target.value })}
-          placeholder="What does it do? What problem does it solve?"
-          className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
-        />
-      </div>
+      {expanded && (
+        <div className="px-4 pb-4 space-y-3 border-t border-gray-200 pt-3">
 
-      {/* Target use case */}
-      <div>
-        <label className="block text-xs font-medium text-gray-500 mb-1">Target Use Case / Ideal Customer</label>
-        <textarea
-          rows={2}
-          value={product.target_use_case}
-          onChange={e => onChange({ ...product, target_use_case: e.target.value })}
-          placeholder="Who benefits most? e.g. B2B SaaS companies with 50–500 employees scaling their sales team"
-          className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
-        />
-      </div>
+          {/* Website extractor */}
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Auto-fill from website</label>
+            <div className="flex gap-2">
+              <div className="flex-1 flex items-center gap-2 px-3 py-2 bg-white border border-gray-200 rounded-lg focus-within:ring-2 focus-within:ring-violet-400 transition-all">
+                <svg className="w-3.5 h-3.5 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" />
+                </svg>
+                <input
+                  type="url"
+                  value={urlDraft}
+                  onChange={e => { setUrlDraft(e.target.value); setExtractError('') }}
+                  onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); void handleExtract() } }}
+                  onBlur={() => onChange({ ...p, website_url: urlDraft.trim() })}
+                  placeholder="https://yourwebsite.com"
+                  className="flex-1 text-sm text-gray-700 bg-transparent outline-none placeholder:text-gray-400"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => void handleExtract()}
+                disabled={!urlDraft.trim() || extracting}
+                className="flex items-center gap-1.5 px-3 py-2 bg-violet-600 text-white text-xs font-semibold rounded-lg hover:bg-violet-700 disabled:opacity-50 transition-colors whitespace-nowrap shrink-0"
+              >
+                {extracting ? (
+                  <><svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>Reading…</>
+                ) : <>✨ Extract</>}
+              </button>
+            </div>
+            {extractError && <p className="text-xs text-red-500 mt-1">{extractError}</p>}
+          </div>
+
+          {/* One-liner */}
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">One-liner pitch <span className="text-gray-400 font-normal">(≤15 words)</span></label>
+            <input
+              type="text"
+              value={p.one_liner}
+              onChange={e => onChange({ ...p, one_liner: e.target.value })}
+              placeholder="e.g. The fastest way to turn cold leads into booked demos"
+              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+
+          {/* Description */}
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Description</label>
+            <textarea
+              rows={2}
+              value={p.description}
+              onChange={e => onChange({ ...p, description: e.target.value })}
+              placeholder="What does it do? What problem does it solve?"
+              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+            />
+          </div>
+
+          {/* Target use case */}
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Ideal Customer / Use Case</label>
+            <textarea
+              rows={2}
+              value={p.target_use_case}
+              onChange={e => onChange({ ...p, target_use_case: e.target.value })}
+              placeholder="Who benefits most? e.g. B2B SaaS companies with 50–500 employees scaling their sales team"
+              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+            />
+          </div>
+
+          {/* USPs */}
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1.5">Unique Selling Points <span className="text-gray-400 font-normal">(what makes you the obvious choice)</span></label>
+            <TagListInput
+              items={p.usps}
+              onChange={usps => onChange({ ...p, usps })}
+              placeholder="e.g. 5-minute setup, no credit card required…"
+            />
+          </div>
+
+          {/* Differentiators */}
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1.5">Points of Differentiation <span className="text-gray-400 font-normal">(vs. competitors or doing nothing)</span></label>
+            <TagListInput
+              items={p.differentiators}
+              onChange={differentiators => onChange({ ...p, differentiators })}
+              placeholder="e.g. 3× faster than Salesforce, no per-seat pricing…"
+            />
+          </div>
+
+          {/* Tone of voice */}
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1.5">Tone of Voice</label>
+            <div className="flex flex-wrap gap-2">
+              {TONE_OPTIONS.map(opt => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => onChange({ ...p, tone_of_voice: opt.value })}
+                  className={[
+                    'px-3 py-1.5 text-xs font-medium rounded-lg border transition-all',
+                    p.tone_of_voice === opt.value
+                      ? 'bg-blue-600 text-white border-blue-600'
+                      : 'bg-white text-gray-600 border-gray-200 hover:border-blue-300',
+                  ].join(' ')}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+        </div>
+      )}
     </div>
   )
 }
@@ -445,7 +582,7 @@ export function Settings() {
       ...c,
       products_services: [
         ...c.products_services,
-        { id: uid(), name: '', description: '', target_use_case: '' },
+        { id: uid(), name: '', one_liner: '', description: '', target_use_case: '', usps: [], differentiators: [], tone_of_voice: 'professional', website_url: '' },
       ],
     }))
   }

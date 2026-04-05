@@ -16,6 +16,7 @@ export interface Campaign {
   account_id: string | null
   min_icp_score: number
   connection_note: string | null
+  product_id: string | null
   created_at: string
   updated_at: string
 }
@@ -43,7 +44,7 @@ export async function createCampaign(name: string): Promise<Campaign> {
 
 export async function updateCampaign(
   id: string,
-  updates: Partial<Pick<Campaign, 'name' | 'status' | 'icp_config' | 'daily_connection_limit' | 'daily_message_limit' | 'schedule_start_hour' | 'schedule_end_hour' | 'schedule_days' | 'schedule_timezone' | 'account_id' | 'min_icp_score' | 'connection_note'>>
+  updates: Partial<Pick<Campaign, 'name' | 'status' | 'icp_config' | 'daily_connection_limit' | 'daily_message_limit' | 'schedule_start_hour' | 'schedule_end_hour' | 'schedule_days' | 'schedule_timezone' | 'account_id' | 'min_icp_score' | 'connection_note' | 'product_id'>>
 ): Promise<Campaign> {
   const res = await apiFetch(`/api/campaigns/${id}`, {
     method: 'PATCH',

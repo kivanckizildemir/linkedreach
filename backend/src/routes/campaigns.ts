@@ -114,6 +114,7 @@ campaignsRouter.patch('/:id', async (req: Request, res: Response) => {
     'account_id',
     'min_icp_score',
     'connection_note',
+    'product_id',
   ] as const
   type AllowedKey = (typeof allowed)[number]
 

@@ -49,6 +49,12 @@ import {
 } from '../api/templates'
 import { clearSteps } from '../api/sequences'
 import { supabase } from '../lib/supabase'
+import {
+  generateAllSteps,
+  generateSingleStep,
+  previewStepForLead,
+  type PreviewResult,
+} from '../api/sequenceAi'
 
 // ── Layout constants ──────────────────────────────────────────────────────────
 
@@ -604,11 +610,14 @@ const nodeTypes = {
 
 // ── Edit modal ────────────────────────────────────────────────────────────────
 
-function EditModal({ step, onSave, onDelete, onClose }: {
+function EditModal({ step, sequenceId, campaignId, onSave, onDelete, onClose, onTest }: {
   step: SequenceStep
+  sequenceId: string
+  campaignId: string
   onSave: (updates: Partial<SequenceStep>) => void
   onDelete: (id: string) => void
   onClose: () => void
+  onTest: (step: SequenceStep) => void
 }) {
   const [msg,       setMsg]  = useState(step.message_template ?? '')
   const [subject,   setSubj] = useState(step.subject ?? '')
@@ -616,17 +625,36 @@ function EditModal({ step, onSave, onDelete, onClose }: {
   const [waitUnit,  setWaitUnit] = useState<'minutes' | 'hours' | 'days'>((step.condition?.wait_unit as 'minutes' | 'hours' | 'days') ?? 'days')
   const [forkCond,  setFork] = useState<ForkCondition>((step.condition?.type as ForkCondition) ?? 'replied')
   const [reaction,  setRct]  = useState<ReactionType>((step.condition?.reaction as ReactionType) ?? 'like')
+  const [aiMode,    setAiMode] = useState(step.ai_generation_mode ?? false)
+  const [regen,     setRegen] = useState(false)
+  const [regenErr,  setRegenErr] = useState('')
   const cfg = STEP_CFG[step.type]
+  const isMessage = step.type === 'connect' || step.type === 'message' || step.type === 'inmail'
 
   const waitMax = waitUnit === 'minutes' ? 120 : waitUnit === 'hours' ? 72 : 60
+
+  async function handleRegenerate() {
+    setRegen(true)
+    setRegenErr('')
+    try {
+      const result = await generateSingleStep(sequenceId, step.id)
+      setMsg(result.message_template ?? '')
+      if (result.subject) setSubj(result.subject)
+      setAiMode(true)
+    } catch (err) {
+      setRegenErr(err instanceof Error ? err.message : 'Regeneration failed')
+    } finally {
+      setRegen(false)
+    }
+  }
 
   function save() {
     const u: Partial<SequenceStep> = {}
     if (step.type === 'wait')        { u.wait_days = waitVal; u.condition = { wait_unit: waitUnit } }
     if (step.type === 'fork')        u.condition = { type: forkCond }
     if (step.type === 'react_post')  u.condition = { reaction }
-    if (step.type === 'inmail')      { u.subject = subject; u.message_template = msg || null }
-    if (step.type === 'connect' || step.type === 'message') u.message_template = msg || null
+    if (step.type === 'inmail')      { u.subject = subject; u.message_template = msg || null; u.ai_generation_mode = aiMode }
+    if (step.type === 'connect' || step.type === 'message') { u.message_template = msg || null; u.ai_generation_mode = aiMode }
     onSave(u)
   }
 
@@ -636,6 +664,11 @@ function EditModal({ step, onSave, onDelete, onClose }: {
         <div className="flex items-center gap-3 px-6 py-5 border-b border-gray-100">
           <span className="text-2xl">{cfg.icon}</span>
           <h2 className="text-base font-bold text-gray-900">Edit {cfg.label}</h2>
+          {isMessage && (
+            <span className={`ml-1 text-[10px] font-semibold px-2 py-0.5 rounded-full ${aiMode ? 'bg-violet-100 text-violet-700' : 'bg-gray-100 text-gray-500'}`}>
+              {aiMode ? '✨ AI' : 'Manual'}
+            </span>
+          )}
           <button onClick={onClose} className="ml-auto text-gray-400 hover:text-gray-700 transition-colors">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M18 6L6 18M6 6l12 12" />
@@ -736,26 +769,49 @@ function EditModal({ step, onSave, onDelete, onClose }: {
 
           {(step.type === 'connect' || step.type === 'message' || step.type === 'inmail') && (
             <div>
-              <label className="block text-sm font-semibold text-gray-700 mb-1.5">
-                {step.type === 'connect' ? 'Note (optional, max 300 chars)' : 'Message body'}
-              </label>
-              <p className="text-xs text-gray-400 mb-2">
-                Personalise with{' '}
-                {['{{first_name}}', '{{company}}', '{{title}}'].map(v => (
-                  <code key={v} className="bg-gray-100 px-1.5 py-0.5 rounded mx-0.5 text-gray-600">{v}</code>
-                ))}
-              </p>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="block text-sm font-semibold text-gray-700">
+                  {step.type === 'connect' ? 'Note (optional, max 300 chars)' : 'Message body'}
+                </label>
+                {aiMode && (
+                  <button
+                    onClick={handleRegenerate}
+                    disabled={regen}
+                    className="flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium text-violet-700 bg-violet-50 border border-violet-200 rounded-lg hover:bg-violet-100 disabled:opacity-50 transition-colors"
+                  >
+                    {regen ? '⏳ Regenerating…' : '✨ Regenerate'}
+                  </button>
+                )}
+              </div>
+              {!aiMode && (
+                <p className="text-xs text-gray-400 mb-2">
+                  Personalise with{' '}
+                  {['{{first_name}}', '{{company}}', '{{title}}'].map(v => (
+                    <code key={v} className="bg-gray-100 px-1.5 py-0.5 rounded mx-0.5 text-gray-600">{v}</code>
+                  ))}
+                </p>
+              )}
+              {regenErr && (
+                <p className="text-xs text-red-500 mb-2">{regenErr}</p>
+              )}
               <textarea
                 value={msg}
-                onChange={e => setMsg(e.target.value)}
+                onChange={e => { setMsg(e.target.value); setAiMode(false) }}
                 rows={5}
                 maxLength={step.type === 'connect' ? 300 : undefined}
                 placeholder={step.type === 'connect'
                   ? 'Hi {{first_name}}, I came across your profile and would love to connect…'
                   : 'Hi {{first_name}}, thanks for connecting! I wanted to reach out because…'}
-                className="w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                className={[
+                  'w-full px-4 py-3 border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none',
+                  aiMode ? 'border-violet-200 bg-violet-50/30' : 'border-gray-200',
+                ].join(' ')}
               />
-              <div className="flex justify-end mt-1">
+              <div className="flex items-center justify-between mt-1">
+                {aiMode
+                  ? <span className="text-[10px] text-violet-500 font-medium">✨ AI generated — edit freely or regenerate</span>
+                  : <span className="text-[10px] text-gray-400">Edit manually</span>
+                }
                 <span className="text-xs text-gray-400">{msg.length}{step.type === 'connect' ? '/300' : ''}</span>
               </div>
             </div>
@@ -771,10 +827,170 @@ function EditModal({ step, onSave, onDelete, onClose }: {
             className="flex-1 py-2.5 border-2 border-gray-200 text-sm font-semibold text-gray-700 rounded-xl hover:bg-gray-50 transition-colors">
             Cancel
           </button>
+          {isMessage && (
+            <button
+              onClick={() => { save(); onTest(step) }}
+              className="flex-1 py-2.5 text-sm font-semibold text-violet-700 border-2 border-violet-200 rounded-xl hover:bg-violet-50 transition-colors"
+            >
+              🔍 Test
+            </button>
+          )}
           <button onClick={save}
             className="flex-1 py-2.5 text-sm font-semibold text-white rounded-xl transition-colors"
             style={{ background: STEP_CFG[step.type].color }}>
             Save
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Test Message Modal ────────────────────────────────────────────────────────
+
+function TestMessageModal({
+  step,
+  sequenceId,
+  campaignId,
+  onClose,
+}: {
+  step: SequenceStep
+  sequenceId: string
+  campaignId: string
+  onClose: () => void
+}) {
+  const [leadId, setLeadId] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [result, setResult] = useState<PreviewResult | null>(null)
+  const [err, setErr] = useState('')
+  const [copied, setCopied] = useState(false)
+
+  const { data: campaignLeads = [], isLoading: leadsLoading } = useQuery({
+    queryKey: ['campaign-leads', campaignId],
+    queryFn: () => fetchCampaignLeads(campaignId),
+  })
+
+  async function handlePreview() {
+    if (!leadId) return
+    setLoading(true)
+    setErr('')
+    setResult(null)
+    try {
+      const r = await previewStepForLead(sequenceId, step.id, leadId)
+      setResult(r)
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Preview failed')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  function copyToClipboard() {
+    if (!result) return
+    navigator.clipboard.writeText(result.preview).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    })
+  }
+
+  const cfg = STEP_CFG[step.type]
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[110] p-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg">
+        {/* Header */}
+        <div className="flex items-center gap-3 px-6 py-5 border-b border-gray-100">
+          <span className="text-2xl">{cfg.icon}</span>
+          <div>
+            <h2 className="text-base font-bold text-gray-900">Test Message Preview</h2>
+            <p className="text-xs text-gray-400">{cfg.label} — resolved for a real lead</p>
+          </div>
+          <button onClick={onClose} className="ml-auto text-gray-400 hover:text-gray-700 transition-colors">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M18 6L6 18M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="px-6 py-5 space-y-4">
+          {/* Lead picker */}
+          <div>
+            <label className="block text-sm font-semibold text-gray-700 mb-1.5">Select a lead</label>
+            {leadsLoading ? (
+              <p className="text-xs text-gray-400">Loading leads…</p>
+            ) : campaignLeads.length === 0 ? (
+              <p className="text-xs text-amber-600 bg-amber-50 px-3 py-2 rounded-lg">
+                No leads in this campaign yet. Add leads first to test previews.
+              </p>
+            ) : (
+              <select
+                value={leadId}
+                onChange={e => { setLeadId(e.target.value); setResult(null); setErr('') }}
+                className="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-violet-500"
+              >
+                <option value="">— pick a lead —</option>
+                {campaignLeads.map(cl => (
+                  <option key={cl.lead.id} value={cl.lead.id}>
+                    {cl.lead.first_name} {cl.lead.last_name}
+                    {cl.lead.company ? ` · ${cl.lead.company}` : ''}
+                    {cl.lead.title ? ` (${cl.lead.title})` : ''}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+
+          {/* Generate button */}
+          {campaignLeads.length > 0 && (
+            <button
+              onClick={handlePreview}
+              disabled={!leadId || loading}
+              className="w-full py-2.5 bg-violet-600 text-white text-sm font-semibold rounded-xl hover:bg-violet-700 disabled:opacity-50 transition-colors"
+            >
+              {loading ? '⏳ Generating preview…' : '✨ Generate Preview'}
+            </button>
+          )}
+
+          {err && (
+            <p className="text-xs text-red-500 bg-red-50 px-3 py-2 rounded-lg">{err}</p>
+          )}
+
+          {/* Result */}
+          {result && (
+            <div className="space-y-3">
+              <div className="bg-gray-50 rounded-xl border border-gray-200 p-4">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                    {result.lead_name}
+                    {result.lead_company ? ` · ${result.lead_company}` : ''}
+                  </p>
+                  <button
+                    onClick={copyToClipboard}
+                    className="text-xs text-gray-500 hover:text-gray-700 transition-colors"
+                  >
+                    {copied ? '✓ Copied' : 'Copy'}
+                  </button>
+                </div>
+                {result.subject && (
+                  <p className="text-xs font-semibold text-gray-700 mb-2 border-b border-gray-200 pb-2">
+                    Subject: {result.subject}
+                  </p>
+                )}
+                <p className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">{result.preview}</p>
+              </div>
+              <p className="text-[10px] text-gray-400 text-center">
+                This is a live preview with real lead data. No message was sent.
+              </p>
+            </div>
+          )}
+        </div>
+
+        <div className="px-6 pb-5">
+          <button
+            onClick={onClose}
+            className="w-full py-2.5 border-2 border-gray-200 text-sm font-semibold text-gray-700 rounded-xl hover:bg-gray-50 transition-colors"
+          >
+            Close
           </button>
         </div>
       </div>
@@ -792,7 +1008,11 @@ function FlowCanvas({ sequence, campaignId }: { sequence: Sequence; campaignId: 
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([])
   const [steps, setSteps] = useState<SequenceStep[]>(sequence.sequence_steps)
   const [editingStep, setEditingStep] = useState<SequenceStep | null>(null)
+  const [testingStep, setTestingStep] = useState<SequenceStep | null>(null)
   const [showTemplates, setShowTemplates] = useState(false)
+  const [generating, setGenerating] = useState(false)
+  const [generateErr, setGenerateErr] = useState('')
+  const [showGenConfirm, setShowGenConfirm] = useState(false)
 
   const invalidate = useCallback(async () => {
     // Bypass the query cache so we always get fresh data after mutations
@@ -837,6 +1057,24 @@ function FlowCanvas({ sequence, campaignId }: { sequence: Sequence; campaignId: 
     await invalidate()
     queryClient.invalidateQueries({ queryKey: ['sequences', campaignId] })
   }, [invalidate, queryClient, campaignId])
+
+  async function handleGenerateAll() {
+    setGenerating(true)
+    setGenerateErr('')
+    setShowGenConfirm(false)
+    try {
+      const result = await generateAllSteps(sequence.id)
+      await invalidate()
+      queryClient.invalidateQueries({ queryKey: ['sequences', campaignId] })
+      if (result.errors && result.errors.length > 0) {
+        setGenerateErr(`Generated ${result.updated} step(s). Some errors: ${result.errors.join('; ')}`)
+      }
+    } catch (err) {
+      setGenerateErr(err instanceof Error ? err.message : 'Generation failed')
+    } finally {
+      setGenerating(false)
+    }
+  }
 
   const cb: Callbacks = { onAdd }
 
@@ -924,8 +1162,15 @@ function FlowCanvas({ sequence, campaignId }: { sequence: Sequence; campaignId: 
         ))}
       </div>
 
-      {/* Templates button — top-right of canvas */}
-      <div className="absolute top-3 right-3 pointer-events-auto" style={{ zIndex: 10 }}>
+      {/* Toolbar — top-right of canvas */}
+      <div className="absolute top-3 right-3 pointer-events-auto flex gap-2" style={{ zIndex: 10 }}>
+        <button
+          onClick={() => setShowGenConfirm(true)}
+          disabled={generating || steps.filter(s => ['connect','message','inmail'].includes(s.type)).length === 0}
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-violet-600 text-white text-xs font-medium rounded-lg shadow-sm hover:bg-violet-700 disabled:opacity-50 transition-colors"
+        >
+          {generating ? '⏳ Generating…' : '✨ Generate with AI'}
+        </button>
         <button
           onClick={() => setShowTemplates(true)}
           className="flex items-center gap-1.5 px-3 py-1.5 bg-white text-xs font-medium text-gray-700 border border-gray-200 rounded-lg shadow-sm hover:bg-gray-50 hover:border-gray-300 transition-colors"
@@ -934,12 +1179,56 @@ function FlowCanvas({ sequence, campaignId }: { sequence: Sequence; campaignId: 
         </button>
       </div>
 
+      {/* Generate confirmation */}
+      {showGenConfirm && (
+        <div className="absolute inset-0 bg-black/40 flex items-center justify-center z-20 pointer-events-auto">
+          <div className="bg-white rounded-2xl shadow-2xl p-6 max-w-sm w-full mx-4">
+            <h3 className="text-base font-bold text-gray-900 mb-2">✨ Generate with AI</h3>
+            <p className="text-sm text-gray-600 mb-4">
+              AI will write message templates for all message steps in this sequence based on your product settings and lead profiles. Existing messages will be overwritten.
+            </p>
+            {generateErr && <p className="text-xs text-red-500 mb-3">{generateErr}</p>}
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowGenConfirm(false)}
+                className="flex-1 py-2 text-sm text-gray-600 border border-gray-200 rounded-xl hover:bg-gray-50 transition-colors"
+              >Cancel</button>
+              <button
+                onClick={handleGenerateAll}
+                className="flex-1 py-2 text-sm font-semibold text-white bg-violet-600 rounded-xl hover:bg-violet-700 transition-colors"
+              >Generate All</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {generateErr && !showGenConfirm && (
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-20 pointer-events-auto">
+          <div className="bg-red-50 border border-red-200 text-red-700 text-xs px-4 py-2 rounded-xl shadow-md flex items-center gap-2">
+            <span>{generateErr}</span>
+            <button onClick={() => setGenerateErr('')} className="text-red-400 hover:text-red-600">✕</button>
+          </div>
+        </div>
+      )}
+
       {editingStep && (
         <EditModal
           step={editingStep}
+          sequenceId={sequence.id}
+          campaignId={campaignId}
           onSave={updates => updateMutation.mutate({ id: editingStep.id, updates })}
           onDelete={onDelete}
           onClose={() => setEditingStep(null)}
+          onTest={step => { setEditingStep(null); setTestingStep(step) }}
+        />
+      )}
+
+      {testingStep && (
+        <TestMessageModal
+          step={testingStep}
+          sequenceId={sequence.id}
+          campaignId={campaignId}
+          onClose={() => setTestingStep(null)}
         />
       )}
 
@@ -1716,6 +2005,14 @@ const STATUS_LABELS: Record<Campaign['status'], string> = {
   completed: 'Completed',
 }
 
+interface SettingsProduct {
+  id: string
+  name: string
+  one_liner?: string
+  description?: string
+  tone_of_voice?: string
+}
+
 function SettingsTab({ campaignId }: { campaignId: string }) {
   const queryClient = useQueryClient()
 
@@ -1732,6 +2029,15 @@ function SettingsTab({ campaignId }: { campaignId: string }) {
     },
   })
 
+  const { data: userSettings } = useQuery({
+    queryKey: ['user-settings'],
+    queryFn: async () => {
+      const { data } = await supabase.from('user_settings').select('icp_config').single()
+      return data as { icp_config: { products_services?: SettingsProduct[] } } | null
+    },
+  })
+  const products: SettingsProduct[] = userSettings?.icp_config?.products_services ?? []
+
   const [name, setName] = useState('')
   const [status, setStatus] = useState<Campaign['status']>('draft')
   const [connLimit, setConnLimit] = useState(25)
@@ -1741,6 +2047,7 @@ function SettingsTab({ campaignId }: { campaignId: string }) {
   const [icpSeniority, setIcpSeniority] = useState('')
   const [icpKeywords, setIcpKeywords] = useState('')
   const [defaultAccountId, setDefaultAccountId] = useState('')
+  const [productId, setProductId] = useState<string>('')
   const [saved, setSaved] = useState(false)
   const initialized = useRef(false)
 
@@ -1763,6 +2070,7 @@ function SettingsTab({ campaignId }: { campaignId: string }) {
       setIcpSeniority(icp.seniority_levels ?? '')
       setIcpKeywords(icp.keywords ?? '')
       setDefaultAccountId(icp.default_account_id ?? '')
+      setProductId(campaign.product_id ?? '')
     }
   }, [campaign])
 
@@ -1772,6 +2080,7 @@ function SettingsTab({ campaignId }: { campaignId: string }) {
       status,
       daily_connection_limit: connLimit,
       daily_message_limit: msgLimit,
+      product_id: productId || null,
       icp_config: {
         target_roles: icpRoles,
         target_industries: icpIndustries,
@@ -1896,6 +2205,50 @@ function SettingsTab({ campaignId }: { campaignId: string }) {
               <p className="mt-1.5 text-xs text-amber-600">No accounts added yet — add one under Accounts.</p>
             )}
           </div>
+        </div>
+
+        {/* Product / AI */}
+        <div className="bg-white rounded-xl border border-gray-200 p-5 space-y-4">
+          <div>
+            <h3 className="text-sm font-semibold text-gray-900">AI Product Context</h3>
+            <p className="text-xs text-gray-500 mt-0.5">
+              Select the product or service to use when generating sequence messages with AI.
+            </p>
+          </div>
+          {products.length === 0 ? (
+            <p className="text-xs text-amber-600 bg-amber-50 px-3 py-2 rounded-lg">
+              No products defined yet. Go to <strong>Settings → Products & Services</strong> to add one, then return here to select it.
+            </p>
+          ) : (
+            <div>
+              <label className="block text-xs font-medium text-gray-700 mb-1.5">Product / Service</label>
+              <select
+                value={productId}
+                onChange={e => setProductId(e.target.value)}
+                className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-500"
+              >
+                <option value="">— no product selected —</option>
+                {products.map(p => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+              {productId && (() => {
+                const p = products.find(x => x.id === productId)
+                if (!p) return null
+                return (
+                  <div className="mt-3 p-3 bg-violet-50 border border-violet-100 rounded-xl space-y-1">
+                    {p.one_liner && <p className="text-xs text-violet-800 font-medium">{p.one_liner}</p>}
+                    {p.tone_of_voice && (
+                      <p className="text-[10px] text-violet-500 capitalize">Tone: {p.tone_of_voice}</p>
+                    )}
+                    <p className="text-[10px] text-violet-400">
+                      AI will use this product context when generating sequence messages.
+                    </p>
+                  </div>
+                )
+              })()}
+            </div>
+          )}
         </div>
 
         {/* ICP Config */}

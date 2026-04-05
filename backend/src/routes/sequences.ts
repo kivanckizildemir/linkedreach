@@ -194,7 +194,7 @@ sequencesRouter.patch('/:id/steps/:stepId', async (req: Request, res: Response) 
     return
   }
 
-  const allowed = ['type', 'step_order', 'message_template', 'wait_days', 'condition', 'subject', 'parent_step_id', 'branch'] as const
+  const allowed = ['type', 'step_order', 'message_template', 'wait_days', 'condition', 'subject', 'parent_step_id', 'branch', 'ai_generation_mode'] as const
   type AllowedKey = (typeof allowed)[number]
 
   const updates: Partial<Record<AllowedKey, unknown>> = {}
