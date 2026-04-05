@@ -505,9 +505,15 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     }, { email, pass: password })
 
     console.log('[LOGIN DEBUG] submitResult:', JSON.stringify(submitResult))
-    await DELAY(500)
+    await supabase.from('linkedin_accounts').update({
+      debug_log: { ...submitResult, capturedAt: new Date().toISOString(), label: 'submit-result' }
+    }).eq('id', session.accountId)
 
-    await page.waitForLoadState('domcontentloaded', { timeout: 20_000 }).catch(() => {})
+    // Wait for navigation after form.submit() — use Promise.race for robustness
+    await Promise.race([
+      page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15_000 }),
+      DELAY(6_000),
+    ]).catch(() => {})
     await DELAY(2000)
 
     await captureSnap('post-login')
