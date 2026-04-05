@@ -534,24 +534,13 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       return
     }
 
-    // Step 2: Get cookies from the browser context to include in our POST
-    const browserCookies = await context.cookies('https://www.linkedin.com')
-    const cookieHeader = browserCookies
-      .map(c => `${c.name}=${c.value}`)
-      .join('; ')
-
-    // Step 3: Build the POST body with all form fields + the password
+    // Step 2: Build the POST body with all form fields + the password
     const postFields: Record<string, string> = {
       ...formFields.fields,
       session_password: password,
     }
-    const postBody = Object.entries(postFields)
-      .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
-      .join('&')
 
     // LinkedIn's login form has action="/checkpoint/lg/login-submit" as a relative path.
-    // form.getAttribute('action') gives the relative path; form.action gives absolute.
-    // If the form has no action attribute (returns null/""), fall back to the known URL.
     const formAction = formFields.action
       ? (formFields.action.startsWith('http')
           ? formFields.action
@@ -560,67 +549,41 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     console.log('[LOGIN DEBUG] Submitting POST to:', formAction)
     console.log('[LOGIN DEBUG] Fields:', Object.keys(postFields).join(', '))
 
-    // Step 4: POST via undici through BrightData proxy
+    // Step 3: POST via Playwright's context.request — uses the SAME IP/session as the browser
+    // This is critical: LinkedIn validates that the POST comes from the same IP as the page load.
+    // Using undici (direct Node.js fetch) sends from Railway's IP, causing CSRF/session mismatch.
     let loginResponseUrl = ''
     let loginResponseCookies: string[] = []
     let loginResponseStatus = 0
     let loginError = ''
 
     try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { fetch: undici_fetch, ProxyAgent } = require('undici') as typeof import('undici')
-
-      const BD_PROXY_URL = process.env.BRIGHTDATA_PROXY_URL ?? ''
-      const dispatcher = BD_PROXY_URL ? new ProxyAgent(BD_PROXY_URL) : undefined
-
-      const fetchOpts: Parameters<typeof undici_fetch>[1] = {
-        method: 'POST',
+      // context.request shares the browser context's cookies and IP (BrightData residential)
+      const apiResponse = await context.request.post(formAction, {
+        form: postFields,
         headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-          'Referer': 'https://www.linkedin.com/login',
+          'Referer': page.url(),
           'Origin': 'https://www.linkedin.com',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'en-US,en;q=0.9',
-          ...(cookieHeader ? { 'Cookie': cookieHeader } : {}),
         },
-        body: postBody,
-        redirect: 'manual',
-        ...(dispatcher ? { dispatcher } : {}),
-      }
+        maxRedirects: 0,  // Don't follow redirects — capture the Location header
+      })
 
-      const response = await undici_fetch(formAction, fetchOpts)
-      loginResponseStatus = response.status
-      loginResponseUrl = response.headers.get('location') ?? ''
-      loginResponseCookies = response.headers.getSetCookie?.() ?? []
-
-      // Also capture response body for debugging (first 500 chars)
-      let responseBodyPreview = ''
-      try {
-        if (response.status !== 303 && response.status !== 302 && response.status !== 301) {
-          const bodyText = await response.text()
-          responseBodyPreview = bodyText.substring(0, 500)
-        }
-      } catch { /* ok */ }
+      loginResponseStatus = apiResponse.status()
+      loginResponseUrl = apiResponse.headers()['location'] ?? ''
+      // Playwright's APIResponse doesn't expose Set-Cookie easily — get from context cookies
+      const responseCookies = await context.cookies('https://www.linkedin.com')
+      loginResponseCookies = responseCookies.map(c => `${c.name}=${c.value}`)
 
       console.log('[LOGIN DEBUG] POST response status:', loginResponseStatus, 'location:', loginResponseUrl)
-      console.log('[LOGIN DEBUG] Set-Cookie headers:', loginResponseCookies.length)
-      if (responseBodyPreview) console.log('[LOGIN DEBUG] Response body preview:', responseBodyPreview.substring(0, 200))
-
-      // Save all headers for diagnosis
-      const allHeaders: Record<string, string> = {}
-      response.headers.forEach((v: string, k: string) => { allHeaders[k] = v.substring(0, 100) })
 
       await supabase.from('linkedin_accounts').update({
         debug_log: {
-          label: 'direct-post-result-v2',
+          label: 'playwright-post-result',
           formAction,
           loginResponseStatus,
           loginResponseUrl,
-          loginResponseCookies: loginResponseCookies.map(c => c.split(';')[0].substring(0, 50)),
-          allHeaders,
-          responseBodyPreview: responseBodyPreview.substring(0, 300),
           postFields: Object.keys(postFields),
+          cookieNames: responseCookies.map(c => c.name),
           capturedAt: new Date().toISOString(),
         }
       }).eq('id', session.accountId)
@@ -638,78 +601,37 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     }
 
     // Parse the response to determine outcome
-    // LinkedIn returns 302 redirect with Location header after login attempt
-    const liAtFromResponse = loginResponseCookies.find(c => c.startsWith('li_at=') && !c.includes('li_at=;') && !c.includes('li_at=""'))
+    // LinkedIn returns 302/303 redirect with Location header after login attempt.
+    // Since we used context.request.post(), cookies are already in the browser context.
     const redirectLocation = loginResponseUrl || ''
 
-    const submitDiag = `status=${loginResponseStatus} location=${redirectLocation.substring(0,80)} li_at=${liAtFromResponse ? 'found' : 'not-found'}`
+    const submitDiag = `status=${loginResponseStatus} location=${redirectLocation.substring(0,80)}`
 
-    // If we got li_at cookie, login succeeded — inject cookies into browser context and save
-    if (liAtFromResponse) {
-      const liAtValue = liAtFromResponse.split('=')[1]?.split(';')[0]
-      if (liAtValue) {
-        await context.addCookies([{
-          name: 'li_at',
-          value: liAtValue,
-          domain: '.linkedin.com',
-          path: '/',
-          httpOnly: true,
-          secure: true,
-          sameSite: 'None',
-        }])
-      }
-      // Also inject any other LinkedIn cookies from response
-      for (const setCookie of loginResponseCookies) {
-        try {
-          const [nameVal] = setCookie.split(';')
-          const eqIdx = nameVal.indexOf('=')
-          if (eqIdx < 0) continue
-          const name = nameVal.substring(0, eqIdx).trim()
-          const value = nameVal.substring(eqIdx + 1).trim()
-          if (name && value && !['li_at'].includes(name)) {
-            await context.addCookies([{
-              name, value, domain: '.linkedin.com', path: '/', httpOnly: false, secure: true, sameSite: 'Lax',
-            }]).catch(() => {})
-          }
-        } catch { /* ok */ }
-      }
+    // Check if li_at is now in the browser context (login succeeded without challenge)
+    const cookiesAfterPost = await context.cookies('https://www.linkedin.com')
+    const liAtCookie = cookiesAfterPost.find(c => c.name === 'li_at' && c.value && c.value.length > 5)
+
+    if (liAtCookie) {
       await saveCookies(context, session.accountId)
       session.status = 'success'
       await browser.close()
       return
     }
 
-    // Check for bad credentials (redirected to /login)
+    // Check for bad credentials (redirected to /login with error)
     const isLoginRedirect = redirectLocation.includes('/login') && !redirectLocation.includes('/login-submit')
-    const isChallenge = redirectLocation.includes('/checkpoint') || redirectLocation.includes('/challenge') || redirectLocation.includes('verification') || redirectLocation.includes('/feed')
+    const isErrorRedirect = redirectLocation.includes('errorKey') || redirectLocation.includes('unexpected_error')
+    const isChallenge = redirectLocation.includes('/checkpoint') || redirectLocation.includes('/challenge') || redirectLocation.includes('verification')
     const isLoginSubmit = redirectLocation.includes('/login-submit')
 
     const url = redirectLocation || formAction
 
-    // If redirected back to login — wrong credentials
-    if (isLoginRedirect && !isChallenge) {
+    // If redirected to login with error — wrong credentials or unexpected error
+    if ((isLoginRedirect && !isChallenge) || isErrorRedirect) {
       session.status = 'error'
-      session.error  = `Incorrect email or password (redirected to login). ${submitDiag}`
+      session.error  = `Login failed: ${redirectLocation.substring(0, 150)}`
       await browser.close()
       return
-    }
-
-    // Inject all cookies from the login response into the browser context
-    // (especially chp_token which is needed for the challenge page)
-    for (const setCookie of loginResponseCookies) {
-      try {
-        const [nameVal] = setCookie.split(';')
-        const eqIdx = nameVal.indexOf('=')
-        if (eqIdx < 0) continue
-        const name = nameVal.substring(0, eqIdx).trim()
-        const value = nameVal.substring(eqIdx + 1).trim()
-        if (name && value) {
-          await context.addCookies([{
-            name, value, domain: '.linkedin.com', path: '/',
-            httpOnly: false, secure: true, sameSite: 'Lax',
-          }]).catch(() => {})
-        }
-      } catch { /* ok */ }
     }
 
     // Navigate the browser to the redirect URL (challenge or next page)
