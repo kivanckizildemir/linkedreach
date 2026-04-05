@@ -452,20 +452,32 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     // 3. POST directly from Node.js using undici through BRIGHTDATA_PROXY_URL
     //    (bypasses the browser restriction while keeping the correct session cookies)
 
-    // Step 1: Extract form fields (non-password) from the login form
-    const formFields = await page.evaluate((emailVal: string) => {
+    // Step 1: Extract form fields (non-password) from the login form.
+    // Use the already-found email input to navigate up to its parent form.
+    const formFields = await page.evaluate((args: { emailVal: string; emailSelector: string }) => {
       try {
-        // Look specifically for the login form (has loginCsrfParam or csrfToken)
-        const allForms = Array.from(document.querySelectorAll('form')) as HTMLFormElement[]
-        const loginForm = allForms.find(f =>
-          f.querySelector('input[name="loginCsrfParam"]') ||
-          f.querySelector('input[name="csrfToken"]') ||
-          f.querySelector('input[name="session_key"]') ||
-          f.action.includes('login-submit')
-        ) ?? allForms[0]
+        // Find the email input (which we already know exists from the selector loop)
+        const emailInput = document.querySelector(args.emailSelector) as HTMLInputElement | null
 
-        const form = loginForm ?? null
-        if (!form) return { error: 'No form found' }
+        // Navigate up to find the form
+        let form: HTMLFormElement | null = emailInput?.closest('form') as HTMLFormElement | null
+
+        // Fallback: try common selectors for the login form
+        if (!form) {
+          const csrfInput = document.querySelector('input[name="loginCsrfParam"]') ?? document.querySelector('input[name="csrfToken"]')
+          if (csrfInput) form = csrfInput.closest('form') as HTMLFormElement | null
+        }
+
+        // Last resort: find any form with inputs
+        if (!form) {
+          const allInputs = Array.from(document.querySelectorAll('input[name]')) as HTMLInputElement[]
+          for (const inp of allInputs) {
+            const f = inp.closest('form') as HTMLFormElement | null
+            if (f) { form = f; break }
+          }
+        }
+
+        if (!form) return { error: 'No form found via any method' }
 
         const fields: Record<string, string> = {}
         const inputs = Array.from(form.querySelectorAll('input:not([type="password"])')) as HTMLInputElement[]
@@ -475,17 +487,15 @@ async function runLogin(key: string, email: string, password: string): Promise<v
           }
         }
         // Override session_key with the email we want to submit
-        fields['session_key'] = emailVal
+        fields['session_key'] = args.emailVal
 
-        // form.action returns absolute URL — if it's just the page URL (no explicit action),
-        // we'll use empty string and fall back to the hardcoded LinkedIn submit URL.
         const formAction = form.getAttribute('action') ?? ''
 
-        return { fields, action: formAction, formActionAbsolute: form.action }
+        return { fields, action: formAction, inputCount: inputs.length }
       } catch (e) {
         return { error: String(e) }
       }
-    }, email)
+    }, { emailVal: email, emailSelector })
 
     console.log('[LOGIN DEBUG] formFields:', JSON.stringify(formFields))
 
