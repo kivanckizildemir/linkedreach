@@ -445,102 +445,54 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       }
     }
 
-    // ── Submit credentials via direct fetch() — bypasses BrightData password block ─
-    // BrightData blocks ALL methods to fill password-type inputs (keyboard, CDP, evaluate).
-    // We use fetch() from within the page context to POST credentials to LinkedIn's
-    // login endpoint directly. This uses the browser's cookies/session and the CSRF
-    // token that LinkedIn embedded in the login page.
+    // ── Credential submission — BrightData-compatible approach ───────────────────
+    // BrightData blocks keyboard events when DIRECTLY focusing a password field.
+    // However, keyboard.type() DOES work when you Tab FROM another field INTO
+    // the password field (continuous keyboard flow). Use Tab to navigate from
+    // email → password, then jsClick the submit button (not Enter, since Enter
+    // while password is focused is also blocked).
 
-    // Fill email via keyboard (text inputs are allowed by BrightData)
+    // Fill email via keyboard
     await jsClick(emailSelector)
     await DELAY(300)
     await page.keyboard.type(email, { delay: 40 })
     await DELAY(500 + Math.random() * 300)
     await dismissBanners()
 
-    // Extract CSRF token from the login page (needed for the POST)
-    // Also collect all page diagnostic info
-    const loginPageDiag = await page.evaluate(() => {
-      // Try multiple CSRF token sources
-      const csrfInput = document.querySelector('input[name="loginCsrfParam"]') as HTMLInputElement | null
-      const csrfMeta  = document.querySelector('meta[name="csrf-token"]') as HTMLMetaElement | null
+    // Tab from email field into password field (continuous keyboard flow)
+    await page.keyboard.press('Tab')
+    await DELAY(300)
 
-      // JSESSIONID is often used as CSRF by LinkedIn
-      const jsessionMatch = document.cookie.match(/JSESSIONID="?([^";]+)"?/)
-      const jsessionCsrf  = jsessionMatch ? jsessionMatch[1] : ''
+    // Type password — this should work because we arrived via Tab, not direct focus
+    await page.keyboard.type(password, { delay: 40 })
+    await DELAY(300 + Math.random() * 200)
 
-      // Find all hidden inputs
-      const hiddenInputs = Array.from(document.querySelectorAll('input[type="hidden"]'))
-        .map((el: Element) => { const i = el as HTMLInputElement; return `${i.name}=${i.value.substring(0, 30)}` })
+    // Move focus away from the password field to prevent BrightData blocking the submit.
+    // Press Tab to move to the next field (likely the "Keep me signed in" checkbox or submit button).
+    // BrightData blocks keyboard events when password field is focused, but Tab away is OK.
+    await page.keyboard.press('Tab')
+    await DELAY(200)
 
-      // Find all form actions
-      const formActions = Array.from(document.querySelectorAll('form'))
-        .map((f: Element) => (f as HTMLFormElement).action)
+    // Click the submit button via JS (no pointer event or keyboard needed)
+    await jsClick('button[type="submit"], button[data-litms-control-urn="login-submit"], .btn__primary--large, form button')
+    await DELAY(500)
 
-      return {
-        csrfFromInput:   csrfInput?.value ?? '',
-        csrfFromMeta:    csrfMeta?.content ?? '',
-        jsessionCsrf,
-        hiddenInputs,
-        formActions,
-        cookies:         document.cookie.substring(0, 200),
-      }
-    }).catch(() => ({ csrfFromInput: '', csrfFromMeta: '', jsessionCsrf: '', hiddenInputs: [], formActions: [], cookies: '' }))
-
-    console.log('[LOGIN DEBUG] loginPageDiag:', JSON.stringify(loginPageDiag))
-    await supabase.from('linkedin_accounts').update({
-      debug_log: { ...loginPageDiag, capturedAt: new Date().toISOString(), label: 'login-page-diag' }
-    }).eq('id', session.accountId)
-
-    const csrfToken = loginPageDiag.csrfFromInput || loginPageDiag.csrfFromMeta || loginPageDiag.jsessionCsrf
-
-    // Submit credentials via fetch() — no password field interaction needed
-    const fetchResult = await page.evaluate(async (args: { email: string; pass: string; csrf: string }) => {
-      try {
-        const body = new URLSearchParams({
-          session_key:      args.email,
-          session_password: args.pass,
-          loginCsrfParam:   args.csrf,
-          isJsEnabled:      'true',
-          loginFlow:        'REMEMBER_ME_OPTIN',
-        })
-
-        const res = await fetch('https://www.linkedin.com/checkpoint/lg/login-submit', {
-          method:      'POST',
-          credentials: 'include',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body:     body.toString(),
-          redirect: 'follow',
-        })
-
-        // Try to get response body for debugging
-        const text = await res.text().catch(() => '')
-        return {
-          ok:           res.ok,
-          status:       res.status,
-          finalUrl:     res.url,
-          redirected:   res.redirected,
-          bodySnippet:  text.substring(0, 200),
-        }
-      } catch (e2) {
-        return { error: String(e2) }
-      }
-    }, { email, pass: password, csrf: csrfToken })
-
-    console.log('[LOGIN DEBUG] fetchResult:', JSON.stringify(fetchResult))
-    await supabase.from('linkedin_accounts').update({
-      debug_log: { ...fetchResult, capturedAt: new Date().toISOString(), label: 'fetch-result' }
-    }).eq('id', session.accountId)
-    await DELAY(2000)
-
-    // Navigate to feed to materialise any session cookies the fetch granted
-    await page.goto('https://www.linkedin.com/feed/', { waitUntil: 'domcontentloaded', timeout: 20_000 }).catch(() => {})
+    await page.waitForLoadState('domcontentloaded', { timeout: 20_000 }).catch(() => {})
     await DELAY(2000)
 
     await captureSnap('post-login')
 
     const url = page.url()
-    console.log('[LOGIN DEBUG] URL after login + feed nav:', url)
+    console.log('[LOGIN DEBUG] URL after submit:', url)
+
+    // Detect wrong credentials from page text
+    const bodyText = await page.evaluate(() => (document.body?.innerText ?? '').toLowerCase().substring(0, 600)).catch(() => '')
+    if (bodyText.includes('please enter a password') || bodyText.includes('wrong password')) {
+      session.status = 'error'
+      session.error  = 'Password field was empty on submit — keyboard.type may have been blocked.'
+      await browser.close()
+      return
+    }
 
     // Immediate success check
     if (!url.includes('/checkpoint') && !url.includes('/challenge') && !url.includes('verification') && !url.includes('/login')) {
@@ -552,15 +504,22 @@ async function runLogin(key: string, email: string, password: string): Promise<v
         return
       }
       session.status = 'error'
-      session.error  = `No li_at cookie on ${url}. fetchResult=${JSON.stringify(fetchResult).substring(0, 80)}`
+      session.error  = `No li_at cookie on ${url}.`
       await browser.close()
       return
     }
 
-    // Still on login page — credentials rejected or fetch failed
+    // Still on login page — credentials rejected or form empty
     if (url.includes('/login')) {
-      session.status = 'error'
-      session.error  = `Stayed on /login after fetch attempt. fetchResult=${JSON.stringify(fetchResult).substring(0, 100)}`
+      const loginText = await page.evaluate(() => (document.body?.innerText ?? '').substring(0, 400)).catch(() => '')
+      const lc = loginText.toLowerCase()
+      if (lc.includes('incorrect') || lc.includes('wrong') || lc.includes('please enter a password') || lc.includes('check your email')) {
+        session.status = 'error'
+        session.error  = 'Incorrect email or password.'
+      } else {
+        session.status = 'error'
+        session.error  = `Stayed on /login. Page text: ${loginText.substring(0, 150)}`
+      }
       await browser.close()
       return
     }
