@@ -22,7 +22,6 @@ import {
   type Proxy,
 } from '../api/proxies'
 import { fetchActivity, ACTION_LABELS, ACTION_COLORS } from '../api/activity'
-import { apiFetch } from '../lib/fetchJson'
 
 const STATUS_COLORS: Record<LinkedInAccount['status'], string> = {
   active:     'bg-green-100 text-green-700',
