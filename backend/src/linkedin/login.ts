@@ -590,6 +590,7 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     let loginResponseCookies: string[] = []
     let loginResponseStatus = 0
     let loginError = ''
+    let loginResponseBody = ''
 
     try {
       // context.request shares the browser context's cookies and IP (BrightData residential)
@@ -611,26 +612,12 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       loginResponseCookies = responseCookies.map(c => `${c.name}=${c.value}`)
 
       // Capture response body to see what LinkedIn returned
-      let responseBodyText = ''
       try {
-        responseBodyText = (await apiResponse.text()).substring(0, 500)
+        loginResponseBody = (await apiResponse.text()).substring(0, 500)
       } catch { /* ok */ }
 
       console.log('[LOGIN DEBUG] POST response status:', loginResponseStatus, 'finalUrl:', loginResponseUrl)
-      console.log('[LOGIN DEBUG] Response body preview:', responseBodyText.substring(0, 200))
-
-      await supabase.from('linkedin_accounts').update({
-        debug_log: {
-          label: 'playwright-post-result',
-          formAction,
-          loginResponseStatus,
-          loginResponseFinalUrl: loginResponseUrl,
-          responseBodyPreview: responseBodyText,
-          postFields: Object.keys(postFields),
-          cookieNames: responseCookies.map(c => c.name),
-          capturedAt: new Date().toISOString(),
-        }
-      }).eq('id', session.accountId)
+      console.log('[LOGIN DEBUG] Response body preview:', loginResponseBody.substring(0, 200))
 
     } catch (fetchErr) {
       loginError = String(fetchErr)
@@ -713,6 +700,7 @@ async function runLogin(key: string, email: string, password: string): Promise<v
         postStatus: loginResponseStatus,
         postLocation: loginResponseUrl,
         postCookies: loginResponseCookies.map(c => c.split(';')[0].substring(0, 50)),
+        postResponseBody: loginResponseBody,
         capturedAt: new Date().toISOString(),
       }
     }).eq('id', session.accountId)
