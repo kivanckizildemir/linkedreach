@@ -186,6 +186,7 @@ export async function createManualLead(lead: {
 export async function fetchLeads(params: {
   icp_flag?: string
   search?: string
+  source?: string
 } = {}): Promise<Lead[]> {
   let query = supabase
     .from('leads')
@@ -194,6 +195,9 @@ export async function fetchLeads(params: {
 
   if (params.icp_flag) {
     query = query.eq('icp_flag', params.icp_flag)
+  }
+  if (params.source) {
+    query = query.eq('source', params.source)
   }
   if (params.search) {
     const s = params.search

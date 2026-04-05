@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, type FormEvent } from 'react'
+import { useState, useRef, useEffect, useCallback, useMemo, type FormEvent } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { fetchLeads, requalifyLead, qualifyAllLeads, importLeads, startSalesNavImport, getScrapeStatus, fetchLeadNotes, addLeadNote, deleteLeadNote, personaliseOpeningLine, fetchLeadCampaigns, bulkDeleteLeads, createManualLead } from '../api/leads'
 import type { Lead, LeadNote, LeadCampaignMembership } from '../api/leads'
@@ -139,10 +139,15 @@ function BestFitCell({ lead, products }: { lead: Lead; products: ProductRef[] })
   )
 }
 
+type SortCol = 'name' | 'title' | 'company' | 'icp_score' | 'icp_flag' | 'source' | 'created_at'
+
 export function Leads() {
   const queryClient = useQueryClient()
   const [search, setSearch] = useState('')
   const [icpFlag, setIcpFlag] = useState('')
+  const [sourceFilter, setSourceFilter] = useState('')
+  const [sortCol, setSortCol] = useState<SortCol>('created_at')
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
   const [showImportModal, setShowImportModal] = useState(false)
   const [showCsvModal, setShowCsvModal] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
@@ -154,9 +159,14 @@ export function Leads() {
   const [detailLead, setDetailLead] = useState<Lead | null>(null)
   const [showManualAdd, setShowManualAdd] = useState(false)
 
+  function toggleSort(col: SortCol) {
+    if (sortCol === col) setSortDir(d => d === 'asc' ? 'desc' : 'asc')
+    else { setSortCol(col); setSortDir('asc') }
+  }
+
   const { data: leads = [], isLoading } = useQuery({
-    queryKey: ['leads', { search, icp_flag: icpFlag }],
-    queryFn: () => fetchLeads({ search: search || undefined, icp_flag: icpFlag || undefined }),
+    queryKey: ['leads', { search, icp_flag: icpFlag, source: sourceFilter }],
+    queryFn: () => fetchLeads({ search: search || undefined, icp_flag: icpFlag || undefined, source: sourceFilter || undefined }),
   })
 
   const requalifyMutation = useMutation({
@@ -184,6 +194,33 @@ export function Leads() {
 
   const unscoredCount = leads.filter(l => l.icp_score == null).length
 
+  const sortedLeads = useMemo(() => {
+    const arr = [...leads]
+    arr.sort((a, b) => {
+      let av: string | number = ''
+      let bv: string | number = ''
+      switch (sortCol) {
+        case 'name':      av = `${a.first_name} ${a.last_name}`.toLowerCase(); bv = `${b.first_name} ${b.last_name}`.toLowerCase(); break
+        case 'title':     av = (a.title ?? '').toLowerCase();   bv = (b.title ?? '').toLowerCase();   break
+        case 'company':   av = (a.company ?? '').toLowerCase(); bv = (b.company ?? '').toLowerCase(); break
+        case 'icp_score': av = a.icp_score ?? -1;               bv = b.icp_score ?? -1;               break
+        case 'icp_flag':  av = a.icp_flag ?? '';                bv = b.icp_flag ?? '';                break
+        case 'source':    av = a.source;                        bv = b.source;                        break
+        case 'created_at': av = a.created_at;                   bv = b.created_at;                    break
+      }
+      if (av < bv) return sortDir === 'asc' ? -1 : 1
+      if (av > bv) return sortDir === 'asc' ? 1 : -1
+      return 0
+    })
+    return arr
+  }, [leads, sortCol, sortDir])
+
+  // Returns a sort indicator span — closed over sortCol/sortDir
+  const sortArrow = (col: SortCol) =>
+    sortCol === col
+      ? <span className="text-blue-400 text-[9px]">{sortDir === 'asc' ? ' ▲' : ' ▼'}</span>
+      : <span className="opacity-20 text-[9px]"> ↕</span>
+
   const { data: labels = [] } = useQuery({
     queryKey: ['labels'],
     queryFn: fetchLabels,
@@ -202,6 +239,26 @@ export function Leads() {
       }
     }
   }, [allLeadLabels, queryClient])
+
+  // Real-time subscription — invalidate leads cache when rows change (score updates, new imports, etc.)
+  useEffect(() => {
+    let channel: ReturnType<typeof supabase.channel> | null = null
+    void supabase.auth.getUser().then(({ data }) => {
+      if (!data.user) return
+      channel = supabase
+        .channel('leads-realtime')
+        .on('postgres_changes', {
+          event: '*',
+          schema: 'public',
+          table: 'leads',
+          filter: `user_id=eq.${data.user.id}`,
+        }, () => {
+          void queryClient.invalidateQueries({ queryKey: ['leads'] })
+        })
+        .subscribe()
+    })
+    return () => { if (channel) void supabase.removeChannel(channel) }
+  }, [queryClient])
 
   const { data: campaigns = [] } = useQuery({
     queryKey: ['campaigns'],
@@ -332,6 +389,16 @@ export function Leads() {
           <option value="cold">❄️ Cold</option>
           <option value="disqualified">✗ Disqualified</option>
         </select>
+        <select
+          value={sourceFilter}
+          onChange={e => setSourceFilter(e.target.value)}
+          className="px-4 py-2 border border-gray-300 rounded-lg text-sm text-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
+        >
+          <option value="">All sources</option>
+          <option value="excel_import">Excel / CSV</option>
+          <option value="chrome_extension">Chrome Extension</option>
+          <option value="manual">Manual</option>
+        </select>
       </div>
 
       {/* Bulk action bar */}
@@ -384,14 +451,44 @@ export function Leads() {
                     className="rounded border-gray-300 text-blue-600"
                   />
                 </th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Title</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Company</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ICP Score</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Flag</th>
+                <th
+                  className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer select-none hover:bg-gray-100 transition-colors"
+                  onClick={() => toggleSort('name')}
+                >
+                  <span className="inline-flex items-center">Name{sortArrow('name')}</span>
+                </th>
+                <th
+                  className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer select-none hover:bg-gray-100 transition-colors"
+                  onClick={() => toggleSort('title')}
+                >
+                  <span className="inline-flex items-center">Title{sortArrow('title')}</span>
+                </th>
+                <th
+                  className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer select-none hover:bg-gray-100 transition-colors"
+                  onClick={() => toggleSort('company')}
+                >
+                  <span className="inline-flex items-center">Company{sortArrow('company')}</span>
+                </th>
+                <th
+                  className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer select-none hover:bg-gray-100 transition-colors"
+                  onClick={() => toggleSort('icp_score')}
+                >
+                  <span className="inline-flex items-center">ICP Score{sortArrow('icp_score')}</span>
+                </th>
+                <th
+                  className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer select-none hover:bg-gray-100 transition-colors"
+                  onClick={() => toggleSort('icp_flag')}
+                >
+                  <span className="inline-flex items-center">Flag{sortArrow('icp_flag')}</span>
+                </th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Best Fit</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Labels</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Source</th>
+                <th
+                  className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer select-none hover:bg-gray-100 transition-colors"
+                  onClick={() => toggleSort('source')}
+                >
+                  <span className="inline-flex items-center">Source{sortArrow('source')}</span>
+                </th>
                 <th className="px-4 py-3" />
               </tr>
             </thead>
@@ -407,7 +504,7 @@ export function Leads() {
                   </td>
                 </tr>
               ) : (
-                leads.map(lead => {
+                sortedLeads.map(lead => {
                   const isQueued = requalifyMutation.isPending && requalifyMutation.variables === lead.id
                   const reasoning = lead.raw_data?.ai_reasoning
                   const openingLine = lead.raw_data?.opening_line

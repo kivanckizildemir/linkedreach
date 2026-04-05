@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
@@ -1760,14 +1760,29 @@ const ICP_BADGE: Record<NonNullable<Lead['icp_flag']>, { bg: string; label: stri
   disqualified: { bg: 'bg-gray-100 text-gray-500',  label: '✗ DQ' },
 }
 
+type ClSortCol = 'name' | 'company' | 'icp_score' | 'status' | 'current_step'
+
 function CampaignLeadsTab({ campaignId }: { campaignId: string }) {
   const queryClient = useQueryClient()
   const [showAddModal, setShowAddModal] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [clSortCol, setClSortCol] = useState<ClSortCol>('name')
+  const [clSortDir, setClSortDir] = useState<'asc' | 'desc'>('asc')
+
+  function toggleClSort(col: ClSortCol) {
+    if (clSortCol === col) setClSortDir(d => d === 'asc' ? 'desc' : 'asc')
+    else { setClSortCol(col); setClSortDir('asc') }
+  }
+
+  const clSortArrow = (col: ClSortCol) =>
+    clSortCol === col
+      ? <span className="text-blue-400 text-[9px]">{clSortDir === 'asc' ? ' ▲' : ' ▼'}</span>
+      : <span className="opacity-20 text-[9px]"> ↕</span>
 
   const { data: campaignLeads = [], isLoading } = useQuery({
     queryKey: ['campaign-leads', campaignId],
     queryFn: () => fetchCampaignLeads(campaignId),
+    refetchInterval: 15_000,
   })
 
   // Fetch campaign to get selected product_id (same query key as FlowCanvas — served from cache)
@@ -1802,6 +1817,41 @@ function CampaignLeadsTab({ campaignId }: { campaignId: string }) {
       }
     },
   })
+
+  // Real-time: invalidate cache when campaign_leads rows change (status, step, reply updates)
+  useEffect(() => {
+    const channel = supabase
+      .channel(`cl-rt-${campaignId}`)
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'campaign_leads',
+        filter: `campaign_id=eq.${campaignId}`,
+      }, () => {
+        void queryClient.invalidateQueries({ queryKey: ['campaign-leads', campaignId] })
+      })
+      .subscribe()
+    return () => { void supabase.removeChannel(channel) }
+  }, [campaignId, queryClient])
+
+  const sortedCampaignLeads = useMemo(() => {
+    const arr = [...campaignLeads]
+    arr.sort((a, b) => {
+      let av: string | number = ''
+      let bv: string | number = ''
+      switch (clSortCol) {
+        case 'name':         av = `${a.lead.first_name} ${a.lead.last_name}`.toLowerCase(); bv = `${b.lead.first_name} ${b.lead.last_name}`.toLowerCase(); break
+        case 'company':      av = (a.lead.company ?? '').toLowerCase(); bv = (b.lead.company ?? '').toLowerCase(); break
+        case 'icp_score':    av = a.lead.icp_score ?? -1;               bv = b.lead.icp_score ?? -1;               break
+        case 'status':       av = a.status;                             bv = b.status;                             break
+        case 'current_step': av = a.current_step;                       bv = b.current_step;                       break
+      }
+      if (av < bv) return clSortDir === 'asc' ? -1 : 1
+      if (av > bv) return clSortDir === 'asc' ? 1 : -1
+      return 0
+    })
+    return arr
+  }, [campaignLeads, clSortCol, clSortDir])
 
   const allLeadIds = campaignLeads.map(cl => cl.lead.id)
   const allSelected = campaignLeads.length > 0 && selectedIds.size === campaignLeads.length
@@ -1871,18 +1921,45 @@ function CampaignLeadsTab({ campaignId }: { campaignId: string }) {
                     className="rounded border-gray-300 text-violet-600"
                   />
                 </th>
-                <th className="text-left px-4 py-3">Lead</th>
-                <th className="text-left px-4 py-3 hidden md:table-cell">Company</th>
-                <th className="text-left px-4 py-3 hidden lg:table-cell" title={campaignProduct?.name}>
-                  {campaignProduct ? campaignProduct.name.length > 12 ? campaignProduct.name.slice(0, 10) + '…' : campaignProduct.name : 'ICP'}
+                <th
+                  className="text-left px-4 py-3 cursor-pointer select-none hover:bg-gray-50 transition-colors"
+                  onClick={() => toggleClSort('name')}
+                >
+                  <span className="inline-flex items-center">Lead{clSortArrow('name')}</span>
                 </th>
-                <th className="text-left px-4 py-3">Status</th>
-                <th className="text-left px-4 py-3 hidden md:table-cell">Step</th>
+                <th
+                  className="text-left px-4 py-3 hidden md:table-cell cursor-pointer select-none hover:bg-gray-50 transition-colors"
+                  onClick={() => toggleClSort('company')}
+                >
+                  <span className="inline-flex items-center">Company{clSortArrow('company')}</span>
+                </th>
+                <th
+                  className="text-left px-4 py-3 hidden lg:table-cell cursor-pointer select-none hover:bg-gray-50 transition-colors"
+                  title={campaignProduct?.name}
+                  onClick={() => toggleClSort('icp_score')}
+                >
+                  <span className="inline-flex items-center">
+                    {campaignProduct ? campaignProduct.name.length > 12 ? campaignProduct.name.slice(0, 10) + '…' : campaignProduct.name : 'ICP'}
+                    {clSortArrow('icp_score')}
+                  </span>
+                </th>
+                <th
+                  className="text-left px-4 py-3 cursor-pointer select-none hover:bg-gray-50 transition-colors"
+                  onClick={() => toggleClSort('status')}
+                >
+                  <span className="inline-flex items-center">Status{clSortArrow('status')}</span>
+                </th>
+                <th
+                  className="text-left px-4 py-3 hidden md:table-cell cursor-pointer select-none hover:bg-gray-50 transition-colors"
+                  onClick={() => toggleClSort('current_step')}
+                >
+                  <span className="inline-flex items-center">Step{clSortArrow('current_step')}</span>
+                </th>
                 <th className="px-4 py-3" />
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
-              {campaignLeads.map(cl => (
+              {sortedCampaignLeads.map(cl => (
                 <tr key={cl.id} className={`hover:bg-gray-50 transition-colors ${selectedIds.has(cl.lead.id) ? 'bg-violet-50' : ''}`}>
                   <td className="px-4 py-3 w-8">
                     <input
