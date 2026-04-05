@@ -459,14 +459,40 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     await dismissBanners()
 
     // Extract CSRF token from the login page (needed for the POST)
-    const csrfToken = await page.evaluate(() => {
+    // Also collect all page diagnostic info
+    const loginPageDiag = await page.evaluate(() => {
+      // Try multiple CSRF token sources
       const csrfInput = document.querySelector('input[name="loginCsrfParam"]') as HTMLInputElement | null
-      if (csrfInput?.value) return csrfInput.value
-      // Fallback: JSESSIONID cookie (BrightData may expose this)
-      const m = document.cookie.match(/JSESSIONID="?([^";]+)"?/)
-      return m ? m[1] : ''
-    }).catch(() => '')
-    console.log('[LOGIN DEBUG] csrfToken len:', csrfToken.length)
+      const csrfMeta  = document.querySelector('meta[name="csrf-token"]') as HTMLMetaElement | null
+
+      // JSESSIONID is often used as CSRF by LinkedIn
+      const jsessionMatch = document.cookie.match(/JSESSIONID="?([^";]+)"?/)
+      const jsessionCsrf  = jsessionMatch ? jsessionMatch[1] : ''
+
+      // Find all hidden inputs
+      const hiddenInputs = Array.from(document.querySelectorAll('input[type="hidden"]'))
+        .map((el: Element) => { const i = el as HTMLInputElement; return `${i.name}=${i.value.substring(0, 30)}` })
+
+      // Find all form actions
+      const formActions = Array.from(document.querySelectorAll('form'))
+        .map((f: Element) => (f as HTMLFormElement).action)
+
+      return {
+        csrfFromInput:   csrfInput?.value ?? '',
+        csrfFromMeta:    csrfMeta?.content ?? '',
+        jsessionCsrf,
+        hiddenInputs,
+        formActions,
+        cookies:         document.cookie.substring(0, 200),
+      }
+    }).catch(() => ({ csrfFromInput: '', csrfFromMeta: '', jsessionCsrf: '', hiddenInputs: [], formActions: [], cookies: '' }))
+
+    console.log('[LOGIN DEBUG] loginPageDiag:', JSON.stringify(loginPageDiag))
+    await supabase.from('linkedin_accounts').update({
+      debug_log: { ...loginPageDiag, capturedAt: new Date().toISOString(), label: 'login-page-diag' }
+    }).eq('id', session.accountId)
+
+    const csrfToken = loginPageDiag.csrfFromInput || loginPageDiag.csrfFromMeta || loginPageDiag.jsessionCsrf
 
     // Submit credentials via fetch() — no password field interaction needed
     const fetchResult = await page.evaluate(async (args: { email: string; pass: string; csrf: string }) => {
@@ -487,13 +513,24 @@ async function runLogin(key: string, email: string, password: string): Promise<v
           redirect: 'follow',
         })
 
-        return { ok: res.ok, status: res.status, finalUrl: res.url, redirected: res.redirected }
+        // Try to get response body for debugging
+        const text = await res.text().catch(() => '')
+        return {
+          ok:           res.ok,
+          status:       res.status,
+          finalUrl:     res.url,
+          redirected:   res.redirected,
+          bodySnippet:  text.substring(0, 200),
+        }
       } catch (e2) {
         return { error: String(e2) }
       }
     }, { email, pass: password, csrf: csrfToken })
 
     console.log('[LOGIN DEBUG] fetchResult:', JSON.stringify(fetchResult))
+    await supabase.from('linkedin_accounts').update({
+      debug_log: { ...fetchResult, capturedAt: new Date().toISOString(), label: 'fetch-result' }
+    }).eq('id', session.accountId)
     await DELAY(2000)
 
     // Navigate to feed to materialise any session cookies the fetch granted
@@ -504,25 +541,6 @@ async function runLogin(key: string, email: string, password: string): Promise<v
 
     const url = page.url()
     console.log('[LOGIN DEBUG] URL after login + feed nav:', url)
-
-    // Check for inline error messages (wrong credentials)
-    const errorEl = await page.$('.alert-content, #error-for-password, .form__label--error').catch(() => null)
-    if (errorEl) {
-      const msg = (await errorEl.innerText().catch(() => '')).trim()
-      session.status = 'error'
-      session.error  = msg || 'Incorrect email or password.'
-      await browser.close()
-      return
-    }
-
-    // Also check page text for error indicators
-    const bodyText = await page.evaluate(() => (document.body?.innerText ?? '').toLowerCase().substring(0, 600)).catch(() => '')
-    if (bodyText.includes('incorrect') || bodyText.includes('wrong password') || bodyText.includes('please enter a password')) {
-      session.status = 'error'
-      session.error  = 'Incorrect email or password (text detected).'
-      await browser.close()
-      return
-    }
 
     // Immediate success check
     if (!url.includes('/checkpoint') && !url.includes('/challenge') && !url.includes('verification') && !url.includes('/login')) {
