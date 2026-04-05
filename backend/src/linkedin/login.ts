@@ -482,19 +482,21 @@ async function runLogin(key: string, email: string, password: string): Promise<v
         const form = (emailInput?.closest('form') ?? document.querySelector('form')) as HTMLFormElement | null
         const formAction = form?.action ?? ''
 
-        // Capture ALL current form inputs BEFORE any manipulation (diagnostic)
-        const allInputsBefore = form ? Array.from(form.querySelectorAll('input')).map((i: Element) => {
+        // Capture non-password form inputs BEFORE manipulation (diagnostic)
+        const allInputsBefore = form ? Array.from(form.querySelectorAll('input:not([type="password"])')).map((i: Element) => {
           const inp = i as HTMLInputElement
           return `${inp.name}(${inp.type})=${inp.disabled ? 'DISABLED' : inp.value.substring(0, 20)}`
         }) : []
 
         let passDisableError = ''
         let passFieldCount = 0
+        let passFieldName = ''
         if (form) {
           // Try to disable existing password fields — wrap in try/catch since BrightData may block
           try {
             const existingPassInputs = Array.from(form.querySelectorAll('input[type="password"]')) as HTMLInputElement[]
             passFieldCount = existingPassInputs.length
+            passFieldName  = existingPassInputs.map(i => i.name).join(',')
             existingPassInputs.forEach(inp => { inp.disabled = true })
           } catch (passErr) {
             passDisableError = String(passErr).substring(0, 100)
@@ -508,10 +510,9 @@ async function runLogin(key: string, email: string, password: string): Promise<v
           form.appendChild(hiddenPass)
         }
 
-        // Capture form inputs AFTER injection but BEFORE submit
-        const allInputsAfter = form ? Array.from(form.querySelectorAll('input')).map((i: Element) => {
+        // Capture non-password form inputs AFTER injection — should now include session_password(hidden)
+        const allInputsAfter = form ? Array.from(form.querySelectorAll('input:not([type="password"])')).map((i: Element) => {
           const inp = i as HTMLInputElement
-          // Skip type=password to avoid BrightData block in querySelectorAll below
           return `${inp.name}(${inp.type})=${inp.disabled ? 'DISABLED' : inp.value.substring(0, 20)}`
         }) : []
 
@@ -524,9 +525,10 @@ async function runLogin(key: string, email: string, password: string): Promise<v
           formAction,
           emailFound:      !!emailInput,
           emailVal:        emailInput?.value?.substring(0, 30) ?? '',
-          allInputsBefore: allInputsBefore.slice(0, 15),
-          allInputsAfter:  allInputsAfter.slice(0, 15),
+          allInputsBefore: allInputsBefore,
+          allInputsAfter:  allInputsAfter,
           passFieldCount,
+          passFieldName,
           passDisableError,
         }
       } catch (e2) {
@@ -551,8 +553,8 @@ async function runLogin(key: string, email: string, password: string): Promise<v
 
     // Build a diagnostic prefix from submitResult for error messages
     const submitDiag = typeof submitResult === 'object' && submitResult !== null
-      ? `emailFound=${(submitResult as Record<string,unknown>).emailFound} emailVal="${String((submitResult as Record<string,unknown>).emailVal).substring(0,25)}" formAction="${String((submitResult as Record<string,unknown>).formAction).substring(0,60)}" passFields=${(submitResult as Record<string,unknown>).passFieldCount} passErr="${String((submitResult as Record<string,unknown>).passDisableError).substring(0,60)}" before=${JSON.stringify((submitResult as Record<string,unknown>).allInputsBefore).substring(0,200)} after=${JSON.stringify((submitResult as Record<string,unknown>).allInputsAfter).substring(0,200)}`
-      : JSON.stringify(submitResult).substring(0, 200)
+      ? `emailFound=${(submitResult as Record<string,unknown>).emailFound} emailVal="${String((submitResult as Record<string,unknown>).emailVal).substring(0,25)}" formAction="${String((submitResult as Record<string,unknown>).formAction).substring(0,60)}" passFields=${(submitResult as Record<string,unknown>).passFieldCount} passFieldName="${(submitResult as Record<string,unknown>).passFieldName}" passErr="${String((submitResult as Record<string,unknown>).passDisableError).substring(0,60)}" after=${JSON.stringify((submitResult as Record<string,unknown>).allInputsAfter).substring(0,300)}`
+      : JSON.stringify(submitResult).substring(0, 300)
 
     // Detect wrong credentials from page text
     const bodyText = await page.evaluate(() => (document.body?.innerText ?? '').toLowerCase().substring(0, 600)).catch(() => '')
