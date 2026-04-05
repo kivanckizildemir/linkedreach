@@ -941,14 +941,15 @@ async function runLogin(key: string, email: string, password: string): Promise<v
           }
         }
 
-        // Every ~20s navigate to feed to force cookie issuance after push approval
-        if (pollCount % 10 === 0) {
+        // Every ~6s navigate to feed to detect cookie issuance after push approval.
+        // This is what makes auto-detection work without any user button click.
+        if (pollCount % 3 === 0) {
           try {
             await page.goto('https://www.linkedin.com/feed/', {
               waitUntil: 'domcontentloaded',
               timeout:   10_000,
             })
-            await DELAY(2_000)
+            await DELAY(1_500)
             const feedCookies = await context.cookies()
             if (feedCookies.find(c => c.name === 'li_at')) {
               await saveCookies(context, session.accountId)
@@ -956,7 +957,7 @@ async function runLogin(key: string, email: string, password: string): Promise<v
               await browser.close()
               return
             }
-            // If redirected away from feed, go back to the original challenge page
+            // If redirected back to login/challenge, return to challenge page
             const feedUrl = page.url()
             if (feedUrl.includes('login') || feedUrl.includes('challenge') || feedUrl.includes('checkpoint') || feedUrl.includes('not-found') || feedUrl.includes('404')) {
               await page.goto(challengeUrl, {

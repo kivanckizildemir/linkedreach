@@ -8,7 +8,6 @@ import {
   deleteAccount,
   connectAccount,
   getConnectStatus,
-  checkPushApproval,
   verifyConnectCode,
   type LinkedInAccount,
 } from '../api/accounts'
@@ -803,7 +802,6 @@ function ConnectModal({
   const [cookieSaving, setCookieSaving] = useState(false)
   const [snippetCopied, setSnippetCopied] = useState(false)
 
-  const [checking, setChecking]   = useState(false)
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -854,11 +852,6 @@ function ConnectModal({
       try { await handleStatusResult(await getConnectStatus(accountId, key)) }
       catch { /* network blip */ }
     }, 2000)
-  }
-
-  async function handleCheckNow() {
-    try { await handleStatusResult(await checkPushApproval(accountId, sessionKey)) }
-    catch { /* ignore */ }
   }
 
   async function handleSignIn(e: React.FormEvent) {
@@ -1102,44 +1095,33 @@ function ConnectModal({
           {/* ── Push notification waiting ── */}
           {(method === 'infinite' || method === 'credentials') && step === 'push' && (
             <div className="space-y-4">
-              <div className={`border rounded-xl px-4 py-4 ${hint.toLowerCase().includes('security') || hint.toLowerCase().includes('verif') ? 'bg-amber-50 border-amber-200' : 'bg-blue-50 border-blue-200'}`}>
-                <div className="flex items-center gap-2 mb-1">
-                  <svg className="w-4 h-4 animate-spin flex-shrink-0 text-blue-500" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-                  </svg>
-                  <p className="text-sm font-semibold text-gray-900">Waiting for approval…</p>
-                </div>
-                {hint && hint !== 'Signing in to LinkedIn…' && (
-                  <p className="text-xs text-gray-600 ml-6">{hint}</p>
-                )}
-              </div>
-              <p className="text-xs text-gray-500 text-center">
-                Check your phone for a LinkedIn push notification and tap <strong>Yes, it's me</strong>.
-              </p>
-              <button
-                type="button"
-                disabled={checking}
-                onClick={async () => { setChecking(true); try { await handleCheckNow() } finally { setChecking(false) } }}
-                className="w-full py-2.5 bg-green-600 text-white text-sm font-semibold rounded-xl hover:bg-green-700 disabled:opacity-60 transition-colors flex items-center justify-center gap-2"
-              >
-                {checking ? (
-                  <>
-                    <svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+              <div className="flex flex-col items-center gap-4 py-6">
+                <div className="relative">
+                  <div className="w-16 h-16 rounded-full bg-blue-50 flex items-center justify-center">
+                    <svg className="w-8 h-8 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z" />
+                    </svg>
+                  </div>
+                  <div className="absolute -top-1 -right-1 w-5 h-5 bg-blue-500 rounded-full flex items-center justify-center">
+                    <svg className="w-3 h-3 animate-spin text-white" fill="none" viewBox="0 0 24 24">
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
                     </svg>
-                    Checking…
-                  </>
-                ) : (
-                  <>
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
-                    </svg>
-                    I approved it — check now
-                  </>
-                )}
-              </button>
+                  </div>
+                </div>
+                <div className="text-center">
+                  <p className="text-sm font-semibold text-gray-900">Check your phone</p>
+                  <p className="text-xs text-gray-500 mt-1">
+                    Tap <strong>Yes, it's me</strong> on the LinkedIn notification.<br/>
+                    We'll detect your approval automatically.
+                  </p>
+                </div>
+              </div>
+              {hint && hint !== 'Signing in to LinkedIn…' && (
+                <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3">
+                  <p className="text-xs text-blue-800">{hint}</p>
+                </div>
+              )}
               <button type="button" onClick={() => { stopPolling(); setStep('form') }}
                 className="w-full py-2 border border-gray-200 text-sm text-gray-500 rounded-lg hover:bg-gray-50 transition-colors">
                 Cancel
