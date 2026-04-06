@@ -283,11 +283,13 @@ async function resolveProxy(accountId: string): Promise<
       .eq('id', account.proxy_id)
       .single()
     if (proxy) {
-      const url = new URL((proxy as { proxy_url: string }).proxy_url)
+      const raw = (proxy as { proxy_url: string }).proxy_url
+      const normalized = /^https?:\/\//i.test(raw) ? raw : `http://${raw}`
+      const url = new URL(normalized)
       return {
         server:   `${url.protocol}//${url.host}`,
-        username: url.username || undefined,
-        password: url.password || undefined,
+        username: decodeURIComponent(url.username) || undefined,
+        password: decodeURIComponent(url.password) || undefined,
       }
     }
   }
@@ -381,6 +383,7 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     } else {
       // ── Strategy 2: Local Chromium launch with proxy (dev / fallback) ─────
       const proxy = await resolveProxy(session.accountId)
+      console.log('[login] resolvedProxy:', proxy ? `server=${proxy.server} user=${proxy.username}` : 'none')
 
       // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
       browser = await chromium.launch({

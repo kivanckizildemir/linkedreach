@@ -73,14 +73,15 @@ proxiesRouter.post('/', async (req: Request, res: Response) => {
 
   if (!proxy_url) { res.status(400).json({ error: 'proxy_url is required' }); return }
 
-  try { new URL(proxy_url) } catch {
-    res.status(400).json({ error: 'Invalid proxy URL. Format: protocol://user:pass@host:port' })
+  const normalizedUrl = /^https?:\/\//i.test(proxy_url) ? proxy_url : `http://${proxy_url}`
+  try { new URL(normalizedUrl) } catch {
+    res.status(400).json({ error: 'Invalid proxy URL. Format: user:pass@host:port or http://user:pass@host:port' })
     return
   }
 
   const { data, error } = await supabase
     .from('proxies')
-    .insert({ proxy_url, label: label?.trim() || null, user_id: req.user.id, is_available: true })
+    .insert({ proxy_url: normalizedUrl, label: label?.trim() || null, user_id: req.user.id, is_available: true })
     .select('id, label, proxy_url, assigned_account_id, is_available, created_at')
     .single()
 
