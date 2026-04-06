@@ -3,12 +3,12 @@
  * Makes direct HTTP requests with the session cookie — no browser, no detection.
  */
 
-import { HttpsProxyAgent } from 'https-proxy-agent'
+import { ProxyAgent } from 'undici'
 import { supabase } from '../lib/supabase'
 import { extractCookies } from './session'
 
 /** Build a proxy agent for outbound HTTP requests if a static proxy is configured. */
-function getProxyAgent(): HttpsProxyAgent<string> | undefined {
+function getProxyAgent(): ProxyAgent | undefined {
   if (process.env.DISABLE_PROXY === 'true') return undefined
   const host = process.env.PROXY_HOST
   const port = process.env.PROXY_PORT ?? '10000'
@@ -18,11 +18,11 @@ function getProxyAgent(): HttpsProxyAgent<string> | undefined {
     const url = pass
       ? `http://${encodeURIComponent(user)}:${encodeURIComponent(pass)}@${host}:${port}`
       : `http://${encodeURIComponent(user)}@${host}:${port}`
-    return new HttpsProxyAgent(url)
+    return new ProxyAgent(url)
   }
   // Fallback: BrightData env var
   const bdUrl = process.env.BRIGHTDATA_PROXY_URL
-  if (bdUrl) return new HttpsProxyAgent(bdUrl)
+  if (bdUrl) return new ProxyAgent(bdUrl)
   return undefined
 }
 
@@ -239,8 +239,7 @@ export async function scrapeSalesNavSearchApi(
     const agent = getProxyAgent()
     let res: Response
     try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      res = await fetch(apiUrl, { headers, ...(agent ? { dispatcher: agent as any } : {}) })
+      res = await fetch(apiUrl, { headers, ...(agent ? { dispatcher: agent } : {}) } as RequestInit)
     } catch (fetchErr: unknown) {
       const cause = (fetchErr as { cause?: unknown }).cause
       throw new Error(`Network error fetching LinkedIn API: ${(fetchErr as Error).message} — cause: ${JSON.stringify(cause)}`)
