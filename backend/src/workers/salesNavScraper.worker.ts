@@ -39,26 +39,15 @@ export const salesNavScraperWorker = new Worker<SalesNavJob>(
     await job.updateProgress(5)
 
     // ── Primary path: direct HTTP API (no browser, works from any IP) ──────────
-    let leads: ScrapedLead[] = []
-    try {
-      leads = await scrapeSalesNavSearchApi(
-        account_id,
-        search_url,
-        max_leads,
-        async (scraped) => {
-          await job.updateProgress(Math.round(5 + (scraped / max_leads) * 80))
-        }
-      )
-      console.log(`[sales-nav] HTTP API scraped ${leads.length} leads for user ${user_id}`)
-    } catch (apiErr) {
-      const msg = (apiErr as Error).message
-      // Auth errors are fatal — surface them immediately
-      if (msg.includes('401') || msg.includes('403') || msg.includes('Session expired') || msg.includes('unauthorized')) {
-        throw new Error(`LinkedIn session expired for account ${account_id}. Please reconnect from the Accounts page.`)
+    const leads: ScrapedLead[] = await scrapeSalesNavSearchApi(
+      account_id,
+      search_url,
+      max_leads,
+      async (scraped) => {
+        await job.updateProgress(Math.round(5 + (scraped / max_leads) * 80))
       }
-      // Other errors (network, parsing): log and continue with 0 results
-      console.error(`[sales-nav] HTTP API failed (non-auth): ${msg}`)
-    }
+    )
+    console.log(`[sales-nav] HTTP API scraped ${leads.length} leads for user ${user_id}`)
 
     await job.updateProgress(85)
 

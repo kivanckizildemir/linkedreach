@@ -38,47 +38,111 @@ function buildHeaders(cookieHeader: string, csrfToken: string) {
   }
 }
 
+// LinkedIn Sales API returns different field shapes depending on the
+// decorationId / endpoint version. We handle all known variants here.
 interface SalesNavApiLead {
+  // Name — new API uses split fields; older uses fullName or leadName
   firstName?: string
   lastName?: string
-  title?: string
-  currentPositions?: Array<{ companyName?: string }>
+  fullName?: string
+  leadName?: { text?: string }
+  // Title
+  title?: string | { text?: string }
+  titleText?: string
+  // Company
+  currentPositions?: Array<{ companyName?: string; name?: string }>
+  companyName?: string
+  company?: { name?: string }
+  // Location
   geoRegion?: string
+  location?: { text?: string }
+  // Degree
+  degree?: number
+  memberBadges?: { degree?: number }
+  // Profile URL / URN (try all known variants)
+  publicProfileUrl?: string
+  profileUrl?: string
   memberUrn?: string
   linkedinMemberUrn?: string
-  degree?: number
-  publicProfileUrl?: string
+  entityUrn?: string
+  objectUrn?: string
+  profileUrn?: string
 }
 
 interface SalesNavApiResponse {
-  elements?: SalesNavApiLead[]
-  paging?: { count: number; start: number; total: number }
+  elements?:    SalesNavApiLead[]
+  results?:     SalesNavApiLead[]
+  leadResults?: SalesNavApiLead[]
+  paging?:      { count: number; start: number; total: number }
+  total?:       number
 }
 
-function mapLead(raw: SalesNavApiLead): ScrapedLead | null {
-  const firstName = raw.firstName?.trim() ?? ''
-  const lastName = raw.lastName?.trim() ?? ''
+function mapLead(raw: SalesNavApiLead, searchUrl: string): ScrapedLead | null {
+  // ── Resolve name ────────────────────────────────────────────────────────────
+  let firstName = raw.firstName?.trim() ?? ''
+  let lastName  = raw.lastName?.trim()  ?? ''
+
+  if (!firstName && !lastName) {
+    const full = (raw.fullName ?? raw.leadName?.text ?? '').trim()
+    if (!full) return null
+    const parts = full.split(' ')
+    firstName = parts[0] ?? ''
+    lastName  = parts.slice(1).join(' ')
+  }
+
   if (!firstName && !lastName) return null
 
-  // Extract LinkedIn profile URL from URN
-  let linkedinUrl = raw.publicProfileUrl ?? ''
-  if (!linkedinUrl && raw.linkedinMemberUrn) {
-    const id = raw.linkedinMemberUrn.split(':').pop()
-    linkedinUrl = id ? `https://www.linkedin.com/in/${id}/` : ''
-  }
-  if (!linkedinUrl) return null
+  // ── Resolve title ────────────────────────────────────────────────────────────
+  let title: string | null = null
+  if (typeof raw.title === 'string')       title = raw.title || null
+  else if (raw.title?.text)                title = raw.title.text || null
+  else if (raw.titleText)                  title = raw.titleText || null
 
-  const company = raw.currentPositions?.[0]?.companyName ?? null
+  // ── Resolve company ──────────────────────────────────────────────────────────
+  const company =
+    raw.currentPositions?.[0]?.companyName ??
+    raw.currentPositions?.[0]?.name ??
+    raw.companyName ??
+    raw.company?.name ??
+    null
 
-  return {
-    first_name: firstName,
-    last_name: lastName,
-    title: raw.title ?? null,
-    company,
-    location: raw.geoRegion ?? null,
-    linkedin_url: linkedinUrl,
-    connection_degree: raw.degree ?? null,
+  // ── Resolve location ─────────────────────────────────────────────────────────
+  const location =
+    (typeof raw.location === 'object' ? raw.location?.text : null) ??
+    raw.geoRegion ??
+    null
+
+  // ── Resolve degree ───────────────────────────────────────────────────────────
+  const connection_degree = raw.degree ?? raw.memberBadges?.degree ?? null
+
+  // ── Resolve LinkedIn profile URL ─────────────────────────────────────────────
+  let linkedin_url =
+    raw.publicProfileUrl ??
+    raw.profileUrl ??
+    ''
+
+  if (!linkedin_url) {
+    // Try to build from any URN variant
+    const urn =
+      raw.linkedinMemberUrn ??
+      raw.memberUrn ??
+      raw.entityUrn ??
+      raw.objectUrn ??
+      raw.profileUrn ??
+      ''
+    const memberId = urn.split(':').pop()
+    if (memberId) {
+      // entityUrn from Sales Nav contains the sales lead path
+      linkedin_url = urn.includes('salesMember') || urn.includes('lead')
+        ? `https://www.linkedin.com/sales/lead/${memberId},NAME_SEARCH/`
+        : `https://www.linkedin.com/in/${memberId}/`
+    }
   }
+
+  // Last resort: use the search URL as a placeholder so the lead isn't silently dropped
+  if (!linkedin_url) linkedin_url = searchUrl
+
+  return { first_name: firstName, last_name: lastName, title, company, location, linkedin_url, connection_degree }
 }
 
 export async function scrapeSalesNavSearchApi(
@@ -114,9 +178,14 @@ export async function scrapeSalesNavSearchApi(
   const headers = buildHeaders(cookieHeader, jsessionId)
 
   // Parse saved search ID or query from URL
+  // Strip sessionId — it is tied to the original browser session and will cause
+  // 400 errors when replayed from a different context.
   const url = new URL(searchUrl)
+  url.searchParams.delete('sessionId')
   const savedSearchId = url.searchParams.get('savedSearchId')
-  const query = url.searchParams.get('query')
+  // The `query` param in Sales Nav URLs is an encoded filter string like
+  // "(spRegion:(included:List(...)))".  We pass it verbatim to the API.
+  const queryParam = url.searchParams.get('query')
 
   const leads: ScrapedLead[] = []
   const pageSize = 25
@@ -126,15 +195,29 @@ export async function scrapeSalesNavSearchApi(
     let apiUrl: string
 
     if (savedSearchId) {
-      apiUrl = `https://www.linkedin.com/sales-api/salesApiLeadSearch?q=savedSearch&savedSearchId=${savedSearchId}&count=${pageSize}&start=${start}&decorationId=com.linkedin.sales.deco.desktop.searchv2.LeadSearchResultV2-6`
-    } else if (query) {
-      apiUrl = `https://www.linkedin.com/sales-api/salesApiLeadSearch?q=searchQuery&query=${encodeURIComponent(query)}&count=${pageSize}&start=${start}&decorationId=com.linkedin.sales.deco.desktop.searchv2.LeadSearchResultV2-6`
+      // Saved-search endpoint
+      apiUrl =
+        `https://www.linkedin.com/sales-api/salesApiLeadSearch` +
+        `?q=savedSearch&savedSearchId=${encodeURIComponent(savedSearchId)}` +
+        `&count=${pageSize}&start=${start}` +
+        `&decorationId=com.linkedin.sales.deco.desktop.searchv2.LeadSearchResultV2-6`
+    } else if (queryParam) {
+      // Live search — pass the entire query string as-is (already URI-encoded by
+      // url.searchParams, so we retrieve the raw encoded value)
+      const rawQuery = url.searchParams.get('query') ?? ''
+      apiUrl =
+        `https://www.linkedin.com/sales-api/salesApiLeadSearch` +
+        `?q=searchQuery&query=${encodeURIComponent(rawQuery)}` +
+        `&count=${pageSize}&start=${start}` +
+        `&decorationId=com.linkedin.sales.deco.desktop.searchv2.LeadSearchResultV2-6`
     } else {
-      // Fallback: use the raw URL params
-      apiUrl = `https://www.linkedin.com/sales-api/salesApiLeadSearch?count=${pageSize}&start=${start}&${url.searchParams.toString()}`
+      // Fallback: forward all URL params minus sessionId
+      url.searchParams.set('count', String(pageSize))
+      url.searchParams.set('start', String(start))
+      apiUrl = `https://www.linkedin.com/sales-api/salesApiLeadSearch?${url.searchParams.toString()}`
     }
 
-    console.log(`[sales-nav-api] Fetching page start=${start}: ${apiUrl}`)
+    console.log(`[sales-nav-api] Fetching page start=${start}: ${apiUrl.substring(0, 160)}`)
 
     let res: Response
     try {
@@ -149,36 +232,43 @@ export async function scrapeSalesNavSearchApi(
     if (res.status === 401 || res.status === 403) {
       const body = await res.text()
       console.error(`[sales-nav-api] Auth error ${res.status}: ${body.slice(0, 500)}`)
-      throw new Error(`Session expired or unauthorized (${res.status}). Please refresh your LinkedIn session cookie.`)
+      throw new Error(
+        `LinkedIn session expired or unauthorized (HTTP ${res.status}). ` +
+        `Please reconnect from the Accounts page.`
+      )
     }
 
     if (!res.ok) {
       const body = await res.text()
-      console.error(`[sales-nav-api] API error ${res.status}: ${body.slice(0, 300)}`)
-      break
+      console.error(`[sales-nav-api] API error ${res.status}: ${body.slice(0, 500)}`)
+      throw new Error(
+        `LinkedIn Sales API returned HTTP ${res.status}: ${body.slice(0, 200)}`
+      )
     }
 
     const data = await res.json() as SalesNavApiResponse
-    const elements = data.elements ?? []
+    const items = data.elements ?? data.results ?? data.leadResults ?? []
 
-    if (elements.length === 0) break
+    console.log(`[sales-nav-api] Page start=${start}: ${items.length} elements, total=${data.paging?.total ?? data.total ?? '?'}`)
 
-    for (const el of elements) {
+    if (items.length === 0) break
+
+    for (const el of items) {
       if (leads.length >= maxLeads) break
-      const lead = mapLead(el)
+      const lead = mapLead(el, searchUrl)
       if (lead) {
         leads.push(lead)
         onProgress?.(leads.length)
       }
     }
 
-    const total = data.paging?.total ?? 0
+    const total = data.paging?.total ?? data.total ?? 0
     start += pageSize
 
     if (start >= total || start >= maxLeads) break
 
     // Polite delay between pages
-    await new Promise(r => setTimeout(r, 1000 + Math.random() * 500))
+    await new Promise(r => setTimeout(r, 1200 + Math.random() * 800))
   }
 
   return leads
