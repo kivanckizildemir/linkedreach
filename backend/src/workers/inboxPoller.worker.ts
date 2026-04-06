@@ -14,6 +14,7 @@ import { supabase } from '../lib/supabase'
 import { createSession, closeSession, persistCookies, safeNavigate } from '../linkedin/session'
 import { detectAndHandleChallenge } from '../linkedin/session'
 import { classifyReply } from '../ai/classify'
+import { sendReplyNotification } from '../lib/email'
 
 interface Account {
   id: string
@@ -137,23 +138,59 @@ async function pollAccountInbox(account: Account): Promise<void> {
         }))
       )
 
-      // Classify the latest received message if not yet classified
+      // Classify + notify for new received messages
       const receivedMessages = newMessages.filter(m => m.direction === 'received')
-      if (receivedMessages.length > 0 && cl.reply_classification === 'none') {
+      if (receivedMessages.length > 0) {
         const latest = receivedMessages[receivedMessages.length - 1]
-        try {
-          const { classification } = await classifyReply(latest.content)
-          await supabase
-            .from('campaign_leads')
-            .update({
-              reply_classification: classification,
-              status: 'replied',
-            })
-            .eq('id', cl.id)
 
-          console.log(`[inbox] Lead ${leadId} classified as: ${classification}`)
+        // Classify if not yet done
+        if (cl.reply_classification === 'none') {
+          try {
+            const { classification } = await classifyReply(latest.content)
+            await supabase
+              .from('campaign_leads')
+              .update({ reply_classification: classification, status: 'replied' })
+              .eq('id', cl.id)
+            console.log(`[inbox] Lead ${leadId} classified as: ${classification}`)
+          } catch (err) {
+            console.error(`[inbox] Classification failed for lead ${leadId}:`, err)
+          }
+        }
+
+        // Send email notification to the account owner
+        try {
+          // Get lead name + campaign info + user email
+          const { data: leadRow } = await supabase
+            .from('leads')
+            .select('first_name, last_name, linkedin_url')
+            .eq('id', leadId)
+            .single()
+
+          const { data: clRow } = await supabase
+            .from('campaign_leads')
+            .select('campaigns(name, user_id)')
+            .eq('id', cl.id)
+            .single()
+
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const campaign = (clRow as any)?.campaigns
+          if (campaign?.user_id && leadRow) {
+            const { data: { user } } = await supabase.auth.admin.getUserById(campaign.user_id)
+            if (user?.email) {
+              const leadName = [leadRow.first_name, leadRow.last_name].filter(Boolean).join(' ') || 'Your lead'
+              await sendReplyNotification({
+                toEmail: user.email,
+                leadName,
+                leadLinkedinUrl: leadRow.linkedin_url ?? snippet.profileUrl,
+                messageSnippet: latest.content,
+                campaignName: campaign.name ?? 'Campaign',
+              })
+              console.log(`[inbox] Notification sent to ${user.email} for lead ${leadId}`)
+            }
+          }
         } catch (err) {
-          console.error(`[inbox] Classification failed for lead ${leadId}:`, err)
+          // Notification failures must never crash the poller
+          console.error(`[inbox] Notification failed for lead ${leadId}:`, err)
         }
       }
     }
