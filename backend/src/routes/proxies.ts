@@ -23,7 +23,9 @@ function maskUrl(raw: string): string {
  * Test a proxy by making a real HTTP request through it.
  * Uses the same HttpsProxyAgent approach as the rest of the app.
  */
-async function testProxyUrl(proxyUrl: string): Promise<{ ok: boolean; result: string }> {
+async function testProxyUrl(rawUrl: string): Promise<{ ok: boolean; result: string }> {
+  // Auto-prepend http:// if no scheme given
+  const proxyUrl = /^https?:\/\//i.test(rawUrl) ? rawUrl : `http://${rawUrl}`
   try {
     new URL(proxyUrl)
   } catch (e) {
@@ -42,7 +44,9 @@ async function testProxyUrl(proxyUrl: string): Promise<{ ok: boolean; result: st
     }
     return { ok: false, result: `HTTP ${res.status} from proxy` }
   } catch (e) {
-    return { ok: false, result: `PROXY_ERROR: ${(e as Error).message}` }
+    const err = e as Error & { cause?: unknown }
+    const cause = err.cause instanceof Error ? err.cause.message : JSON.stringify(err.cause ?? '')
+    return { ok: false, result: `PROXY_ERROR: ${err.message} — ${cause}` }
   }
 }
 
