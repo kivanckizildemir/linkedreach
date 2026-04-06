@@ -238,19 +238,16 @@ async function resolveBrowserEndpoint(accountId: string): Promise<string | null>
     const country = (account as { proxy_country?: string } | null)?.proxy_country
     const url = new URL(browserUrl)
 
-    // Build targeting suffix for BrightData username:
-    //   -country-XX   → residential IP from that country
-    //   -session-XXXX → unique session ID forces a fresh IP assignment
-    //                   (avoids reusing an IP that LinkedIn has rate-limited)
-    let targeting = ''
-    if (country) targeting += `-country-${country.toLowerCase()}`
-    // Always append a fresh random session ID so each login attempt gets a new residential IP
-    targeting += `-session-${Math.random().toString(36).slice(2, 10)}`
+    // BrightData Scraping Browser: each new connectOverCDP() call automatically
+    // gets a fresh browser session on a new residential IP — no session ID needed.
+    // Country targeting (-country-XX) can be appended to the username to prefer
+    // IPs from a specific country (set proxy_country on the account to enable).
+    if (country) {
+      const baseUser = decodeURIComponent(url.username)
+      url.username = encodeURIComponent(`${baseUser}-country-${country.toLowerCase()}`)
+      console.log(`[LOGIN DEBUG] BrightData country targeting: ${country}`)
+    }
 
-    const baseUser = decodeURIComponent(url.username)
-    url.username = encodeURIComponent(`${baseUser}${targeting}`)
-
-    console.log(`[LOGIN DEBUG] BrightData endpoint targeting: ${targeting}`)
     return url.toString()
   } catch {
     return null
@@ -427,11 +424,27 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     // as a security measure. We use page.evaluate() with the native value setter instead.
     const usingCDP = !!browserEndpoint
 
-    // Navigate to login — force English locale to bypass language selection pages
-    // on country-specific subdomains (e.g. pe.linkedin.com from Peruvian residential IPs).
-    // Use load (all resources) so the React SPA has time to hydrate and render form inputs.
-    await page.goto('https://www.linkedin.com/login?_l=en_US', { waitUntil: 'load', timeout: 45_000 })
+    // Navigate to LinkedIn login.
+    // Strategy: go to the plain /login first, then force English if needed.
+    // DO NOT add ?_l=en_US on the first load — on some BrightData residential IPs
+    // LinkedIn returns 404 for /login?_l=en_US (regional subdomains don't accept it).
+    await page.goto('https://www.linkedin.com/login', { waitUntil: 'domcontentloaded', timeout: 45_000 })
     await DELAY(2000 + Math.random() * 500)
+
+    // If we got a 404 or "page not found" from LinkedIn (bot-detection or regional issue),
+    // try the global login URL with explicit locale as fallback.
+    const afterGotoUrl = page.url()
+    const afterGotoText = await page.evaluate(() => (document.body?.innerText ?? '').substring(0, 500)).catch(() => '')
+    const is404 = afterGotoText.toLowerCase().includes('page not found') ||
+      afterGotoText.toLowerCase().includes('this page doesn') ||
+      afterGotoText.toLowerCase().includes("uh oh") ||
+      afterGotoText.toLowerCase().includes('not found') ||
+      afterGotoUrl.startsWith('chrome-error://')
+    if (is404) {
+      console.log('[LOGIN DEBUG] LinkedIn returned 404/not-found — retrying with global login URL')
+      await page.goto('https://www.linkedin.com/uas/login', { waitUntil: 'domcontentloaded', timeout: 30_000 })
+      await DELAY(2000)
+    }
 
     // ── Snapshot immediately after first navigation ───────────────────────────
     // Writes to Supabase so it survives across Railway instances and restarts.
@@ -514,14 +527,14 @@ async function runLogin(key: string, email: string, password: string): Promise<v
         })
       if (englishLink) await DELAY(1500)
       // Navigate directly to English login regardless
-      await page.goto('https://www.linkedin.com/login?_l=en_US', { waitUntil: 'load', timeout: 45_000 })
+      await page.goto('https://www.linkedin.com/login', { waitUntil: 'domcontentloaded', timeout: 45_000 })
       await DELAY(2000)
     }
 
     // If redirected away from login (e.g. already-logged-in BrightData session), navigate back
-    if (!page.url().includes('/login')) {
+    if (!page.url().includes('/login') && !page.url().includes('/uas/login')) {
       console.log(`[LOGIN DEBUG] redirected to ${page.url()} — navigating back to /login`)
-      await page.goto('https://www.linkedin.com/login?_l=en_US', { waitUntil: 'load', timeout: 45_000 })
+      await page.goto('https://www.linkedin.com/login', { waitUntil: 'domcontentloaded', timeout: 45_000 })
       await DELAY(2000)
     }
 
@@ -1523,7 +1536,7 @@ async function runManualSession(key: string): Promise<void> {
     session.context = context
     session.page    = page
 
-    await page.goto('https://www.linkedin.com/login?_l=en_US', { waitUntil: 'load', timeout: 45_000 })
+    await page.goto('https://www.linkedin.com/login', { waitUntil: 'domcontentloaded', timeout: 45_000 })
     await DELAY(1_500)
 
     session.status = 'pending_push'  // repurpose: means "browser is open, waiting for user"
