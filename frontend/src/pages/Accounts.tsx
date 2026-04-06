@@ -985,16 +985,39 @@ function ConnectModal({
   async function handleCookieSave() {
     const val = cookieVal.trim()
     if (!val || val === 'not found') {
-      setCookieError('Paste the cookie value — it should be a long string of letters and numbers.')
+      setCookieError('Paste the li_at cookie value or the contents of your linkedin_session.json file.')
       return
     }
     setCookieSaving(true); setCookieError('')
     try {
-      const cookies = JSON.stringify([{
-        name: 'li_at', value: val,
-        domain: '.linkedin.com', path: '/',
-        httpOnly: true, secure: true, sameSite: 'None', expires: -1,
-      }])
+      let cookies: string
+      // Auto-detect: if the pasted value looks like JSON, treat it as a Playwright storage_state
+      // (object with a "cookies" array) or a raw cookie array. Otherwise treat as a plain li_at value.
+      if (val.startsWith('{') || val.startsWith('[')) {
+        let parsed: unknown
+        try { parsed = JSON.parse(val) } catch {
+          setCookieError('Invalid JSON — paste the full contents of linkedin_session.json or a plain li_at value.')
+          setCookieSaving(false); return
+        }
+        // storage_state format: { cookies: [...], origins: [...] }
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && 'cookies' in parsed) {
+          const state = parsed as { cookies: unknown[] }
+          cookies = JSON.stringify(state.cookies)
+        } else if (Array.isArray(parsed)) {
+          // Raw cookie array
+          cookies = JSON.stringify(parsed)
+        } else {
+          setCookieError('Unrecognised JSON format. Expected a Playwright storage_state object or cookie array.')
+          setCookieSaving(false); return
+        }
+      } else {
+        // Plain li_at value
+        cookies = JSON.stringify([{
+          name: 'li_at', value: val,
+          domain: '.linkedin.com', path: '/',
+          httpOnly: true, secure: true, sameSite: 'None', expires: -1,
+        }])
+      }
       await updateAccount(accountId, { cookies, status: 'active' } as Parameters<typeof updateAccount>[1])
       onSaved()
     } catch (err) {
@@ -1408,20 +1431,25 @@ function ConnectModal({
                   {cookieStep === 'paste' ? '✓' : '2'}
                 </div>
                 <div className="flex-1">
-                  <p className="text-sm font-medium text-gray-900">Copy your session cookie</p>
-                  <p className="text-xs text-gray-500 mt-0.5">Press <kbd className="px-1 py-0.5 bg-gray-100 rounded text-[10px] font-mono">F12</kbd> → Console → paste this and press Enter:</p>
-                  <div className="mt-2 bg-gray-900 rounded-lg px-3.5 py-2.5 flex items-center gap-2">
-                    <code className="text-green-400 text-xs font-mono flex-1 break-all">{SNIPPET}</code>
-                    <button onClick={copySnippet} title="Copy command" className="shrink-0 text-gray-400 hover:text-white transition-colors">
-                      {snippetCopied
-                        ? <svg className="w-4 h-4 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
-                        : <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
-                      }
-                    </button>
+                  <p className="text-sm font-medium text-gray-900">Get your session</p>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    <strong>Option A (best):</strong> F12 → Application → Cookies → copy the <code className="bg-gray-100 px-1 rounded">li_at</code> value
+                  </p>
+                  <p className="text-xs text-gray-500 mt-1.5">
+                    <strong>Option B (full session):</strong> run this script locally, then paste the JSON:
+                  </p>
+                  <div className="mt-1.5 bg-gray-900 rounded-lg px-3 py-2 text-[10px] font-mono text-green-400 leading-relaxed">
+                    <span className="text-gray-400"># pip install playwright && playwright install chromium</span><br/>
+                    <span className="text-purple-400">from</span> playwright.sync_api <span className="text-purple-400">import</span> sync_playwright<br/>
+                    <span className="text-purple-400">with</span> sync_playwright() <span className="text-purple-400">as</span> p:<br/>
+                    {'  '}ctx = p.chromium.launch(headless=<span className="text-orange-400">False</span>).new_context()<br/>
+                    {'  '}ctx.new_page().goto(<span className="text-yellow-400">'https://www.linkedin.com/login'</span>)<br/>
+                    {'  '}input(<span className="text-yellow-400">'Log in then press Enter...'</span>)<br/>
+                    {'  '}<span className="text-blue-400">print</span>(ctx.storage_state())
                   </div>
                   {cookieStep === 'copy' && (
                     <button onClick={() => setCookieStep('paste')} className="mt-2 text-xs text-blue-600 hover:text-blue-800 font-medium">
-                      Done → paste it below ↓
+                      Got it → paste below ↓
                     </button>
                   )}
                 </div>
@@ -1431,12 +1459,12 @@ function ConnectModal({
               <div className={`flex gap-4 ${cookieStep !== 'paste' ? 'opacity-40 pointer-events-none' : ''}`}>
                 <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold shrink-0 mt-0.5 ${cookieStep === 'paste' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-500'}`}>3</div>
                 <div className="flex-1">
-                  <p className="text-sm font-medium text-gray-900">Paste the cookie value</p>
+                  <p className="text-sm font-medium text-gray-900">Paste li_at value <span className="font-normal text-gray-400">or full session JSON</span></p>
                   <textarea
                     autoFocus={cookieStep === 'paste'}
                     value={cookieVal}
                     onChange={e => setCookieVal(e.target.value)}
-                    placeholder="AQEDAQbj…"
+                    placeholder={'AQEDAQbj…   or   {"cookies":[…],"origins":[…]}'}
                     rows={3}
                     className="mt-2 w-full px-3 py-2.5 border border-gray-300 rounded-lg text-xs font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
                   />
