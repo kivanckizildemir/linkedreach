@@ -415,6 +415,11 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     session.context = context
     session.page    = page
 
+    // Track whether we're connected via CDP (BrightData Scraping Browser).
+    // In CDP mode, Playwright's keyboard.type() is blocked on password fields by BrightData
+    // as a security measure. We use page.evaluate() with the native value setter instead.
+    const usingCDP = !!browserEndpoint
+
     // Navigate to login — force English locale to bypass language selection pages
     // on country-specific subdomains (e.g. pe.linkedin.com from Peruvian residential IPs).
     // Use load (all resources) so the React SPA has time to hydrate and render form inputs.
@@ -713,18 +718,51 @@ async function runLogin(key: string, email: string, password: string): Promise<v
 
     await dismissBanners()
 
-    // Use click + keyboard.type instead of page.fill() to avoid blocking on LinkedIn's soft
-    // navigation (pushState adds ?fromSignIn=true&trk=... when email field is interacted with).
-    // page.fill() waits for any ongoing navigation to finish — that SPA pushState navigation
-    // never fires a Playwright-detectable "complete" event, causing a 30s timeout.
-    await page.click(emailSelector, { noWaitAfter: true, force: true, timeout: 8_000 }).catch(() => {})
-    await page.keyboard.press('Control+A')
-    await page.keyboard.press('Delete')
-    await page.keyboard.type(email, { delay: 55 + Math.floor(Math.random() * 70) })
+    // Helper: fill a form field using the appropriate strategy for the current browser mode.
+    //
+    // CDP mode (BrightData Scraping Browser):
+    //   keyboard.type() is FORBIDDEN by BrightData for password fields:
+    //   "Protocol error (Input.dispatchKeyEvent): Forbidden action: password typing is not allowed"
+    //   Instead we use page.evaluate() with the React-compatible native value setter trick.
+    //   This fires React's synthetic onChange events so LinkedIn's SPA sees the value.
+    //
+    // Local mode:
+    //   page.fill() / locator.fill() block on LinkedIn's soft pushState navigation
+    //   (the URL silently changes to ?fromSignIn=true&trk=... when the email field is focused).
+    //   page.fill() waits for that navigation to "complete", which never fires, causing a 30s timeout.
+    //   keyboard.type() bypasses this because it doesn't wait for navigations.
+    const fillField = async (selector: string, value: string) => {
+      if (usingCDP) {
+        // Scraping Browser: inject value via JS, bypassing the blocked keyboard API
+        await page.evaluate(({ sel, val }: { sel: string; val: string }) => {
+          const el = document.querySelector(sel) as HTMLInputElement | null
+          if (!el) return
+          el.focus()
+          // Use React's internal value setter so synthetic events fire correctly
+          const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+          if (nativeSetter) {
+            nativeSetter.call(el, val)
+          } else {
+            el.value = val
+          }
+          el.dispatchEvent(new Event('input',  { bubbles: true }))
+          el.dispatchEvent(new Event('change', { bubbles: true }))
+          el.dispatchEvent(new Event('blur',   { bubbles: true }))
+        }, { sel: selector, val: value })
+      } else {
+        // Local Chromium: click first (noWaitAfter prevents blocking on pushState nav),
+        // then type character-by-character with human-like delays
+        await page.click(selector, { noWaitAfter: true, force: true, timeout: 8_000 }).catch(() => {})
+        await page.keyboard.press('Control+A')
+        await page.keyboard.press('Delete')
+        await page.keyboard.type(value, { delay: 55 + Math.floor(Math.random() * 70) })
+      }
+    }
+
+    await fillField(emailSelector, email)
     await DELAY(400 + Math.random() * 400)
 
-    await page.click(passSelector, { noWaitAfter: true, force: true, timeout: 8_000 }).catch(() => {})
-    await page.keyboard.type(password, { delay: 55 + Math.floor(Math.random() * 70) })
+    await fillField(passSelector, password)
     await DELAY(400 + Math.random() * 400)
 
     await captureSnap('pre-submit')
@@ -742,8 +780,17 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       console.log('[LOGIN DEBUG] Clicking submit button')
       await submitBtn.click()
     } else {
-      console.log('[LOGIN DEBUG] No submit button found — pressing Enter')
-      await page.keyboard.press('Enter')
+      console.log('[LOGIN DEBUG] No submit button found — using JS click on form submit')
+      // Use JS click in CDP mode (keyboard.press may be restricted); works everywhere
+      const clicked = await page.evaluate(() => {
+        const btn = document.querySelector('button[type="submit"], form button') as HTMLElement | null
+        if (btn) { btn.click(); return true }
+        return false
+      })
+      if (!clicked) {
+        console.log('[LOGIN DEBUG] JS click also found nothing — pressing Enter as last resort')
+        await page.keyboard.press('Enter')
+      }
     }
 
     // Wait for navigation away from the login page
