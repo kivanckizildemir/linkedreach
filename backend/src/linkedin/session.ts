@@ -175,7 +175,7 @@ export async function createSession(account: AccountRecord): Promise<{
     proxy: proxySettings,
     // storageState restores BOTH cookies AND localStorage when available
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    storageState: (fullState ?? undefined) as any,
+    storageState: (fullState || undefined) as unknown as any,
     ignoreHTTPSErrors: true,
     userAgent:
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
