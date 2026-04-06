@@ -238,12 +238,19 @@ async function resolveBrowserEndpoint(accountId: string): Promise<string | null>
     const country = (account as { proxy_country?: string } | null)?.proxy_country
     const url = new URL(browserUrl)
 
-    if (country) {
-      // BrightData country targeting: append -country-XX to username
-      const baseUser = decodeURIComponent(url.username)
-      url.username = encodeURIComponent(`${baseUser}-country-${country.toLowerCase()}`)
-    }
+    // Build targeting suffix for BrightData username:
+    //   -country-XX   → residential IP from that country
+    //   -session-XXXX → unique session ID forces a fresh IP assignment
+    //                   (avoids reusing an IP that LinkedIn has rate-limited)
+    let targeting = ''
+    if (country) targeting += `-country-${country.toLowerCase()}`
+    // Always append a fresh random session ID so each login attempt gets a new residential IP
+    targeting += `-session-${Math.random().toString(36).slice(2, 10)}`
 
+    const baseUser = decodeURIComponent(url.username)
+    url.username = encodeURIComponent(`${baseUser}${targeting}`)
+
+    console.log(`[LOGIN DEBUG] BrightData endpoint targeting: ${targeting}`)
     return url.toString()
   } catch {
     return null
@@ -566,6 +573,14 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       let allInputs = ''
       try { visible = await page.evaluate(() => (document.body?.innerText ?? '').substring(0, 300).replace(/\s+/g, ' ')) } catch { /* ok */ }
       try { allInputs = await page.evaluate(() => Array.from(document.querySelectorAll('input')).map((el: Element) => { const i = el as HTMLInputElement; return `${i.tagName}[id=${i.id}][name=${i.name}][type=${i.type}]` }).join(', ')) } catch { /* ok */ }
+      // Detect Chrome's native network-error page (BrightData IP blocked or unreachable)
+      const isChromeErrorPage = url.startsWith('chrome-error://') || url.includes('chromewebdata')
+      if (isChromeErrorPage) {
+        throw new Error(
+          'BrightData could not load linkedin.com — the residential IP was blocked or failed to route. ' +
+          'A new session with a fresh IP will be assigned on retry. Please try connecting again in 30–60 seconds.'
+        )
+      }
       throw new Error(`Login form inputs not found. URL: ${url} | Title: ${title} | Inputs: ${allInputs} | Text: ${visible}`)
     }
 
