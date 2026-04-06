@@ -28,7 +28,11 @@ export interface AccountRecord {
 // ─── Storage-state helpers ────────────────────────────────────────────────────
 
 interface StorageState {
-  cookies: object[]
+  cookies: Array<{
+    name: string; value: string; domain: string; path: string
+    expires: number; httpOnly: boolean; secure: boolean
+    sameSite?: 'Strict' | 'Lax' | 'None'
+  }>
   origins?: Array<{
     origin: string
     localStorage: Array<{ name: string; value: string }>
@@ -144,7 +148,8 @@ export async function createSession(account: AccountRecord): Promise<{
   context = await browser.newContext({
     proxy: proxySettings,
     // storageState restores BOTH cookies AND localStorage when available
-    storageState: fullState ?? undefined,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    storageState: (fullState ?? undefined) as any,
     ignoreHTTPSErrors: true,
     userAgent:
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
