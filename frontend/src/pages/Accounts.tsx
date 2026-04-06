@@ -547,11 +547,11 @@ function ProxiesPanel({ accounts }: { accounts: LinkedInAccount[] }) {
                       {testResult ? (
                         <div className="flex items-start gap-1.5 group relative">
                           <span className={`inline-block w-2 h-2 rounded-full flex-shrink-0 mt-1 ${testResult.loading ? 'bg-yellow-400 animate-pulse' : testResult.ok ? 'bg-green-500' : 'bg-red-500'}`} />
-                          <span className="text-[11px] font-mono truncate max-w-[120px] cursor-default" title={testResult.loading ? 'Testing…' : testResult.result}>
+                          <span className="text-[11px] font-mono truncate max-w-[120px] cursor-default">
                             {testResult.loading ? 'Testing…' : testResult.result}
                           </span>
                           {!testResult.loading && (
-                            <div className="absolute left-0 top-6 z-50 hidden group-hover:block bg-gray-900 text-white text-[10px] font-mono rounded p-2 max-w-xs break-all shadow-lg whitespace-pre-wrap">
+                            <div className="absolute left-0 top-6 z-50 hidden group-hover:block bg-gray-900 text-white text-[10px] font-mono rounded p-2 w-72 break-all shadow-lg whitespace-pre-wrap select-text cursor-text">
                               {testResult.result}
                             </div>
                           )}

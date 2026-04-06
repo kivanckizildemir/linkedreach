@@ -264,9 +264,10 @@ async function resolveProxy(accountId: string): Promise<
   let BD_PROXY_URL = process.env.BRIGHTDATA_PROXY_URL ?? ''
   if (!BD_PROXY_URL && process.env.PROXY_HOST) {
     const host = process.env.PROXY_HOST
+    const port = process.env.PROXY_PORT ?? '10000'
     const user = encodeURIComponent(process.env.PROXY_USERNAME ?? '')
     const pass = encodeURIComponent(process.env.PROXY_PASSWORD ?? '')
-    BD_PROXY_URL = user && pass ? `http://${user}:${pass}@${host}` : `http://${host}`
+    BD_PROXY_URL = user && pass ? `http://${user}:${pass}@${host}:${port}` : `http://${host}:${port}`
   }
 
   const { data: account } = await supabase
