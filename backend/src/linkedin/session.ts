@@ -10,11 +10,32 @@ const StealthPlugin = require('puppeteer-extra-plugin-stealth')
 // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
 chromiumExtra.use(StealthPlugin())
 
-// Bright Data residential proxy (HTTP proxy, not CDP).
-// Format: http://brd-customer-XXXX-zone-ZONE:PASSWORD@brd.superproxy.io:22225
-// Set DISABLE_PROXY=true locally to bypass ALL proxies.
+// Proxy config — set DISABLE_PROXY=true to bypass all proxies (local dev).
+//
+// Static residential proxy (priority 1 when per-account proxy not set):
+//   PROXY_HOST     = e.g. gate.provider.com
+//   PROXY_PORT     = e.g. 10000
+//   PROXY_USERNAME = your username
+//   PROXY_PASSWORD = your password
+//
+// Legacy BrightData rotating proxy (lower priority, kept for backwards-compat):
+//   BRIGHTDATA_PROXY_URL = http://brd-customer-XXXX-zone-ZONE:PASS@brd.superproxy.io:22225
 const DISABLE_PROXY = process.env.DISABLE_PROXY === 'true'
-const BD_PROXY_URL  = DISABLE_PROXY ? '' : (process.env.BRIGHTDATA_PROXY_URL ?? '')
+
+function buildStaticProxySettings(): { server: string; username?: string; password?: string } | null {
+  const host = process.env.PROXY_HOST
+  const port = process.env.PROXY_PORT ?? '10000'
+  const user = process.env.PROXY_USERNAME
+  const pass = process.env.PROXY_PASSWORD
+  if (!host || !user) return null
+  return {
+    server:   `http://${host}:${port}`,
+    username: user,
+    password: pass || undefined,
+  }
+}
+
+const BD_PROXY_URL = DISABLE_PROXY ? '' : (process.env.BRIGHTDATA_PROXY_URL ?? '')
 
 export interface AccountRecord {
   id: string
@@ -88,6 +109,7 @@ export async function createSession(account: AccountRecord): Promise<{
   let proxySettings: { server: string; username?: string; password?: string } | undefined
 
   if (!DISABLE_PROXY && account.proxy_id) {
+    // 1. Per-account proxy stored in the DB
     const { data: proxy } = await supabase
       .from('proxies')
       .select('proxy_url')
@@ -102,23 +124,27 @@ export async function createSession(account: AccountRecord): Promise<{
         password: url.password || undefined,
       }
     }
-  } else if (!DISABLE_PROXY && BD_PROXY_URL) {
-    const url = new URL(BD_PROXY_URL)
-    const host = url.hostname
-    const port = url.port === '33335' ? '22225' : url.port
-
-    // Sticky session: append -session-XXXXXXXX to the BrightData username so
-    // BrightData always routes this account through the same exit IP.
-    const sessionTag = account.id.replace(/-/g, '').slice(0, 8)
-    const baseUser   = decodeURIComponent(url.username)
-    const stickyUser = baseUser.includes('-session-')
-      ? baseUser  // already has a session tag
-      : `${baseUser}-session-${sessionTag}`
-
-    proxySettings = {
-      server:   `http://${host}:${port}`,
-      username: stickyUser,
-      password: decodeURIComponent(url.password) || undefined,
+  } else if (!DISABLE_PROXY) {
+    // 2. Static residential proxy (PROXY_HOST / PROXY_PORT / PROXY_USERNAME / PROXY_PASSWORD)
+    //    — IP is always the same, no sticky-session suffix needed.
+    const staticProxy = buildStaticProxySettings()
+    if (staticProxy) {
+      proxySettings = staticProxy
+    } else if (BD_PROXY_URL) {
+      // 3. Legacy BrightData rotating proxy with sticky-session suffix
+      const url = new URL(BD_PROXY_URL)
+      const host = url.hostname
+      const port = url.port === '33335' ? '22225' : url.port
+      const sessionTag = account.id.replace(/-/g, '').slice(0, 8)
+      const baseUser   = decodeURIComponent(url.username)
+      const stickyUser = baseUser.includes('-session-')
+        ? baseUser
+        : `${baseUser}-session-${sessionTag}`
+      proxySettings = {
+        server:   `http://${host}:${port}`,
+        username: stickyUser,
+        password: decodeURIComponent(url.password) || undefined,
+      }
     }
   }
 
