@@ -1488,7 +1488,7 @@ function SalesNavImportModal({
     }
   }
 
-  const activeAccounts = accounts.filter(a => a.status === 'active')
+  const activeAccounts = accounts.filter(a => a.status === 'active' || a.status === 'warming_up')
 
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
