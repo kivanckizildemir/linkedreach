@@ -837,7 +837,7 @@ function ConnectModal({
   // credentials form
   const [email, setEmail]         = useState('')
   const [password, setPassword]   = useState('')
-  const [totpSecret, setTotpSecret] = useState('')
+  const [totpSecret] = useState('')
 
   // verify step
   const [code, setCode]           = useState('')
@@ -850,16 +850,11 @@ function ConnectModal({
   const [cookieVal, setCookieVal] = useState('')
   const [cookieError, setCookieError] = useState('')
   const [cookieSaving, setCookieSaving] = useState(false)
-  const [snippetCopied, setSnippetCopied] = useState(false)
-
-
   const [browserKey, setBrowserKey] = useState('')
   const [screenshot, setScreenshot] = useState('')
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const screenshotPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
-
-  const SNIPPET = `copy(document.cookie.match(/li_at=([^;]+)/)?.[1] ?? 'not found')`
 
   // Cleanup polling on unmount
   useEffect(() => {
@@ -1024,12 +1019,6 @@ function ConnectModal({
     } catch (err) {
       setCookieError((err as Error).message); setCookieSaving(false)
     }
-  }
-
-  function copySnippet() {
-    void navigator.clipboard.writeText(SNIPPET).then(() => {
-      setSnippetCopied(true); setTimeout(() => setSnippetCopied(false), 2000)
-    })
   }
 
   // ── Shared header ─────────────────────────────────────────────────────────
