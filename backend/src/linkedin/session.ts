@@ -1,14 +1,7 @@
 import type { Browser, BrowserContext, Page } from 'playwright'
+import { chromium as chromiumExtra } from 'playwright'
 import { supabase } from '../lib/supabase'
 import { SELECTORS } from './selectors'
-
-// Use playwright-extra with stealth plugin to reduce bot detection
-// eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-explicit-any
-const { chromium: chromiumExtra } = require('playwright-extra') as any
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const StealthPlugin = require('puppeteer-extra-plugin-stealth')
-// eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
-chromiumExtra.use(StealthPlugin())
 
 // Proxy config — set DISABLE_PROXY=true to bypass all proxies (local dev).
 //

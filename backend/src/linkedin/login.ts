@@ -25,13 +25,7 @@ const speakeasy = require('speakeasy') as {
 }
 import { supabase } from '../lib/supabase'
 
-// playwright-extra + stealth used for local-Chromium fallback only
-// eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-explicit-any
-const { chromium } = require('playwright-extra') as any
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const StealthPlugin = require('puppeteer-extra-plugin-stealth')
-// eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
-chromium.use(StealthPlugin())
+import { chromium } from 'playwright'
 
 type SessionStatus = 'starting' | 'pending_push' | 'needs_verification' | 'success' | 'error'
 

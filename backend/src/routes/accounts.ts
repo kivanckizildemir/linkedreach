@@ -5,12 +5,7 @@ import { requireAuth } from '../middleware/auth'
 import type { AccountStatus } from '../types'
 import { startLogin, startManualSession, submitVerificationCode, getLoginStatus, checkPushApproval, getSessionScreenshot, getSessionPageInfo, getSessionDebugSnapshot, interactWithPage, testProxyRaw, requestVerificationCode } from '../linkedin/login'
 import { extractCookies } from '../linkedin/session'
-// eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-explicit-any
-const { chromium } = require('playwright-extra') as any
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const StealthPlugin = require('puppeteer-extra-plugin-stealth')
-// eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
-chromium.use(StealthPlugin())
+import { chromium } from 'playwright'
 
 export const accountsRouter = Router()
 
