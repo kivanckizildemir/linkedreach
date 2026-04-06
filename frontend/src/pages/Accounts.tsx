@@ -830,7 +830,7 @@ function ConnectModal({
   onClose: () => void
   onSaved: () => void
 }) {
-  const [method, setMethod]       = useState<ConnectMethod>('select')
+  const [method, setMethod]       = useState<ConnectMethod>('credentials')
   const [step, setStep]           = useState<ConnectStep>('form')
   const [cookieStep, setCookieStep] = useState<CookieStep>('open')
 
@@ -1034,19 +1034,8 @@ function ConnectModal({
 
   // ── Shared header ─────────────────────────────────────────────────────────
 
-  const headerTitle =
-    method === 'select'        ? 'Connect LinkedIn Account'
-    : method === 'infinite'    ? 'Infinite Login'
-    : method === 'credentials' ? 'Credentials Login'
-    : method === 'browser'     ? 'Interactive Browser Login'
-    : 'Quick Login'
-
-  const headerSub =
-    method === 'select'        ? 'Choose how you want to connect'
-    : method === 'infinite'    ? 'Auto-reconnect forever with your 2FA secret'
-    : method === 'credentials' ? 'Sign in with email & password'
-    : method === 'browser'     ? 'LinkedIn\'s real login page — type directly in the browser below'
-    : 'Grab your session cookie from the browser'
+  const headerTitle = step === 'push' ? 'Check your phone' : step === 'verify' ? 'Enter verification code' : step === 'done' ? 'Connected!' : 'Connect LinkedIn Account'
+  const headerSub   = step === 'push' ? '' : step === 'verify' ? '' : step === 'done' ? '' : 'Sign in with your LinkedIn email & password'
 
   // ── Shared done / error ───────────────────────────────────────────────────
 
@@ -1076,15 +1065,7 @@ function ConnectModal({
         {/* Header */}
         <div className="flex items-start justify-between px-6 py-4 border-b border-gray-100">
           <div className="flex items-center gap-3">
-            {method !== 'select' && step === 'form' && (
-              <button
-                onClick={() => { setMethod('select'); setStep('form'); setError('') }}
-                className="text-gray-400 hover:text-gray-600 transition-colors -ml-1"
-              >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-                </svg>
-              </button>
+            {false && (
             )}
             <div>
               <h2 className="text-lg font-semibold text-gray-900">{headerTitle}</h2>
@@ -1184,17 +1165,6 @@ function ConnectModal({
                   placeholder="••••••••"
                   className="w-full px-3.5 py-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
               </div>
-              {method === 'infinite' && (
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1.5">2FA secret key</label>
-                  <input type="text" value={totpSecret} onChange={e => setTotpSecret(e.target.value)}
-                    placeholder="JBSWY3DPEHPK3PXP"
-                    className="w-full px-3.5 py-2.5 border border-gray-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                  <p className="mt-1.5 text-xs text-gray-400">
-                    LinkedIn Settings → Sign in &amp; Security → Two-step verification → Authenticator app → the raw secret shown during setup.
-                  </p>
-                </div>
-              )}
               {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg p-3">{error}</p>}
               <div className="flex gap-3 pt-1">
                 <button type="button" onClick={onClose}
