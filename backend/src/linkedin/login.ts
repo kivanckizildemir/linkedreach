@@ -706,13 +706,18 @@ async function runLogin(key: string, email: string, password: string): Promise<v
 
     await dismissBanners()
 
-    // Clear then type — ensures React state updates correctly
-    await page.fill(emailSelector, '')
-    await page.type(emailSelector, email, { delay: 55 + Math.floor(Math.random() * 70) })
+    // Use click + keyboard.type instead of page.fill() to avoid blocking on LinkedIn's soft
+    // navigation (pushState adds ?fromSignIn=true&trk=... when email field is interacted with).
+    // page.fill() waits for any ongoing navigation to finish — that SPA pushState navigation
+    // never fires a Playwright-detectable "complete" event, causing a 30s timeout.
+    await page.click(emailSelector, { noWaitAfter: true, force: true, timeout: 8_000 }).catch(() => {})
+    await page.keyboard.press('Control+A')
+    await page.keyboard.press('Delete')
+    await page.keyboard.type(email, { delay: 55 + Math.floor(Math.random() * 70) })
     await DELAY(400 + Math.random() * 400)
 
-    await page.fill(passSelector, '')
-    await page.type(passSelector, password, { delay: 55 + Math.floor(Math.random() * 70) })
+    await page.click(passSelector, { noWaitAfter: true, force: true, timeout: 8_000 }).catch(() => {})
+    await page.keyboard.type(password, { delay: 55 + Math.floor(Math.random() * 70) })
     await DELAY(400 + Math.random() * 400)
 
     await captureSnap('pre-submit')
