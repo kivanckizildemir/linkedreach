@@ -4,13 +4,6 @@ import { supabase } from '../lib/supabase'
 import { requireAuth } from '../middleware/auth'
 import type { AccountStatus } from '../types'
 import { startLogin, startManualSession, submitVerificationCode, getLoginStatus, checkPushApproval, getSessionScreenshot, getSessionPageInfo, getSessionDebugSnapshot, interactWithPage, testProxyRaw, requestVerificationCode } from '../linkedin/login'
-import { createSession } from '../linkedin/session'
-// eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-explicit-any
-const { chromium } = require('playwright-extra') as any
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const StealthPlugin = require('puppeteer-extra-plugin-stealth')
-// eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
-chromium.use(StealthPlugin())
 
 export const accountsRouter = Router()
 
@@ -221,10 +214,11 @@ accountsRouter.post('/:id/connect-interact/:sessionKey', async (req: Request, re
 })
 
 // POST /api/accounts/:id/health-check — verify saved cookies still log into LinkedIn
+// Uses direct HTTP (no browser) so it works from any IP without a residential proxy.
 accountsRouter.post('/:id/health-check', async (req: Request, res: Response) => {
   const { data: account, error: accountErr } = await supabase
     .from('linkedin_accounts')
-    .select('id, cookies, proxy_id, status')
+    .select('id, cookies, status')
     .eq('id', req.params.id)
     .eq('user_id', req.user.id)
     .single()
@@ -239,39 +233,63 @@ accountsRouter.post('/:id/health-check', async (req: Request, res: Response) => 
     return
   }
 
-  let browser: import('playwright').Browser | null = null
   try {
-    const session = await createSession(account as Parameters<typeof createSession>[0])
-    browser = session.browser
-    const page = session.page
+    interface CookieRecord { name: string; value: string }
+    let cookies: CookieRecord[]
+    try {
+      cookies = JSON.parse(account.cookies as string) as CookieRecord[]
+    } catch {
+      res.json({ ok: false, message: 'Corrupt cookie data — please reconnect.' })
+      return
+    }
 
-    // Navigate to the LinkedIn feed — a logged-in user lands here, a logged-out user gets redirected to /login
-    await page.goto('https://www.linkedin.com/feed/', { waitUntil: 'domcontentloaded', timeout: 30_000 })
-    const url = page.url()
+    const liAt = cookies.find(c => c.name === 'li_at')?.value
+    if (!liAt) {
+      res.json({ ok: false, message: 'No li_at cookie found — please reconnect.' })
+      return
+    }
 
-    if (url.includes('/feed') || url.includes('/in/') || url.includes('/mynetwork')) {
-      // Save refreshed cookies back to DB (session may have issued new tokens)
-      const freshCookies = await session.context.cookies()
-      await supabase
-        .from('linkedin_accounts')
-        .update({ cookies: JSON.stringify(freshCookies) })
-        .eq('id', req.params.id)
+    const cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join('; ')
+    // JSESSIONID doubles as the CSRF token (LinkedIn's convention)
+    const jsessionId = cookies.find(c => c.name === 'JSESSIONID')?.value ?? `ajax:${Date.now()}`
 
+    // Ping the Voyager identity API — lightweight, returns 200 when the session is valid,
+    // 401 when the li_at cookie has expired or been revoked. Works from any IP.
+    const probe = await fetch('https://www.linkedin.com/voyager/api/identity/profiles/me', {
+      headers: {
+        Cookie: cookieHeader,
+        'Csrf-Token': jsessionId,
+        'User-Agent':
+          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
+          '(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        Accept: 'application/json',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'X-Li-Lang': 'en_US',
+        'X-Restli-Protocol-Version': '2.0.0',
+        'X-Li-Track': JSON.stringify({ clientVersion: '2024.1.0', osName: 'web', timezoneOffset: 0 }),
+      },
+    })
+
+    if (probe.status === 200) {
+      // Optionally mark account as active if it was paused
+      if (account.status === 'paused') {
+        await supabase
+          .from('linkedin_accounts')
+          .update({ status: 'active' })
+          .eq('id', req.params.id)
+      }
       res.json({ ok: true, message: 'Session is active ✓' })
-    } else if (url.includes('/checkpoint') || url.includes('/challenge')) {
-      res.json({ ok: false, message: 'LinkedIn is asking for verification. Reconnect the account.' })
-    } else {
-      // Redirected to /login — session expired
+    } else if (probe.status === 401 || probe.status === 403) {
       await supabase
         .from('linkedin_accounts')
         .update({ status: 'paused' })
         .eq('id', req.params.id)
       res.json({ ok: false, message: 'Session expired — please reconnect.' })
+    } else {
+      res.json({ ok: false, message: `LinkedIn returned ${probe.status} — session may be invalid.` })
     }
   } catch (err) {
     res.json({ ok: false, message: `Health check failed: ${(err as Error).message}` })
-  } finally {
-    if (browser) await browser.close().catch(() => undefined)
   }
 })
 
