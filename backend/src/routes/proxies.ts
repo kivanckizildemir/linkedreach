@@ -2,7 +2,7 @@ import { Router } from 'express'
 import type { Request, Response } from 'express'
 import { supabase } from '../lib/supabase'
 import { requireAuth } from '../middleware/auth'
-import * as net from 'net'
+import { HttpsProxyAgent } from 'https-proxy-agent'
 
 export const proxiesRouter = Router()
 proxiesRouter.use(requireAuth)
@@ -20,45 +20,31 @@ function maskUrl(raw: string): string {
 }
 
 /**
- * Raw TCP CONNECT test against any proxy URL.
- * Returns { ok, result } — result is the first HTTP response line.
+ * Test a proxy by making a real HTTP request through it.
+ * Uses the same HttpsProxyAgent approach as the rest of the app.
  */
-function testProxyUrl(proxyUrl: string): Promise<{ ok: boolean; result: string }> {
-  return new Promise((resolve) => {
-    let host: string
-    let port: number
-    let username: string | undefined
-    let password: string | undefined
+async function testProxyUrl(proxyUrl: string): Promise<{ ok: boolean; result: string }> {
+  try {
+    new URL(proxyUrl)
+  } catch (e) {
+    return { ok: false, result: `INVALID_URL: ${(e as Error).message}` }
+  }
 
-    try {
-      const u = new URL(proxyUrl)
-      host = u.hostname
-      port = parseInt(u.port || '8080', 10)
-      // BrightData residential: always plain port 22225 (not SSL 33335)
-      if (host.includes('superproxy.io')) port = 22225
-      username = u.username ? decodeURIComponent(u.username) : undefined
-      password = u.password ? decodeURIComponent(u.password) : undefined
-    } catch (e) {
-      resolve({ ok: false, result: `INVALID_URL: ${(e as Error).message}` })
-      return
+  const agent = new HttpsProxyAgent(proxyUrl)
+  try {
+    const res = await fetch('https://api.ipify.org?format=json', {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ...(agent ? { dispatcher: agent as any } : {}),
+      signal: AbortSignal.timeout(10_000),
+    })
+    if (res.ok) {
+      const { ip } = await res.json() as { ip: string }
+      return { ok: true, result: `Connected — outbound IP: ${ip}` }
     }
-
-    const socket = net.createConnection({ host, port }, () => {
-      const auth = username && password
-        ? `Proxy-Authorization: Basic ${Buffer.from(`${username}:${password}`).toString('base64')}\r\n`
-        : ''
-      socket.write(`CONNECT linkedin.com:443 HTTP/1.1\r\nHost: linkedin.com:443\r\n${auth}\r\n`)
-    })
-
-    socket.setTimeout(8000)
-    socket.on('data', (d) => {
-      const line = d.toString().split('\r\n')[0]
-      resolve({ ok: line.includes('200'), result: line })
-      socket.destroy()
-    })
-    socket.on('timeout', () => { resolve({ ok: false, result: 'TIMEOUT' }); socket.destroy() })
-    socket.on('error', (e) => resolve({ ok: false, result: `TCP_ERROR: ${e.message}` }))
-  })
+    return { ok: false, result: `HTTP ${res.status} from proxy` }
+  } catch (e) {
+    return { ok: false, result: `PROXY_ERROR: ${(e as Error).message}` }
+  }
 }
 
 // ── Routes ────────────────────────────────────────────────────────────────────
@@ -226,7 +212,7 @@ proxiesRouter.post('/:id/assign', async (req: Request, res: Response) => {
   res.json({ success: true })
 })
 
-// GET /api/proxies/:id/test — TCP CONNECT test
+// GET /api/proxies/:id/test — real HTTP request through the proxy
 proxiesRouter.get('/:id/test', async (req: Request, res: Response) => {
   // Fetch raw proxy_url (not masked) directly from DB
   const { data: proxy, error } = await supabase
