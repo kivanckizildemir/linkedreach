@@ -254,9 +254,16 @@ async function resolveBrowserEndpoint(accountId: string): Promise<string | null>
 async function resolveProxy(accountId: string): Promise<
   { server: string; username?: string; password?: string } | undefined
 > {
-  const BD_PROXY_URL = process.env.DISABLE_PROXY === 'true'
-    ? ''
-    : (process.env.BRIGHTDATA_PROXY_URL ?? '')
+  if (process.env.DISABLE_PROXY === 'true') return undefined
+
+  // Support both a pre-built URL (BRIGHTDATA_PROXY_URL) and separate vars (PROXY_HOST / USERNAME / PASSWORD)
+  let BD_PROXY_URL = process.env.BRIGHTDATA_PROXY_URL ?? ''
+  if (!BD_PROXY_URL && process.env.PROXY_HOST) {
+    const host = process.env.PROXY_HOST
+    const user = encodeURIComponent(process.env.PROXY_USERNAME ?? '')
+    const pass = encodeURIComponent(process.env.PROXY_PASSWORD ?? '')
+    BD_PROXY_URL = user && pass ? `http://${user}:${pass}@${host}` : `http://${host}`
+  }
 
   const { data: account } = await supabase
     .from('linkedin_accounts')
