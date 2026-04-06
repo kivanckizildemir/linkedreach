@@ -1,6 +1,7 @@
 import express from 'express'
 import cors from 'cors'
 import dotenv from 'dotenv'
+import { authRouter } from './routes/auth'
 import { accountsRouter } from './routes/accounts'
 import { campaignsRouter } from './routes/campaigns'
 import { leadsRouter } from './routes/leads'
@@ -118,6 +119,7 @@ app.delete('/api/login-debug', (_req, res) => {
   res.json({ cleared: true })
 })
 
+app.use('/api/auth', authRouter)
 app.use('/api/accounts', accountsRouter)
 app.use('/api/campaigns', campaignsRouter)
 app.use('/api/leads', leadsRouter)
