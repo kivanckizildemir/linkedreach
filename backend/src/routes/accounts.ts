@@ -4,6 +4,7 @@ import { supabase } from '../lib/supabase'
 import { requireAuth } from '../middleware/auth'
 import type { AccountStatus } from '../types'
 import { startLogin, startManualSession, submitVerificationCode, getLoginStatus, checkPushApproval, getSessionScreenshot, getSessionPageInfo, getSessionDebugSnapshot, interactWithPage, testProxyRaw, requestVerificationCode } from '../linkedin/login'
+import { extractCookies } from '../linkedin/session'
 
 export const accountsRouter = Router()
 
@@ -234,14 +235,8 @@ accountsRouter.post('/:id/health-check', async (req: Request, res: Response) => 
   }
 
   try {
-    interface CookieRecord { name: string; value: string }
-    let cookies: CookieRecord[]
-    try {
-      cookies = JSON.parse(account.cookies as string) as CookieRecord[]
-    } catch {
-      res.json({ ok: false, message: 'Corrupt cookie data — please reconnect.' })
-      return
-    }
+    // extractCookies handles both storage formats: full storage_state object OR legacy cookie array
+    const cookies = extractCookies(account.cookies as string)
 
     const liAt = cookies.find(c => c.name === 'li_at')?.value
     if (!liAt) {

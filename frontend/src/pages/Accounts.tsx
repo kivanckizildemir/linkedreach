@@ -1000,9 +1000,10 @@ function ConnectModal({
           setCookieSaving(false); return
         }
         // storage_state format: { cookies: [...], origins: [...] }
+        // Save the FULL object (including origins/localStorage) — stripping origins
+        // loses LinkedIn's localStorage session state which makes sessions expire fast.
         if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && 'cookies' in parsed) {
-          const state = parsed as { cookies: unknown[] }
-          cookies = JSON.stringify(state.cookies)
+          cookies = JSON.stringify(parsed)  // full storage_state
         } else if (Array.isArray(parsed)) {
           // Raw cookie array
           cookies = JSON.stringify(parsed)

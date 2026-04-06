@@ -10,17 +10,57 @@ const StealthPlugin = require('puppeteer-extra-plugin-stealth')
 // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
 chromiumExtra.use(StealthPlugin())
 
-// Bright Data residential proxy fallback (used when account has no proxy_id)
-// Format: http://brd-customer-XXXX-zone-ZONE:PASSWORD@brd.superproxy.io:PORT
-// Set DISABLE_PROXY=true locally to bypass ALL proxies (env-level and account-level).
+// Bright Data residential proxy (HTTP proxy, not CDP).
+// Format: http://brd-customer-XXXX-zone-ZONE:PASSWORD@brd.superproxy.io:22225
+// Set DISABLE_PROXY=true locally to bypass ALL proxies.
 const DISABLE_PROXY = process.env.DISABLE_PROXY === 'true'
 const BD_PROXY_URL  = DISABLE_PROXY ? '' : (process.env.BRIGHTDATA_PROXY_URL ?? '')
 
 export interface AccountRecord {
   id: string
-  cookies: string          // JSON-serialised Playwright cookie array
+  /** JSON string — either a Playwright cookie array OR a full storage_state object
+   *  { cookies: [...], origins: [{ origin, localStorage: [{name,value}] }] } */
+  cookies: string
   proxy_id: string | null
   status: string
+}
+
+// ─── Storage-state helpers ────────────────────────────────────────────────────
+
+interface StorageState {
+  cookies: object[]
+  origins?: Array<{
+    origin: string
+    localStorage: Array<{ name: string; value: string }>
+  }>
+}
+
+/**
+ * Parse the `cookies` DB column into either a full Playwright storage_state
+ * object (preferred) or a plain cookie array (legacy).
+ */
+function parseSessionData(raw: string): { state: StorageState | null; cookiesOnly: object[] | null } {
+  try {
+    const parsed = JSON.parse(raw)
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && 'cookies' in parsed) {
+      return { state: parsed as StorageState, cookiesOnly: null }
+    }
+    if (Array.isArray(parsed)) {
+      return { state: null, cookiesOnly: parsed }
+    }
+  } catch { /* corrupt */ }
+  return { state: null, cookiesOnly: null }
+}
+
+/**
+ * Extract a flat cookie array from either storage format.
+ * Used by code-paths that only need to read cookies (API calls, health check).
+ */
+export function extractCookies(cookiesStr: string): Array<{ name: string; value: string }> {
+  const { state, cookiesOnly } = parseSessionData(cookiesStr)
+  if (state) return state.cookies as Array<{ name: string; value: string }>
+  if (cookiesOnly) return cookiesOnly as Array<{ name: string; value: string }>
+  return []
 }
 
 export interface ProxyRecord {
@@ -35,8 +75,12 @@ export async function createSession(account: AccountRecord): Promise<{
   let browser: Browser
   let context: BrowserContext
 
-  // Resolve proxy: account-level DB proxy takes priority, then env-level Bright Data proxy.
-  // Both are skipped entirely when DISABLE_PROXY=true (e.g. local dev with a residential IP).
+  // ── Proxy resolution ────────────────────────────────────────────────────────
+  // Priority: account-level DB proxy → env BRIGHTDATA_PROXY_URL → no proxy.
+  // When using the env-level BrightData proxy we append a sticky-session suffix
+  // derived from the account ID so every action on the same account always
+  // routes through the same residential IP — this is the single biggest factor
+  // in keeping LinkedIn sessions alive (avoids "new device" rotation).
   let proxySettings: { server: string; username?: string; password?: string } | undefined
 
   if (!DISABLE_PROXY && account.proxy_id) {
@@ -56,13 +100,20 @@ export async function createSession(account: AccountRecord): Promise<{
     }
   } else if (!DISABLE_PROXY && BD_PROXY_URL) {
     const url = new URL(BD_PROXY_URL)
-    // Bright Data port 33335 is their "super proxy" — use port 22225 for standard
-    // residential which reliably supports HTTPS CONNECT tunneling
     const host = url.hostname
     const port = url.port === '33335' ? '22225' : url.port
+
+    // Sticky session: append -session-XXXXXXXX to the BrightData username so
+    // BrightData always routes this account through the same exit IP.
+    const sessionTag = account.id.replace(/-/g, '').slice(0, 8)
+    const baseUser   = decodeURIComponent(url.username)
+    const stickyUser = baseUser.includes('-session-')
+      ? baseUser  // already has a session tag
+      : `${baseUser}-session-${sessionTag}`
+
     proxySettings = {
       server:   `http://${host}:${port}`,
-      username: decodeURIComponent(url.username) || undefined,
+      username: stickyUser,
       password: decodeURIComponent(url.password) || undefined,
     }
   }
@@ -77,14 +128,23 @@ export async function createSession(account: AccountRecord): Promise<{
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
       '--disable-blink-features=AutomationControlled',
-      // Ignore SSL errors from Bright Data certificate interception
       '--ignore-certificate-errors',
     ],
   }) as Browser
 
+  // ── Restore session state ───────────────────────────────────────────────────
+  // If we have a full Playwright storage_state (cookies + localStorage origins)
+  // pass it directly to newContext() — this is the proper API for full session
+  // restoration and ensures localStorage-backed LinkedIn state is preserved.
+  // Falls back to manually adding cookies for legacy cookie-array records.
+  const { state: fullState, cookiesOnly } = account.cookies
+    ? parseSessionData(account.cookies)
+    : { state: null, cookiesOnly: null }
+
   context = await browser.newContext({
-    // Proxy credentials passed only here — not in launch args (avoids auth conflict)
     proxy: proxySettings,
+    // storageState restores BOTH cookies AND localStorage when available
+    storageState: fullState ?? undefined,
     ignoreHTTPSErrors: true,
     userAgent:
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
@@ -96,14 +156,9 @@ export async function createSession(account: AccountRecord): Promise<{
     },
   })
 
-  // Restore saved cookies
-  if (account.cookies) {
-    try {
-      const cookies = JSON.parse(account.cookies)
-      await context.addCookies(cookies)
-    } catch {
-      // Corrupt cookie
-    }
+  // Legacy cookie-array path (no localStorage — sessions will be less stable)
+  if (!fullState && cookiesOnly && cookiesOnly.length > 0) {
+    await context.addCookies(cookiesOnly as Parameters<BrowserContext['addCookies']>[0])
   }
 
   const page = await context.newPage()
@@ -124,12 +179,17 @@ export async function closeSession(browser: Browser): Promise<void> {
   await browser.close()
 }
 
-/** Save updated cookies back to the DB after a session. */
+/**
+ * Persist the full Playwright storage_state (cookies + localStorage origins)
+ * back to the DB after a session.  This is what you pass back in on the next
+ * createSession() call — storing everything (not just cookies) is what keeps
+ * LinkedIn sessions alive across requests.
+ */
 export async function persistCookies(context: BrowserContext, accountId: string): Promise<void> {
-  const cookies = await context.cookies()
+  const state = await context.storageState()
   await supabase
     .from('linkedin_accounts')
-    .update({ cookies: JSON.stringify(cookies) })
+    .update({ cookies: JSON.stringify(state) })
     .eq('id', accountId)
 }
 

@@ -4,6 +4,7 @@
  */
 
 import { supabase } from '../lib/supabase'
+import { extractCookies } from './session'
 
 export interface ScrapedLead {
   first_name: string
@@ -162,15 +163,11 @@ export async function scrapeSalesNavSearchApi(
     throw new Error('Account not found or no session cookie. Please set a session cookie first.')
   }
 
-  let cookies: CookieRecord[]
-  try {
-    cookies = JSON.parse(account.cookies)
-  } catch {
-    throw new Error('Invalid cookie format. Please reset the session cookie.')
-  }
+  // Handle both storage formats: full storage_state object OR legacy cookie array
+  const cookies: CookieRecord[] = extractCookies(account.cookies as string)
 
   const liAt = cookies.find(c => c.name === 'li_at')?.value
-  if (!liAt) throw new Error('No li_at cookie found. Please set a session cookie.')
+  if (!liAt) throw new Error('No li_at cookie found. Please reconnect from the Accounts page.')
 
   // JSESSIONID is used as CSRF token (LinkedIn's pattern)
   const jsessionId = cookies.find(c => c.name === 'JSESSIONID')?.value ?? `ajax:${Date.now()}`
