@@ -1177,9 +1177,27 @@ function ConnectModal({
                   try {
                     const result = await requestVerificationCode(accountId, sessionKey)
                     if (result.status === 'already_on_code') {
-                      stopPolling(); setStep('verify')
+                      stopPolling(); setHint(result.message); setStep('verify')
                     } else if (result.status === 'switching') {
-                      setHint('A verification code is on its way. Check your email or phone.')
+                      // Backend may have fully transitioned to needs_verification
+                      // (PIN input visible). Poll once to check, then show verify step.
+                      setHint(result.message)
+                      try {
+                        const statusNow = await getConnectStatus(accountId, sessionKey)
+                        if (statusNow.status === 'needs_verification') {
+                          stopPolling()
+                          if (statusNow.hint) setHint(statusNow.hint)
+                          setStep('verify')
+                        } else if (statusNow.status === 'success') {
+                          stopPolling(); setStep('done'); setTimeout(onSaved, 1500)
+                        } else {
+                          // Code is being sent — user will enter it shortly, keep polling
+                          // but preemptively show verify step after 3s
+                          setTimeout(() => {
+                            setStep(prev => prev === 'push' ? 'verify' : prev)
+                          }, 4_000)
+                        }
+                      } catch { /* keep polling */ }
                     } else {
                       setHint(result.message)
                     }

@@ -45,6 +45,8 @@ interface LoginSession {
   hint:            string
   error?:          string
   totpSecret?:     string
+  challengeUrl?:   string    // saved challenge URL so we can navigate back after /feed/ check
+  checkNow?:       boolean   // signal from checkPushApproval to trigger immediate /feed/ check
   debugScreenshot?: string   // base64 PNG captured just before login form interaction
   debugPageText?:  string    // visible text at time of capture
   debugUrl?:       string    // URL at time of capture
@@ -81,6 +83,135 @@ async function saveCookies(context: BrowserContext, accountId: string): Promise<
     .from('linkedin_accounts')
     .update({ cookies: JSON.stringify(cookies), status: 'active' })
     .eq('id', accountId)
+}
+
+/**
+ * Click "Use another way" on a LinkedIn push challenge page, then select
+ * email or SMS and click the "Send code" button.
+ * Returns true if it successfully triggered a code send (or PIN is already visible).
+ */
+async function switchToAltVerification(page: Page, session: LoginSession): Promise<boolean> {
+  // Step 1 — click "Use another way" type link
+  const step1Selectors = [
+    'button:has-text("Use another verification method")',
+    'a:has-text("Use another verification method")',
+    'button:has-text("Use another way")',
+    'a:has-text("Use another way")',
+    'button:has-text("Try another way")',
+    'a:has-text("Try another way")',
+    "button:has-text(\"Don't have access\")",
+    "a:has-text(\"Don't have access\")",
+    'button:has-text("More ways to verify")',
+    'a:has-text("More ways to verify")',
+  ]
+  let clickedStep1 = false
+  for (const sel of step1Selectors) {
+    const el = await page.$(sel).catch(() => null)
+    if (el) {
+      console.log('[LOGIN DEBUG] switchToAlt step1 clicked:', sel)
+      await el.click()
+      await DELAY(2_500)
+      clickedStep1 = true
+      break
+    }
+  }
+  if (!clickedStep1) {
+    console.log('[LOGIN DEBUG] switchToAlt: no step-1 button found')
+    return false
+  }
+
+  // Step 2 — select email option if a method-selection screen appeared
+  const step2Selectors = [
+    'button:has-text("Email")',
+    'label:has-text("Email")',
+    'a:has-text("Email a verification")',
+    'button:has-text("Email a verification")',
+    'input[value="email"]',
+    'input[type="radio"][value*="email"]',
+    '[data-test-id*="email"]',
+  ]
+  for (const sel of step2Selectors) {
+    const el = await page.$(sel).catch(() => null)
+    if (el) {
+      console.log('[LOGIN DEBUG] switchToAlt step2 clicked:', sel)
+      await el.click()
+      await DELAY(1_500)
+      break
+    }
+  }
+
+  // Step 3 — click "Send verification code" / "Continue" / Submit
+  const step3Selectors = [
+    'button[data-litms-control-urn="challenge|primary-action"]',
+    'button.primary-action-new',
+    'button:has-text("Send verification code")',
+    'button:has-text("Send a verification code")',
+    'button:has-text("Get a verification code")',
+    'button:has-text("Send code")',
+    'button:has-text("Send")',
+    'button:has-text("Continue")',
+    'form button[type="submit"]',
+  ]
+  for (const sel of step3Selectors) {
+    const el = await page.$(sel).catch(() => null)
+    if (el) {
+      const btnText = await el.evaluate((e: Element) => (e as HTMLElement).textContent?.trim() ?? '').catch(() => '')
+      if (btnText && !btnText.toLowerCase().includes('cancel') && !btnText.toLowerCase().includes('back')) {
+        console.log('[LOGIN DEBUG] switchToAlt step3 clicked:', btnText)
+        await el.click()
+        await DELAY(3_000)
+        break
+      }
+    }
+  }
+
+  // Step 4 — check if PIN input appeared
+  const hasPin = !!(await page.$(
+    'input#input__email_verification_pin, input[name="pin"], input#input__phone_verification_pin, input[id*="verification"]'
+  ).catch(() => null))
+
+  if (hasPin) {
+    session.status = 'needs_verification'
+    session.hint   = 'Enter the verification code sent to your email or phone.'
+    console.log('[LOGIN DEBUG] switchToAlt: PIN input visible → needs_verification')
+  } else {
+    session.hint = 'A verification code is on its way. Check your email or phone.'
+    console.log('[LOGIN DEBUG] switchToAlt: no PIN yet, hint updated')
+  }
+  return true
+}
+
+/**
+ * Actively check if push was approved by navigating to /feed/ and checking for li_at.
+ * If not approved, navigates back to challengeUrl.
+ */
+async function checkFeedForApproval(
+  page: Page,
+  context: import('playwright').BrowserContext,
+  session: LoginSession,
+  browser: Browser
+): Promise<boolean> {
+  const challengeUrl = session.challengeUrl || page.url()
+  try {
+    console.log('[LOGIN DEBUG] checkFeed: navigating to /feed/')
+    await page.goto('https://www.linkedin.com/feed/', { waitUntil: 'domcontentloaded', timeout: 12_000 })
+    const cookies = await context.cookies()
+    if (cookies.find(c => c.name === 'li_at')) {
+      await saveCookies(context, session.accountId)
+      session.status = 'success'
+      console.log('[LOGIN DEBUG] checkFeed: li_at found → success')
+      await browser.close()
+      return true
+    }
+    // Not approved yet — navigate back to challenge
+    console.log('[LOGIN DEBUG] checkFeed: no li_at, going back to', challengeUrl.substring(0, 80))
+    await page.goto(challengeUrl, { waitUntil: 'domcontentloaded', timeout: 12_000 }).catch(() => {})
+  } catch (err) {
+    console.log('[LOGIN DEBUG] checkFeed error:', String(err).substring(0, 80))
+    // Try to recover
+    await page.goto(challengeUrl, { waitUntil: 'domcontentloaded', timeout: 10_000 }).catch(() => {})
+  }
+  return false
 }
 
 // ── Browser configuration helpers ────────────────────────────────────────────
@@ -842,19 +973,31 @@ async function runLogin(key: string, email: string, password: string): Promise<v
         }
       } catch { /* ok if no button */ }
 
-      session.status = 'pending_push'
-      session.hint   = isAppPush
+      session.status       = 'pending_push'
+      session.hint         = isAppPush
         ? 'Open the LinkedIn app on your phone and tap "Yes, it\'s me" to approve the sign-in.'
         : 'LinkedIn is verifying your identity. Approve on your phone or we\'ll switch to a code automatically.'
+      session.challengeUrl = page.url()
 
       const PUSH_DEADLINE = Date.now() + 3 * 60 * 1000
       let pollCount = 0
+      let altSwitchDone = false
 
       while (Date.now() < PUSH_DEADLINE) {
         await DELAY(2_000)
         pollCount++
         try {
-          // Check cookies first (fastest path)
+          // Every 5 polls (~10 s) — or immediately if signalled — actively check /feed/
+          // This is the primary approval detection when the challenge page's own JS is
+          // blocked by the proxy and cannot auto-redirect.
+          if (session.checkNow || pollCount % 5 === 0) {
+            session.checkNow = false
+            const approved = await checkFeedForApproval(page, context, session, browser)
+            if (approved) return
+            // After navigating back, re-check for PIN input on the challenge page
+          }
+
+          // Fast path: li_at cookie set by auto-redirect (challenge JS working)
           const pushCookies = await context.cookies()
           if (pushCookies.find(c => c.name === 'li_at')) {
             await saveCookies(context, session.accountId)
@@ -863,7 +1006,7 @@ async function runLogin(key: string, email: string, password: string): Promise<v
             return
           }
 
-          // Check if LinkedIn's page JS auto-redirected away from challenge
+          // Detect auto-redirect away from challenge (LinkedIn JS working)
           const nowUrl = page.url()
           const leftChallenge =
             !nowUrl.includes('/checkpoint') &&
@@ -871,8 +1014,8 @@ async function runLogin(key: string, email: string, password: string): Promise<v
             !nowUrl.includes('verification') &&
             !nowUrl.includes('/login')
           if (leftChallenge) {
-            const afterRedirectCookies = await context.cookies()
-            if (afterRedirectCookies.find(c => c.name === 'li_at')) {
+            const afterCookies = await context.cookies()
+            if (afterCookies.find(c => c.name === 'li_at')) {
               await saveCookies(context, session.accountId)
               session.status = 'success'
               await browser.close()
@@ -880,57 +1023,36 @@ async function runLogin(key: string, email: string, password: string): Promise<v
             }
           }
 
-          // Check if PIN input appeared (LinkedIn switched challenge type after push)
+          // PIN input appeared (LinkedIn switched from push to code)
           const pinNow = await page.$('input#input__email_verification_pin, input[name="pin"], input#input__phone_verification_pin').catch(() => null)
-          if (pinNow && session.totpSecret) {
-            try {
-              const totp = speakeasy.totp({ secret: session.totpSecret, encoding: 'base32' })
-              await page.fill('input#input__email_verification_pin, input[name="pin"], input#input__phone_verification_pin', totp)
-              await DELAY(300)
-              const sb = await page.$('button[type="submit"], button:has-text("Submit"), button:has-text("Verify")')
-              if (sb) await sb.click(); else await page.keyboard.press('Enter')
-              await page.waitForLoadState('domcontentloaded', { timeout: 10_000 }).catch(() => {})
-              const totpCookies = await context.cookies()
-              if (totpCookies.find(c => c.name === 'li_at')) {
-                await saveCookies(context, session.accountId)
-                session.status = 'success'
-                await browser.close()
-                return
-              }
-            } catch { /* fall through */ }
-          } else if (pinNow) {
-            // PIN input appeared — user can enter code
+          if (pinNow) {
+            if (session.totpSecret) {
+              try {
+                const totp = speakeasy.totp({ secret: session.totpSecret, encoding: 'base32' })
+                await page.fill('input#input__email_verification_pin, input[name="pin"], input#input__phone_verification_pin', totp)
+                await DELAY(300)
+                const sb = await page.$('button[type="submit"], button:has-text("Submit"), button:has-text("Verify")')
+                if (sb) await sb.click(); else await page.keyboard.press('Enter')
+                await page.waitForLoadState('domcontentloaded', { timeout: 10_000 }).catch(() => {})
+                const totpCookies = await context.cookies()
+                if (totpCookies.find(c => c.name === 'li_at')) {
+                  await saveCookies(context, session.accountId)
+                  session.status = 'success'
+                  await browser.close()
+                  return
+                }
+              } catch { /* fall through to manual */ }
+            }
             session.status = 'needs_verification'
             session.hint   = 'LinkedIn sent a verification code. Check your email or phone.'
             return
           }
 
-          // After ~20s with no push approval, try clicking "Use another way" / email/SMS link
-          if (pollCount === 10) {
-            try {
-              const altSelectors = [
-                'button:has-text("Use another verification method")',
-                'a:has-text("Use another verification method")',
-                'button:has-text("Use another way")',
-                'a:has-text("Use another way")',
-                'button:has-text("Try another way")',
-                'a:has-text("Try another way")',
-                'button:has-text("Send me an email")',
-                'button:has-text("Get an email")',
-                'button:has-text("Email a link")',
-                'a:has-text("Send me an email")',
-              ]
-              for (const sel of altSelectors) {
-                const el = await page.$(sel).catch(() => null)
-                if (el) {
-                  console.log('[LOGIN DEBUG] Auto-clicking alternative verification:', sel)
-                  await el.click()
-                  await DELAY(3000)
-                  session.hint = 'Switching to email/SMS code verification…'
-                  break
-                }
-              }
-            } catch { /* ok */ }
+          // After ~30 s with no approval, switch to email/SMS code
+          if (!altSwitchDone && pollCount >= 15) {
+            altSwitchDone = true
+            const switched = await switchToAltVerification(page, session)
+            if (switched && session.status === 'needs_verification') return
           }
         } catch { /* network blip, keep polling */ }
       }
@@ -1039,20 +1161,54 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       } catch { /* ok */ }
     }
 
-    // Store the original challenge URL so we can return to it if needed
+    // Store the original challenge URL so we can return to it after /feed/ checks
     const challengeUrl = page.url()
+    session.challengeUrl = challengeUrl
 
     session.status = 'pending_push'
     session.hint   = hint || 'Check your phone and tap "Yes, it\'s me" on the LinkedIn notification.'
 
+    // Click the push trigger button IMMEDIATELY — don't wait for the first loop iteration.
+    // This saves ~2 seconds and sends the push notification sooner.
+    try {
+      const triggerBtn = await page.$(
+        'button[data-litms-control-urn="challenge|primary-action"], button.primary-action-new, ' +
+        'button:has-text("Continue"), button:has-text("Send push"), button:has-text("Use the app"), ' +
+        'form button[type="submit"]'
+      ).catch(() => null)
+      if (triggerBtn) {
+        const triggerText = (await triggerBtn.evaluate((el: Element) => (el as HTMLElement).textContent?.trim()).catch(() => '')).toLowerCase()
+        if (!triggerText.includes('cancel') && !triggerText.includes('back') && !triggerText.includes('email') && !triggerText.includes('sms')) {
+          console.log('[LOGIN DEBUG] Loop2: clicking trigger button immediately:', triggerText)
+          await triggerBtn.click()
+          await DELAY(1_500)
+          try {
+            const updatedHintEl = await page.$('.secondary-action, .challenge-main-content p, h1, h2')
+            if (updatedHintEl) session.hint = (await updatedHintEl.innerText()).trim()
+          } catch { /* ok */ }
+        }
+      }
+    } catch { /* ok */ }
+
     const DEADLINE = Date.now() + 3 * 60 * 1000
     let pollCount  = 0
+    let altSwitchDone = false
 
     while (Date.now() < DEADLINE) {
       await DELAY(2_000)
       pollCount++
 
       try {
+        // Every 5 polls (~10 s) — or on demand — actively navigate to /feed/ to check
+        // if the push was approved. This is the primary mechanism when the challenge
+        // page's own JavaScript is blocked by the proxy.
+        if (session.checkNow || pollCount % 5 === 0) {
+          session.checkNow = false
+          const approved = await checkFeedForApproval(page, context, session, browser)
+          if (approved) return
+        }
+
+        // Fast-path cookie check (challenge page JS auto-redirected and set li_at)
         const cookies = await context.cookies()
         if (cookies.find(c => c.name === 'li_at')) {
           await saveCookies(context, session.accountId)
@@ -1061,14 +1217,14 @@ async function runLogin(key: string, email: string, password: string): Promise<v
           return
         }
 
+        // Auto-redirect detection
         const currentUrl = page.url()
-        const stillOnChallenge =
-          currentUrl.includes('/checkpoint') ||
-          currentUrl.includes('/challenge') ||
-          currentUrl.includes('verification') ||
-          currentUrl.includes('login')
-
-        if (!stillOnChallenge) {
+        const leftChallenge =
+          !currentUrl.includes('/checkpoint') &&
+          !currentUrl.includes('/challenge') &&
+          !currentUrl.includes('verification') &&
+          !currentUrl.includes('/login')
+        if (leftChallenge) {
           const freshCookies = await context.cookies()
           if (freshCookies.find(c => c.name === 'li_at')) {
             await saveCookies(context, session.accountId)
@@ -1078,57 +1234,11 @@ async function runLogin(key: string, email: string, password: string): Promise<v
           }
         }
 
-        // Do NOT navigate to /feed/ proactively — LinkedIn counts each attempt and
-        // will block with tooManyAttempts. Instead, let LinkedIn's own page JS detect
-        // the push approval and redirect the browser automatically.
-        // We just check if the URL has moved away from the challenge page (success).
-        const currentUrlCheck = page.url()
-        const leftChallenge =
-          !currentUrlCheck.includes('/checkpoint') &&
-          !currentUrlCheck.includes('/challenge') &&
-          !currentUrlCheck.includes('verification') &&
-          !currentUrlCheck.includes('/login')
-        if (leftChallenge) {
-          const autoRedirectCookies = await context.cookies()
-          if (autoRedirectCookies.find(c => c.name === 'li_at')) {
-            await saveCookies(context, session.accountId)
-            session.status = 'success'
-            await browser.close()
-            return
-          }
-        }
-
-        // Click once on the very first poll to trigger the push notification.
-        // Never re-click — repeated clicks send repeated notifications.
-        if (pollCount === 1) {
-          try {
-            const continueBtn = await page.$(
-              'button:has-text("Continue"), button:has-text("Send verification code"), ' +
-              'button:has-text("Send a verification code"), button:has-text("Request a verification code"), ' +
-              'button:has-text("Send code"), button:has-text("Get a verification code"), ' +
-              'button:has-text("Request verification"), button:has-text("Send"), ' +
-              'button[data-litms-control-urn="challenge|primary-action"], ' +
-              'button.primary-action-new, ' +
-              'form button[type="submit"]'
-            )
-            if (continueBtn) {
-              const btnText = (await continueBtn.evaluate((el: Element) => (el as HTMLElement).textContent?.trim()) ?? '').toLowerCase()
-              if (!btnText.includes('cancel') && !btnText.includes('back')) {
-                await continueBtn.click()
-                await DELAY(2000)
-                const hintEl2 = await page.$('.secondary-action, .challenge-main-content p, h1, h2')
-                if (hintEl2) session.hint = (await hintEl2.innerText()).trim()
-              }
-            }
-          } catch { /* ok */ }
-        }
-
-        // Did LinkedIn switch to PIN after push confirmation?
+        // PIN input detection — LinkedIn switched from push to code
         const nowHasPin = !!(await page.$(
-          'input#input__email_verification_pin, input[name="pin"], input#input__phone_verification_pin'
-        ))
+          'input#input__email_verification_pin, input[name="pin"], input#input__phone_verification_pin, input[id*="verification"]'
+        ).catch(() => null))
         if (nowHasPin) {
-          // Try TOTP first if we have the secret
           if (session.totpSecret) {
             try {
               const code = speakeasy.totp({ secret: session.totpSecret, encoding: 'base32' })
@@ -1142,14 +1252,14 @@ async function runLogin(key: string, email: string, password: string): Promise<v
               else await page.keyboard.press('Enter')
               await page.waitForLoadState('domcontentloaded', { timeout: 15_000 })
               await DELAY(2000)
-              const cookies = await context.cookies()
-              if (cookies.find(c => c.name === 'li_at')) {
+              const totpCookies = await context.cookies()
+              if (totpCookies.find(c => c.name === 'li_at')) {
                 await saveCookies(context, session.accountId)
                 session.status = 'success'
                 await browser.close()
                 return
               }
-            } catch { /* fall through */ }
+            } catch { /* fall through to manual */ }
           }
           let newHint = ''
           try {
@@ -1159,6 +1269,13 @@ async function runLogin(key: string, email: string, password: string): Promise<v
           session.status = 'needs_verification'
           session.hint   = newHint || 'Enter the verification code sent to your email or phone.'
           return
+        }
+
+        // After ~30 s with no approval, switch to email/SMS code automatically
+        if (!altSwitchDone && pollCount >= 15) {
+          altSwitchDone = true
+          const switched = await switchToAltVerification(page, session)
+          if (switched && session.status === 'needs_verification') return
         }
       } catch {
         // Page navigating — keep polling
@@ -1302,19 +1419,14 @@ export async function checkPushApproval(sessionKey: string): Promise<LoginStatus
   const s = sessions.get(sessionKey)
   if (!s) return { status: 'not_found' }
   if (s.status === 'success') return { status: 'success' }
-  if (s.status !== 'pending_push' || !s.page || !s.context) return getLoginStatus(sessionKey)
+  if (s.status !== 'pending_push') return getLoginStatus(sessionKey)
 
-  try {
-    await s.page.goto('https://www.linkedin.com/feed/', { waitUntil: 'domcontentloaded', timeout: 10_000 })
-    await new Promise(r => setTimeout(r, 2000))
-    const cookies = await s.context.cookies()
-    if (cookies.find(c => c.name === 'li_at')) {
-      await saveCookies(s.context, s.accountId)
-      s.status = 'success'
-      await s.browser?.close()
-      return { status: 'success' }
-    }
-  } catch { /* ignore — background poll will catch it */ }
+  // Signal the background polling loop to do an immediate /feed/ check on its next iteration.
+  // We don't navigate directly here to avoid racing with the loop's own page.goto() calls.
+  s.checkNow = true
+
+  // Give the background loop up to 4 s to complete the check
+  await new Promise(r => setTimeout(r, 4_000))
 
   return getLoginStatus(sessionKey)
 }
@@ -1389,30 +1501,15 @@ export async function requestVerificationCode(
     return { status: 'already_on_code', message: 'Already waiting for a code.' }
   }
 
-  const altSelectors = [
-    'button:has-text("Use another verification method")',
-    'a:has-text("Use another verification method")',
-    'button:has-text("Use another way")',
-    'a:has-text("Use another way")',
-    'button:has-text("Try another way")',
-    'a:has-text("Try another way")',
-    'button:has-text("Send me an email")',
-    'button:has-text("Get an email")',
-    'button:has-text("Email a link")',
-    'a:has-text("Send me an email")',
-  ]
-
   try {
-    for (const sel of altSelectors) {
-      const el = await s.page.$(sel).catch(() => null)
-      if (el) {
-        await el.click()
-        await new Promise(r => setTimeout(r, 3000))
-        s.hint = 'Switching to email/SMS code verification…'
-        return { status: 'switching', message: 'Switching to code verification — check your email or phone.' }
-      }
+    const switched = await switchToAltVerification(s.page, s)
+    if (!switched) {
+      return { status: 'error', message: 'No alternative verification button found on the page. Please wait — we\'ll switch automatically in 30 seconds.' }
     }
-    return { status: 'error', message: 'No alternative verification button found on the page.' }
+    if ((s as LoginSession).status === 'needs_verification') {
+      return { status: 'switching', message: 'Code sent! Enter the verification code below.' }
+    }
+    return { status: 'switching', message: 'A verification code is on its way. Check your email or phone.' }
   } catch (err) {
     return { status: 'error', message: err instanceof Error ? err.message : 'Unknown error' }
   }
