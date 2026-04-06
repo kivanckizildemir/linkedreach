@@ -1065,8 +1065,6 @@ function ConnectModal({
         {/* Header */}
         <div className="flex items-start justify-between px-6 py-4 border-b border-gray-100">
           <div className="flex items-center gap-3">
-            {false && (
-            )}
             <div>
               <h2 className="text-lg font-semibold text-gray-900">{headerTitle}</h2>
               <p className="text-xs text-gray-500 mt-0.5">{headerSub}</p>
