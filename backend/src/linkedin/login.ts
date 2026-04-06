@@ -575,13 +575,11 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       }
     }
 
-    // ── Credential submission via direct Node.js HTTP POST through BrightData proxy ─
-    // BrightData Scraping Browser blocks form.submit() to /checkpoint/lg/login-submit
-    // (navigation hangs indefinitely). Instead:
-    // 1. Extract all form tokens from the browser page via evaluate()
-    // 2. Get page cookies from the BrightData browser context
-    // 3. POST directly from Node.js using undici through BRIGHTDATA_PROXY_URL
-    //    (bypasses the browser restriction while keeping the correct session cookies)
+    // ── Credential submission via real browser interaction ────────────────────────
+    // LinkedIn's SDUI form now encrypts credentials client-side (encrypted_session_key).
+    // Direct HTTP POST can't replicate that encryption. Using page.type() + page.click()
+    // lets LinkedIn's own JavaScript handle it, and looks like a real user to their
+    // bot-detection systems.
 
     // Step 1: Extract form fields (non-password) from the login form.
     // LinkedIn's newer SPA uses Shadow DOM / web components, so document.querySelector
@@ -699,78 +697,62 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       }
     }
 
-    // Step 2: Build the POST body with all form fields + the password
-    const postFields: Record<string, string> = {
-      ...formFields.fields,
-      session_password: password,
+    // Step 2: Type credentials into the form fields with human-like delays.
+    // page.type() fires real keyboard events — LinkedIn's JS tracks these for bot detection.
+    const passSelector = '#password, input[name="session_password"], input[type="password"]'
+    await page.waitForSelector(passSelector, { timeout: 10_000 }).catch(() => {
+      console.log('[LOGIN DEBUG] Password field not visible via waitForSelector')
+    })
+
+    await dismissBanners()
+
+    // Clear then type — ensures React state updates correctly
+    await page.fill(emailSelector, '')
+    await page.type(emailSelector, email, { delay: 55 + Math.floor(Math.random() * 70) })
+    await DELAY(400 + Math.random() * 400)
+
+    await page.fill(passSelector, '')
+    await page.type(passSelector, password, { delay: 55 + Math.floor(Math.random() * 70) })
+    await DELAY(400 + Math.random() * 400)
+
+    await captureSnap('pre-submit')
+
+    // Step 3: Click the submit button — LinkedIn's JS will encrypt credentials and submit.
+    const submitBtn = await page.$(
+      'button[type="submit"], .btn__primary--large, ' +
+      'button[data-litms-control-urn="guest|submit"], ' +
+      'button[data-id="sign-in-form__submit-btn"], ' +
+      'form .sign-in-form__submit-btn'
+    ).catch(() => null)
+
+    const preSubmitUrl = page.url()
+    if (submitBtn) {
+      console.log('[LOGIN DEBUG] Clicking submit button')
+      await submitBtn.click()
+    } else {
+      console.log('[LOGIN DEBUG] No submit button found — pressing Enter')
+      await page.keyboard.press('Enter')
     }
 
-    // LinkedIn's login form has action="/checkpoint/lg/login-submit" as a relative path.
-    const formAction = formFields.action
-      ? (formFields.action.startsWith('http')
-          ? formFields.action
-          : `https://www.linkedin.com${formFields.action}`)
-      : 'https://www.linkedin.com/checkpoint/lg/login-submit'
-    console.log('[LOGIN DEBUG] Submitting POST to:', formAction)
-    console.log('[LOGIN DEBUG] Fields:', Object.keys(postFields).join(', '))
-
-    // Step 3: POST via Playwright's context.request — uses the SAME IP/session as the browser
-    // This is critical: LinkedIn validates that the POST comes from the same IP as the page load.
-    // Using undici (direct Node.js fetch) sends from Railway's IP, causing CSRF/session mismatch.
-    let loginResponseUrl = ''
-    let loginResponseCookies: string[] = []
-    let loginResponseStatus = 0
-    let loginError = ''
-    let loginResponseBody = ''
-
+    // Wait for navigation away from the login page
     try {
-      // context.request shares the browser context's cookies and IP (BrightData residential)
-      // Follow redirects (maxRedirects: 5) so all intermediate cookies get set in the browser
-      // context (including chp_token from the challenge redirect).
-      const apiResponse = await context.request.post(formAction, {
-        form: postFields,
-        headers: {
-          'Referer': page.url(),
-          'Origin': 'https://www.linkedin.com',
-        },
-        maxRedirects: 5,
-      })
-
-      loginResponseStatus = apiResponse.status()
-      loginResponseUrl = apiResponse.url()  // Final URL after following redirects
-      // Get cookies from browser context (now includes all redirect chain cookies)
-      const responseCookies = await context.cookies('https://www.linkedin.com')
-      loginResponseCookies = responseCookies.map(c => `${c.name}=${c.value}`)
-
-      // Capture response body to see what LinkedIn returned
-      try {
-        loginResponseBody = (await apiResponse.text()).substring(0, 500)
-      } catch { /* ok */ }
-
-      console.log('[LOGIN DEBUG] POST response status:', loginResponseStatus, 'finalUrl:', loginResponseUrl)
-      console.log('[LOGIN DEBUG] Response body preview:', loginResponseBody.substring(0, 200))
-
-    } catch (fetchErr) {
-      loginError = String(fetchErr)
-      console.error('[LOGIN DEBUG] Fetch error:', loginError)
+      await page.waitForURL(
+        (u) => !String(u).includes('/login') || String(u).includes('/checkpoint') || String(u).includes('/challenge'),
+        { timeout: 25_000, waitUntil: 'domcontentloaded' }
+      )
+    } catch {
+      console.log('[LOGIN DEBUG] waitForURL timed out after submit — checking page state anyway')
     }
+    await DELAY(1500)
+    await captureSnap('post-submit')
 
-    if (loginError) {
-      session.status = 'error'
-      session.error  = `Login POST failed: ${loginError.substring(0, 200)}`
-      await browser.close()
-      return
-    }
-
-    // Parse the response to determine outcome
-    // LinkedIn returns 302/303 redirect with Location header after login attempt.
-    // Since we used context.request.post(), cookies are already in the browser context.
-    const redirectLocation = loginResponseUrl || ''
-
-    const submitDiag = `status=${loginResponseStatus} location=${redirectLocation.substring(0,80)}`
+    // Map browser state into the variable names used by the rest of this function
+    const redirectLocation = page.url()
+    const submitDiag = `post-submit url=${redirectLocation.substring(0, 80)}`
+    console.log('[LOGIN DEBUG]', submitDiag)
 
     // Check if li_at is now in the browser context (login succeeded without challenge)
-    const cookiesAfterPost = await context.cookies('https://www.linkedin.com')
+    const cookiesAfterPost = await context.cookies()
     const liAtCookie = cookiesAfterPost.find(c => c.name === 'li_at' && c.value && c.value.length > 5)
 
     if (liAtCookie) {
@@ -780,18 +762,32 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       return
     }
 
-    // Check for bad credentials (redirected to /login with error)
-    const isLoginRedirect = redirectLocation.includes('/login') && !redirectLocation.includes('/login-submit')
+    // Check for bad credentials (stayed on /login or redirected back with error)
+    const isLoginRedirect = redirectLocation.includes('/login') && !redirectLocation.includes('/checkpoint') && !redirectLocation.includes('/challenge')
     const isErrorRedirect = redirectLocation.includes('errorKey') || redirectLocation.includes('unexpected_error')
     const isChallenge = redirectLocation.includes('/checkpoint') || redirectLocation.includes('/challenge') || redirectLocation.includes('verification')
-    const isLoginSubmit = redirectLocation.includes('/login-submit')
 
-    const url = redirectLocation || formAction
+    const url = redirectLocation
+
+    // Read any inline error message from the page (wrong password, account locked, etc.)
+    let pageErrorText = ''
+    try {
+      const errEl = await page.$('[role="alert"], .alert-content, .form__label--error, #error-for-password, #error-for-username')
+      if (errEl) pageErrorText = (await errEl.innerText().catch(() => '')).trim()
+    } catch { /* ok */ }
 
     // If redirected to login with error — wrong credentials or unexpected error
     if ((isLoginRedirect && !isChallenge) || isErrorRedirect) {
       session.status = 'error'
-      session.error  = `Login failed: ${redirectLocation.substring(0, 150)}`
+      session.error  = pageErrorText || 'Incorrect email or password. Please check your credentials.'
+      await browser.close()
+      return
+    }
+
+    // If we never left the login page and there's no challenge — submission may have silently failed
+    if (redirectLocation === preSubmitUrl && !isChallenge) {
+      session.status = 'error'
+      session.error  = pageErrorText || 'Login form did not submit. LinkedIn may have changed their form structure. Please try reconnecting.'
       await browser.close()
       return
     }
@@ -808,23 +804,20 @@ async function runLogin(key: string, email: string, password: string): Promise<v
         return
       }
 
-      console.log('[LOGIN DEBUG] Challenge URL obtained:', url)
-      // Navigate the browser to the challenge URL so we can inspect the page
+      console.log('[LOGIN DEBUG] Challenge page detected:', url.substring(0, 80))
+      // With the browser-click approach, we are ALREADY on the challenge page after submit.
+      // Wait for networkidle so the React/JS challenge UI fully renders before we read it.
+      // LinkedIn's challenge pages load their content via API calls after the initial HTML.
       let postNavUrl = page.url()
       let postNavText = ''
-      if (url) {
-        const navUrl = url.startsWith('http') ? url : `https://www.linkedin.com${url}`
-        console.log('[LOGIN DEBUG] Navigating browser to challenge:', navUrl)
-        try {
-          await page.goto(navUrl, { waitUntil: 'domcontentloaded', timeout: 20_000 })
-          await DELAY(2000)
-        } catch (navErr) {
-          console.log('[LOGIN DEBUG] Navigation error (ok):', String(navErr).substring(0, 100))
-        }
-        postNavUrl = page.url()
-        postNavText = await page.evaluate(() => (document.body?.innerText ?? '').substring(0, 500)).catch(() => '') as string
-        console.log('[LOGIN DEBUG] Post-nav URL:', postNavUrl, 'text:', postNavText.substring(0, 150))
-      }
+      try {
+        await page.waitForLoadState('networkidle', { timeout: 15_000 })
+      } catch { /* ok — some challenges never reach networkidle */ }
+      await DELAY(3_000) // extra buffer for any lazy-loaded challenge widgets
+      postNavUrl = page.url()
+      postNavText = await page.evaluate(() => (document.body?.innerText ?? '').substring(0, 600)).catch(() => '') as string
+      console.log('[LOGIN DEBUG] Challenge rendered. URL:', postNavUrl)
+      console.log('[LOGIN DEBUG] Challenge text:', postNavText.substring(0, 250))
 
       // If the proxy redirected us back to the login page instead of the challenge page,
       // we can't complete 2FA through it. Ask the user to use Quick Login instead.
@@ -851,9 +844,26 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       const hasPinInputNow = !!(await page.$(
         'input#input__email_verification_pin, input[name="pin"], input#input__phone_verification_pin, input[id*="verification"], input[name*="verification"]'
       ).catch(() => null))
+
+      // "Let's do a quick security check" / CAPTCHA — page rendered but has no actionable
+      // inputs. This is LinkedIn's bot-detection challenge requiring human interaction.
+      // It appears when Railway's IP or the proxy IP is flagged as suspicious.
+      const isSecurityCheck = (textLower.includes('security check') || textLower.includes('quick security') || textLower.includes('suspicious activity'))
+        && !hasPinInputNow
+      if (isSecurityCheck) {
+        console.log('[LOGIN DEBUG] LinkedIn security check detected — requires manual resolution')
+        await supabase.from('linkedin_accounts').update({
+          debug_log: { label: 'security_check', postNavUrl, postNavText: postNavText.substring(0, 400), capturedAt: new Date().toISOString() }
+        }).eq('id', session.accountId)
+        session.status = 'error'
+        session.error  = 'LinkedIn is asking for a security check that requires human interaction. Please use the "Set Session Cookie" method: log in to LinkedIn in your browser, copy the li_at cookie, and paste it here instead.'
+        await browser.close()
+        return
+      }
+
       const isEmailChallenge = textLower.includes('email') || textLower.includes('sent a code') || textLower.includes('check your inbox')
       const isPhoneChallenge = textLower.includes('text message') || textLower.includes('sms') || (textLower.includes('phone') && !textLower.includes('approve'))
-      // Deliberately excludes 'linked' to avoid false-positive on the login page
+      // Includes notification/approve text OR very short page (still loading) → treat as push
       const isAppPush = textLower.includes('approve') || textLower.includes('tap') || textLower.includes('notification') || postNavText.length < 30
 
       // Auto-click "Send verification code" if visible (email/phone OTP challenge)
@@ -900,7 +910,6 @@ async function runLogin(key: string, email: string, password: string): Promise<v
           isEmailChallenge,
           isPhoneChallenge,
           isAppPush,
-          postStatus: loginResponseStatus,
           capturedAt: new Date().toISOString(),
         }
       }).eq('id', session.accountId)
@@ -1094,10 +1103,6 @@ async function runLogin(key: string, email: string, password: string): Promise<v
         postNavText: postNavText.substring(0, 400),
         cookieNames: finalCookies.map(c => c.name),
         challengeRedirectUrl: url,
-        postStatus: loginResponseStatus,
-        postLocation: loginResponseUrl,
-        postCookies: loginResponseCookies.map(c => c.split(';')[0].substring(0, 50)),
-        postResponseBody: loginResponseBody,
         capturedAt: new Date().toISOString(),
       }
     }).eq('id', session.accountId)
