@@ -1079,22 +1079,42 @@ function ConnectModal({
           {/* ── Method picker ── */}
           {method === 'select' && (
             <div className="space-y-3">
-              {/* Infinite Login */}
+              {/* Quick Login — top option, most reliable */}
               <button
-                onClick={() => setMethod('infinite')}
+                onClick={() => setMethod('cookie')}
                 className="w-full text-left border-2 border-blue-500 rounded-xl p-4 hover:bg-blue-50 transition-colors group"
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex-1">
                     <div className="flex items-center gap-2">
+                      <span className="text-sm font-semibold text-gray-900">Quick Login</span>
+                      <span className="text-[10px] font-bold px-2 py-0.5 bg-blue-600 text-white rounded-full uppercase tracking-wide">Most Reliable</span>
+                    </div>
+                    <p className="mt-1 text-xs text-gray-500">
+                      Log in to LinkedIn in your own browser, paste your session cookie here. Works 100% — no proxy, no bot detection.
+                    </p>
+                  </div>
+                  <svg className="w-5 h-5 text-blue-500 flex-shrink-0 mt-0.5 group-hover:translate-x-0.5 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  </svg>
+                </div>
+              </button>
+
+              {/* Infinite Login */}
+              <button
+                onClick={() => setMethod('infinite')}
+                className="w-full text-left border border-gray-200 rounded-xl p-4 hover:bg-gray-50 transition-colors group"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2">
                       <span className="text-sm font-semibold text-gray-900">Infinite Login</span>
-                      <span className="text-[10px] font-bold px-2 py-0.5 bg-blue-600 text-white rounded-full uppercase tracking-wide">Your Best Choice</span>
                     </div>
                     <p className="mt-1 text-xs text-gray-500">
                       Enter your credentials + 2FA secret key. We generate TOTP codes automatically — your session never expires.
                     </p>
                   </div>
-                  <svg className="w-5 h-5 text-blue-500 flex-shrink-0 mt-0.5 group-hover:translate-x-0.5 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <svg className="w-5 h-5 text-gray-400 flex-shrink-0 mt-0.5 group-hover:translate-x-0.5 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                   </svg>
                 </div>
@@ -1107,30 +1127,9 @@ function ConnectModal({
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-semibold text-gray-900">Interactive Browser Login</span>
-                      <span className="text-[10px] font-bold px-2 py-0.5 bg-green-600 text-white rounded-full uppercase tracking-wide">Recommended</span>
-                    </div>
+                    <span className="text-sm font-semibold text-gray-900">Interactive Browser Login</span>
                     <p className="mt-1 text-xs text-gray-500">
                       LinkedIn's real login page opens in a browser below. You type your credentials directly — handles any 2FA automatically.
-                    </p>
-                  </div>
-                  <svg className="w-5 h-5 text-gray-400 flex-shrink-0 mt-0.5 group-hover:translate-x-0.5 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                  </svg>
-                </div>
-              </button>
-
-              {/* Quick Login */}
-              <button
-                onClick={() => setMethod('cookie')}
-                className="w-full text-left border border-gray-200 rounded-xl p-4 hover:bg-gray-50 transition-colors group"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex-1">
-                    <span className="text-sm font-semibold text-gray-900">Quick Login</span>
-                    <p className="mt-1 text-xs text-gray-500">
-                      Log in with your real browser, then copy your session cookie in one command. Fast and no password needed.
                     </p>
                   </div>
                   <svg className="w-5 h-5 text-gray-400 flex-shrink-0 mt-0.5 group-hover:translate-x-0.5 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
