@@ -845,13 +845,14 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       session.status = 'pending_push'
       session.hint   = isAppPush
         ? 'Open the LinkedIn app on your phone and tap "Yes, it\'s me" to approve the sign-in.'
-        : `LinkedIn requires verification. Open this URL to complete it: ${url.substring(0, 120)}`
+        : 'LinkedIn is verifying your identity. Approve on your phone or we\'ll switch to a code automatically.'
 
-      const pushChallengeUrl = page.url()
-      const PUSH_DEADLINE    = Date.now() + 3 * 60 * 1000
+      const PUSH_DEADLINE = Date.now() + 3 * 60 * 1000
+      let pollCount = 0
 
       while (Date.now() < PUSH_DEADLINE) {
         await DELAY(2_000)
+        pollCount++
         try {
           // Check cookies first (fastest path)
           const pushCookies = await context.cookies()
@@ -898,15 +899,44 @@ async function runLogin(key: string, email: string, password: string): Promise<v
               }
             } catch { /* fall through */ }
           } else if (pinNow) {
+            // PIN input appeared — user can enter code
             session.status = 'needs_verification'
-            session.hint   = 'LinkedIn is asking for a verification code.'
+            session.hint   = 'LinkedIn sent a verification code. Check your email or phone.'
             return
+          }
+
+          // After ~20s with no push approval, try clicking "Use another way" / email/SMS link
+          if (pollCount === 10) {
+            try {
+              const altSelectors = [
+                'button:has-text("Use another verification method")',
+                'a:has-text("Use another verification method")',
+                'button:has-text("Use another way")',
+                'a:has-text("Use another way")',
+                'button:has-text("Try another way")',
+                'a:has-text("Try another way")',
+                'button:has-text("Send me an email")',
+                'button:has-text("Get an email")',
+                'button:has-text("Email a link")',
+                'a:has-text("Send me an email")',
+              ]
+              for (const sel of altSelectors) {
+                const el = await page.$(sel).catch(() => null)
+                if (el) {
+                  console.log('[LOGIN DEBUG] Auto-clicking alternative verification:', sel)
+                  await el.click()
+                  await DELAY(3000)
+                  session.hint = 'Switching to email/SMS code verification…'
+                  break
+                }
+              }
+            } catch { /* ok */ }
           }
         } catch { /* network blip, keep polling */ }
       }
 
       session.status = 'error'
-      session.error  = 'Push notification not approved within 3 minutes. Please try again.'
+      session.error  = 'Verification not completed within 3 minutes. Please try again.'
       await browser.close()
       return
     }
@@ -1340,6 +1370,50 @@ export async function submitVerificationCode(
   } catch (err) {
     sessions.delete(sessionKey)
     await browser.close().catch(() => {})
+    return { status: 'error', message: err instanceof Error ? err.message : 'Unknown error' }
+  }
+}
+
+/**
+ * Immediately try to switch to email/SMS code verification.
+ * Called when the user clicks "Request a code instead" in the UI.
+ */
+export async function requestVerificationCode(
+  sessionKey: string
+): Promise<{ status: 'switching' | 'already_on_code' | 'error'; message: string }> {
+  const s = sessions.get(sessionKey)
+  if (!s?.page) return { status: 'error', message: 'Session not found or already closed.' }
+
+  // If already waiting for a PIN, nothing to do
+  if (s.status === 'needs_verification') {
+    return { status: 'already_on_code', message: 'Already waiting for a code.' }
+  }
+
+  const altSelectors = [
+    'button:has-text("Use another verification method")',
+    'a:has-text("Use another verification method")',
+    'button:has-text("Use another way")',
+    'a:has-text("Use another way")',
+    'button:has-text("Try another way")',
+    'a:has-text("Try another way")',
+    'button:has-text("Send me an email")',
+    'button:has-text("Get an email")',
+    'button:has-text("Email a link")',
+    'a:has-text("Send me an email")',
+  ]
+
+  try {
+    for (const sel of altSelectors) {
+      const el = await s.page.$(sel).catch(() => null)
+      if (el) {
+        await el.click()
+        await new Promise(r => setTimeout(r, 3000))
+        s.hint = 'Switching to email/SMS code verification…'
+        return { status: 'switching', message: 'Switching to code verification — check your email or phone.' }
+      }
+    }
+    return { status: 'error', message: 'No alternative verification button found on the page.' }
+  } catch (err) {
     return { status: 'error', message: err instanceof Error ? err.message : 'Unknown error' }
   }
 }

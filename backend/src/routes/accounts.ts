@@ -3,7 +3,7 @@ import type { Request, Response } from 'express'
 import { supabase } from '../lib/supabase'
 import { requireAuth } from '../middleware/auth'
 import type { AccountStatus } from '../types'
-import { startLogin, submitVerificationCode, getLoginStatus, checkPushApproval, getSessionScreenshot, getSessionPageInfo, getSessionDebugSnapshot, interactWithPage, testProxyRaw } from '../linkedin/login'
+import { startLogin, submitVerificationCode, getLoginStatus, checkPushApproval, getSessionScreenshot, getSessionPageInfo, getSessionDebugSnapshot, interactWithPage, testProxyRaw, requestVerificationCode } from '../linkedin/login'
 import { createSession } from '../linkedin/session'
 // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-explicit-any
 const { chromium } = require('playwright-extra') as any
@@ -273,6 +273,20 @@ accountsRouter.post('/:id/health-check', async (req: Request, res: Response) => 
   } finally {
     if (browser) await browser.close().catch(() => undefined)
   }
+})
+
+// POST /api/accounts/:id/request-code/:sessionKey — click "Use another way" to get email/SMS code
+accountsRouter.post('/:id/request-code/:sessionKey', async (req: Request, res: Response) => {
+  const { error: accountErr } = await supabase
+    .from('linkedin_accounts')
+    .select('id')
+    .eq('id', req.params.id)
+    .eq('user_id', req.user.id)
+    .single()
+  if (accountErr) { res.status(404).json({ error: 'Account not found' }); return }
+
+  const result = await requestVerificationCode(String(req.params.sessionKey))
+  res.json(result)
 })
 
 // POST /api/accounts/:id/connect-verify — submit 2FA code

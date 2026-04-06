@@ -109,6 +109,15 @@ export async function verifyConnectCode(
   return res.json() as Promise<{ status: 'success' } | { status: 'error'; message: string }>
 }
 
+export async function requestVerificationCode(
+  accountId: string,
+  sessionKey: string
+): Promise<{ status: 'switching' | 'already_on_code' | 'error'; message: string }> {
+  const res = await apiFetch(`/api/accounts/${accountId}/request-code/${sessionKey}`, { method: 'POST' })
+  if (!res.ok) throw new Error(await parseErrorResponse(res))
+  return res.json() as Promise<{ status: 'switching' | 'already_on_code' | 'error'; message: string }>
+}
+
 export async function testHealthCheck(accountId: string): Promise<{ ok: boolean; message: string }> {
   const res = await apiFetch(`/api/accounts/${accountId}/health-check`, { method: 'POST' })
   if (!res.ok) throw new Error(await parseErrorResponse(res))

@@ -10,6 +10,7 @@ import {
   getConnectStatus,
   verifyConnectCode,
   testHealthCheck,
+  requestVerificationCode,
   type LinkedInAccount,
 } from '../api/accounts'
 import {
@@ -840,6 +841,7 @@ function ConnectModal({
   const [hint, setHint]           = useState('')
   const [sessionKey, setSessionKey] = useState('')
   const [error, setError]         = useState('')
+  const [requestingCode, setRequestingCode] = useState(false)
 
   // cookie method
   const [cookieVal, setCookieVal] = useState('')
@@ -1167,6 +1169,30 @@ function ConnectModal({
                   <p className="text-xs text-blue-800">{hint}</p>
                 </div>
               )}
+              <button
+                type="button"
+                disabled={requestingCode}
+                onClick={async () => {
+                  setRequestingCode(true)
+                  try {
+                    const result = await requestVerificationCode(accountId, sessionKey)
+                    if (result.status === 'already_on_code') {
+                      stopPolling(); setStep('verify')
+                    } else if (result.status === 'switching') {
+                      setHint('A verification code is on its way. Check your email or phone.')
+                    } else {
+                      setHint(result.message)
+                    }
+                  } catch {
+                    // fallback: just show verify step so user can type a code
+                    stopPolling(); setStep('verify')
+                  } finally {
+                    setRequestingCode(false)
+                  }
+                }}
+                className="w-full py-2.5 border border-blue-200 text-sm text-blue-600 rounded-lg hover:bg-blue-50 transition-colors disabled:opacity-50">
+                {requestingCode ? 'Requesting…' : "Didn't get a notification? Request a code instead"}
+              </button>
               <button type="button" onClick={() => { stopPolling(); setStep('form') }}
                 className="w-full py-2 border border-gray-200 text-sm text-gray-500 rounded-lg hover:bg-gray-50 transition-colors">
                 Cancel
