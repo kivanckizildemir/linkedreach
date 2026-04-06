@@ -109,6 +109,12 @@ export async function verifyConnectCode(
   return res.json() as Promise<{ status: 'success' } | { status: 'error'; message: string }>
 }
 
+export async function testHealthCheck(accountId: string): Promise<{ ok: boolean; message: string }> {
+  const res = await apiFetch(`/api/accounts/${accountId}/health-check`, { method: 'POST' })
+  if (!res.ok) throw new Error(await parseErrorResponse(res))
+  return res.json() as Promise<{ ok: boolean; message: string }>
+}
+
 export async function interactWithSession(
   accountId: string,
   sessionKey: string,

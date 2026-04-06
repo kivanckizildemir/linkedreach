@@ -4,6 +4,7 @@ import { supabase } from '../lib/supabase'
 import { requireAuth } from '../middleware/auth'
 import type { AccountStatus } from '../types'
 import { startLogin, submitVerificationCode, getLoginStatus, checkPushApproval, getSessionScreenshot, getSessionPageInfo, getSessionDebugSnapshot, interactWithPage, testProxyRaw } from '../linkedin/login'
+import { createSession } from '../linkedin/session'
 // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-explicit-any
 const { chromium } = require('playwright-extra') as any
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -217,6 +218,61 @@ accountsRouter.post('/:id/connect-interact/:sessionKey', async (req: Request, re
     action as Parameters<typeof interactWithPage>[1]
   )
   res.json(result)
+})
+
+// POST /api/accounts/:id/health-check — verify saved cookies still log into LinkedIn
+accountsRouter.post('/:id/health-check', async (req: Request, res: Response) => {
+  const { data: account, error: accountErr } = await supabase
+    .from('linkedin_accounts')
+    .select('id, cookies, proxy_id, status')
+    .eq('id', req.params.id)
+    .eq('user_id', req.user.id)
+    .single()
+
+  if (accountErr || !account) {
+    res.status(404).json({ ok: false, message: 'Account not found' })
+    return
+  }
+
+  if (!account.cookies) {
+    res.json({ ok: false, message: 'No session saved — connect this account first.' })
+    return
+  }
+
+  let browser: import('playwright').Browser | null = null
+  try {
+    const session = await createSession(account as Parameters<typeof createSession>[0])
+    browser = session.browser
+    const page = session.page
+
+    // Navigate to the LinkedIn feed — a logged-in user lands here, a logged-out user gets redirected to /login
+    await page.goto('https://www.linkedin.com/feed/', { waitUntil: 'domcontentloaded', timeout: 30_000 })
+    const url = page.url()
+
+    if (url.includes('/feed') || url.includes('/in/') || url.includes('/mynetwork')) {
+      // Save refreshed cookies back to DB (session may have issued new tokens)
+      const freshCookies = await session.context.cookies()
+      await supabase
+        .from('linkedin_accounts')
+        .update({ cookies: JSON.stringify(freshCookies) })
+        .eq('id', req.params.id)
+
+      res.json({ ok: true, message: 'Session is active ✓' })
+    } else if (url.includes('/checkpoint') || url.includes('/challenge')) {
+      res.json({ ok: false, message: 'LinkedIn is asking for verification. Reconnect the account.' })
+    } else {
+      // Redirected to /login — session expired
+      await supabase
+        .from('linkedin_accounts')
+        .update({ status: 'paused' })
+        .eq('id', req.params.id)
+      res.json({ ok: false, message: 'Session expired — please reconnect.' })
+    }
+  } catch (err) {
+    res.json({ ok: false, message: `Health check failed: ${(err as Error).message}` })
+  } finally {
+    if (browser) await browser.close().catch(() => undefined)
+  }
 })
 
 // POST /api/accounts/:id/connect-verify — submit 2FA code

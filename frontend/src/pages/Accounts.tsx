@@ -9,6 +9,7 @@ import {
   connectAccount,
   getConnectStatus,
   verifyConnectCode,
+  testHealthCheck,
   type LinkedInAccount,
 } from '../api/accounts'
 import {
@@ -97,6 +98,7 @@ export function Accounts() {
   const [showAddAccount, setShowAddAccount] = useState(false)
   const [sessionAccountId, setSessionAccountId] = useState<string | null>(null)
   const [connectingAccountId, setConnectingAccountId] = useState<string | null>(null)
+  const [healthResults, setHealthResults] = useState<Record<string, { ok: boolean; message: string } | 'loading'>>({})
   const queryClient = useQueryClient()
 
   const { data: accounts = [], isLoading } = useQuery({
@@ -122,6 +124,20 @@ export function Accounts() {
     mutationFn: deleteAccount,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['accounts'] }),
   })
+
+  async function runHealthCheck(accountId: string) {
+    setHealthResults(prev => ({ ...prev, [accountId]: 'loading' }))
+    try {
+      const result = await testHealthCheck(accountId)
+      setHealthResults(prev => ({ ...prev, [accountId]: result }))
+      if (result.ok) void queryClient.invalidateQueries({ queryKey: ['accounts'] })
+      // Auto-clear after 6 seconds
+      setTimeout(() => setHealthResults(prev => { const n = { ...prev }; delete n[accountId]; return n }), 6000)
+    } catch (err) {
+      setHealthResults(prev => ({ ...prev, [accountId]: { ok: false, message: (err as Error).message } }))
+      setTimeout(() => setHealthResults(prev => { const n = { ...prev }; delete n[accountId]; return n }), 6000)
+    }
+  }
 
   return (
     <div className="p-8">
@@ -277,6 +293,35 @@ export function Accounts() {
                               >
                                 Set Session
                               </button>
+                              {(() => {
+                                const hr = healthResults[account.id]
+                                if (hr === 'loading') {
+                                  return (
+                                    <span className="text-xs text-gray-500 flex items-center gap-1">
+                                      <svg className="animate-spin w-3 h-3" fill="none" viewBox="0 0 24 24">
+                                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
+                                      </svg>
+                                      Testing…
+                                    </span>
+                                  )
+                                }
+                                if (hr) {
+                                  return (
+                                    <span className={`text-xs font-medium ${hr.ok ? 'text-green-600' : 'text-red-600'}`}>
+                                      {hr.ok ? '✓' : '✗'} {hr.message}
+                                    </span>
+                                  )
+                                }
+                                return (
+                                  <button
+                                    onClick={() => void runHealthCheck(account.id)}
+                                    className="text-xs text-teal-700 hover:underline"
+                                  >
+                                    Test Health
+                                  </button>
+                                )
+                              })()}
                               <button
                                 onClick={() => {
                                   if (confirm(`Remove ${account.linkedin_email}?`)) {
