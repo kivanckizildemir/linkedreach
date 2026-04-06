@@ -2,7 +2,7 @@ import { Router } from 'express'
 import type { Request, Response } from 'express'
 import { supabase } from '../lib/supabase'
 import { requireAuth } from '../middleware/auth'
-import { HttpsProxyAgent } from 'https-proxy-agent'
+import { ProxyAgent } from 'undici'
 
 export const proxiesRouter = Router()
 proxiesRouter.use(requireAuth)
@@ -30,13 +30,12 @@ async function testProxyUrl(proxyUrl: string): Promise<{ ok: boolean; result: st
     return { ok: false, result: `INVALID_URL: ${(e as Error).message}` }
   }
 
-  const agent = new HttpsProxyAgent(proxyUrl)
+  const agent = new ProxyAgent(proxyUrl)
   try {
     const res = await fetch('https://api.ipify.org?format=json', {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      ...(agent ? { dispatcher: agent as any } : {}),
+      dispatcher: agent,
       signal: AbortSignal.timeout(10_000),
-    })
+    } as RequestInit)
     if (res.ok) {
       const { ip } = await res.json() as { ip: string }
       return { ok: true, result: `Connected — outbound IP: ${ip}` }

@@ -545,9 +545,9 @@ function ProxiesPanel({ accounts }: { accounts: LinkedInAccount[] }) {
                     </td>
                     <td className="px-4 py-3">
                       {testResult ? (
-                        <div className="flex items-center gap-1.5">
-                          <span className={`inline-block w-2 h-2 rounded-full flex-shrink-0 ${testResult.loading ? 'bg-yellow-400 animate-pulse' : testResult.ok ? 'bg-green-500' : 'bg-red-500'}`} />
-                          <span className="text-[10px] text-gray-500 font-mono truncate max-w-[100px]">
+                        <div className="flex items-start gap-1.5">
+                          <span className={`inline-block w-2 h-2 rounded-full flex-shrink-0 mt-0.5 ${testResult.loading ? 'bg-yellow-400 animate-pulse' : testResult.ok ? 'bg-green-500' : 'bg-red-500'}`} />
+                          <span className="text-[10px] text-gray-500 font-mono break-all whitespace-normal leading-tight">
                             {testResult.loading ? 'Testing…' : testResult.result}
                           </span>
                         </div>
