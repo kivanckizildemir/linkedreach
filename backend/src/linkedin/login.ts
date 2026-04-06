@@ -1384,6 +1384,107 @@ export async function getSessionPageInfo(sessionKey: string): Promise<{ url: str
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
+/**
+ * Opens a headless browser at LinkedIn's real login page so the user can log in
+ * interactively via the frontend's screenshot viewer. No credentials are typed
+ * automatically — the user sees and controls LinkedIn's own UI.
+ * Returns a session_key immediately; the browser runs in the background.
+ */
+export function startManualSession(accountId: string): string {
+  const key = randomKey()
+  sessions.set(key, {
+    accountId,
+    createdAt: Date.now(),
+    status:    'starting',
+    hint:      'Opening LinkedIn login page…',
+  })
+  void runManualSession(key)
+  return key
+}
+
+async function runManualSession(key: string): Promise<void> {
+  const session = sessions.get(key)
+  if (!session) return
+
+  let browser: Browser | undefined
+  try {
+    const browserEndpoint = await resolveBrowserEndpoint(session.accountId)
+    let context: BrowserContext
+
+    if (browserEndpoint) {
+      const { chromium: pw } = await import('playwright')
+      browser = await pw.connectOverCDP(browserEndpoint) as unknown as Browser
+      const existing = browser.contexts()
+      context = existing.length > 0
+        ? existing[0]
+        : await browser.newContext({ locale: 'en-US', viewport: { width: 1280, height: 800 } })
+    } else {
+      const proxy = await resolveProxy(session.accountId)
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+      browser = await chromium.launch({
+        headless: true,
+        ...(proxy ? { proxy } : {}),
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-blink-features=AutomationControlled',
+        ],
+      }) as Browser
+      context = await browser.newContext({
+        proxy:             proxy ?? undefined,
+        userAgent:
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+          '(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        viewport:          { width: 1280, height: 800 },
+        locale:            'en-US',
+        ignoreHTTPSErrors: true,
+      })
+      await context.addInitScript(() => {
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined })
+        Object.defineProperty(navigator, 'plugins',   { get: () => [1, 2, 3, 4, 5] })
+        Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] })
+        // @ts-ignore
+        window.chrome = { runtime: {} }
+      })
+    }
+
+    const page = await context.newPage()
+    session.browser = browser
+    session.context = context
+    session.page    = page
+
+    await page.goto('https://www.linkedin.com/login?_l=en_US', { waitUntil: 'load', timeout: 45_000 })
+    await DELAY(1_500)
+
+    session.status = 'pending_push'  // repurpose: means "browser is open, waiting for user"
+    session.hint   = 'Log in with your LinkedIn credentials in the browser below.'
+
+    // Poll for li_at cookie — up to 5 minutes (time for user to log in + any 2FA)
+    const deadline = Date.now() + 5 * 60 * 1000
+    while (Date.now() < deadline) {
+      await DELAY(2_000)
+      const cookies = await context.cookies()
+      if (cookies.find(c => c.name === 'li_at')) {
+        await saveCookies(context, session.accountId)
+        session.status = 'success'
+        await browser.close()
+        return
+      }
+    }
+
+    session.status = 'error'
+    session.error  = 'Login timed out — no session detected after 5 minutes. Please try again.'
+    await browser.close()
+  } catch (err) {
+    if (session) {
+      session.status = 'error'
+      session.error  = (err as Error).message ?? 'Browser session failed.'
+    }
+    if (browser) await browser.close().catch(() => {})
+  }
+}
+
 /** Returns a session_key immediately — all browser work is in the background */
 export function startLogin(
   accountId:   string,

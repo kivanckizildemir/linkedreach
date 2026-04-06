@@ -11,8 +11,11 @@ import {
   verifyConnectCode,
   testHealthCheck,
   requestVerificationCode,
+  startManualSession,
+  interactWithSession,
   type LinkedInAccount,
 } from '../api/accounts'
+import { apiFetch } from '../lib/fetchJson'
 import {
   fetchProxies,
   addProxy,
@@ -814,8 +817,8 @@ function SetSessionModal({
 //   2. Credentials     — email + password only
 //   3. Quick Login     — grab li_at cookie from real browser
 
-type ConnectMethod = 'select' | 'infinite' | 'credentials' | 'cookie'
-type ConnectStep   = 'form' | 'connecting' | 'push' | 'verify' | 'done' | 'error'
+type ConnectMethod = 'select' | 'infinite' | 'credentials' | 'cookie' | 'browser'
+type ConnectStep   = 'form' | 'connecting' | 'push' | 'verify' | 'done' | 'error' | 'browser'
 type CookieStep    = 'open' | 'copy' | 'paste'
 
 function ConnectModal({
@@ -850,13 +853,20 @@ function ConnectModal({
   const [snippetCopied, setSnippetCopied] = useState(false)
 
 
+  const [browserKey, setBrowserKey] = useState('')
+  const [screenshot, setScreenshot] = useState('')
+
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const screenshotPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const SNIPPET = `copy(document.cookie.match(/li_at=([^;]+)/)?.[1] ?? 'not found')`
 
   // Cleanup polling on unmount
   useEffect(() => {
-    return () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null } }
+    return () => {
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
+      if (screenshotPollRef.current) { clearInterval(screenshotPollRef.current); screenshotPollRef.current = null }
+    }
   }, [])
 
   // Auto-detect country when a credentials method is chosen
@@ -877,6 +887,47 @@ function ConnectModal({
 
   function stopPolling() {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
+    if (screenshotPollRef.current) { clearInterval(screenshotPollRef.current); screenshotPollRef.current = null }
+  }
+
+  async function handleBrowserLogin() {
+    setStep('connecting'); setError('')
+    try {
+      const result = await startManualSession(accountId)
+      setBrowserKey(result.session_key)
+      setStep('browser')
+      startPolling(result.session_key)
+      // Poll screenshots every 1.5 s so the user sees LinkedIn's live page
+      screenshotPollRef.current = setInterval(async () => {
+        try {
+          const res = await apiFetch(`/api/accounts/${accountId}/connect-screenshot/${result.session_key}`)
+          if (res.ok) {
+            const blob = await res.blob()
+            const url = URL.createObjectURL(blob)
+            setScreenshot(prev => { if (prev) URL.revokeObjectURL(prev); return url })
+          }
+        } catch { /* ok */ }
+      }, 1500)
+    } catch (err) {
+      setError((err as Error).message); setStep('error')
+    }
+  }
+
+  function handleScreenshotClick(e: React.MouseEvent<HTMLImageElement>) {
+    const img = e.currentTarget
+    const rect = img.getBoundingClientRect()
+    const x = Math.round((e.clientX - rect.left) / rect.width * 1280)
+    const y = Math.round((e.clientY - rect.top) / rect.height * 800)
+    void interactWithSession(accountId, browserKey, { type: 'click', x, y })
+    // Refocus the wrapper so keyboard events keep working
+    img.parentElement?.focus()
+  }
+
+  function handleScreenshotKey(e: React.KeyboardEvent) {
+    // Let the browser handle normal shortcuts (refresh, devtools, etc.)
+    if (e.metaKey || e.ctrlKey || e.altKey) return
+    e.preventDefault()
+    void interactWithSession(accountId, browserKey, { type: 'key', key: e.key })
   }
 
   async function handleStatusResult(s: Awaited<ReturnType<typeof getConnectStatus>>) {
@@ -889,7 +940,8 @@ function ConnectModal({
     } else if (s.status === 'not_found') {
       stopPolling(); setError('Session expired. Please try again.'); setStep('error')
     } else if (s.status === 'pending_push') {
-      setHint(s.hint)
+      // For browser sessions, 'pending_push' means browser is open — keep the browser view
+      if (method !== 'browser') setHint(s.hint)
     }
   }
 
@@ -959,15 +1011,17 @@ function ConnectModal({
   // ── Shared header ─────────────────────────────────────────────────────────
 
   const headerTitle =
-    method === 'select'      ? 'Connect LinkedIn Account'
-    : method === 'infinite'  ? 'Infinite Login'
+    method === 'select'        ? 'Connect LinkedIn Account'
+    : method === 'infinite'    ? 'Infinite Login'
     : method === 'credentials' ? 'Credentials Login'
+    : method === 'browser'     ? 'Interactive Browser Login'
     : 'Quick Login'
 
   const headerSub =
-    method === 'select'      ? 'Choose how you want to connect'
-    : method === 'infinite'  ? 'Auto-reconnect forever with your 2FA secret'
+    method === 'select'        ? 'Choose how you want to connect'
+    : method === 'infinite'    ? 'Auto-reconnect forever with your 2FA secret'
     : method === 'credentials' ? 'Sign in with email & password'
+    : method === 'browser'     ? 'LinkedIn\'s real login page — type directly in the browser below'
     : 'Grab your session cookie from the browser'
 
   // ── Shared done / error ───────────────────────────────────────────────────
@@ -990,9 +1044,10 @@ function ConnectModal({
     )
   }
 
+  const isWide = method === 'browser' && step === 'browser'
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md">
+      <div className={`bg-white rounded-2xl shadow-xl w-full ${isWide ? 'max-w-3xl' : 'max-w-md'}`}>
 
         {/* Header */}
         <div className="flex items-start justify-between px-6 py-4 border-b border-gray-100">
@@ -1045,16 +1100,19 @@ function ConnectModal({
                 </div>
               </button>
 
-              {/* Credentials Login */}
+              {/* Interactive Browser Login */}
               <button
-                onClick={() => setMethod('credentials')}
+                onClick={() => { setMethod('browser'); void handleBrowserLogin() }}
                 className="w-full text-left border border-gray-200 rounded-xl p-4 hover:bg-gray-50 transition-colors group"
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex-1">
-                    <span className="text-sm font-semibold text-gray-900">Credentials Login</span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-semibold text-gray-900">Interactive Browser Login</span>
+                      <span className="text-[10px] font-bold px-2 py-0.5 bg-green-600 text-white rounded-full uppercase tracking-wide">Recommended</span>
+                    </div>
                     <p className="mt-1 text-xs text-gray-500">
-                      Email &amp; password only. You may be asked to approve a push notification or enter a 2FA code manually.
+                      LinkedIn's real login page opens in a browser below. You type your credentials directly — handles any 2FA automatically.
                     </p>
                   </div>
                   <svg className="w-5 h-5 text-gray-400 flex-shrink-0 mt-0.5 group-hover:translate-x-0.5 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1238,6 +1296,75 @@ function ConnectModal({
                 Verify
               </button>
             </form>
+          )}
+
+          {/* ── Interactive Browser viewer ── */}
+          {method === 'browser' && step === 'browser' && (
+            <div className="flex flex-col gap-3">
+              <p className="text-xs text-gray-500 text-center">
+                Click inside the browser to focus, then type normally. LinkedIn's real page — enter your credentials and complete any 2FA.
+              </p>
+              <div
+                className="relative border border-gray-200 rounded-lg overflow-hidden outline-none focus:ring-2 focus:ring-blue-500 cursor-text"
+                tabIndex={0}
+                onKeyDown={handleScreenshotKey}
+                style={{ aspectRatio: '16/10', background: '#f3f4f6' }}
+              >
+                {screenshot ? (
+                  <img
+                    src={screenshot}
+                    alt="LinkedIn login"
+                    className="w-full h-full object-cover select-none pointer-events-none"
+                    draggable={false}
+                    onClick={handleScreenshotClick}
+                    style={{ pointerEvents: 'all' }}
+                  />
+                ) : (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-gray-500">
+                    <svg className="w-8 h-8 animate-spin text-blue-500" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                    </svg>
+                    <p className="text-sm">Opening LinkedIn…</p>
+                  </div>
+                )}
+              </div>
+              <p className="text-[10px] text-gray-400 text-center">
+                Click inside → type email → Tab → type password → Enter. The session saves automatically after login.
+              </p>
+              <button
+                type="button"
+                onClick={() => { stopPolling(); setStep('form'); setMethod('select'); setScreenshot('') }}
+                className="w-full py-2 border border-gray-200 text-sm text-gray-500 rounded-lg hover:bg-gray-50 transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          )}
+
+          {/* ── Browser connecting spinner ── */}
+          {method === 'browser' && step === 'connecting' && (
+            <div className="py-8 flex flex-col items-center gap-3">
+              <svg className="w-8 h-8 animate-spin text-blue-500" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+              </svg>
+              <p className="text-sm text-gray-600">Opening LinkedIn browser…</p>
+            </div>
+          )}
+
+          {/* ── Browser error state ── */}
+          {method === 'browser' && step === 'error' && (
+            <div className="space-y-4">
+              <div className="bg-red-50 border border-red-200 rounded-xl p-4">
+                <p className="text-sm font-medium text-red-900">Browser session failed</p>
+                <p className="text-xs text-red-700 mt-1">{error}</p>
+              </div>
+              <button type="button" onClick={() => { setStep('form'); setMethod('select'); setError('') }}
+                className="w-full py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-blue-700">
+                Try Again
+              </button>
+            </div>
           )}
 
           {/* ── Error state ── */}

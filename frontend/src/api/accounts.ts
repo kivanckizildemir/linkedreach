@@ -141,6 +141,12 @@ export async function interactWithSession(
   return res.json() as Promise<{ ok: boolean; error?: string }>
 }
 
+export async function startManualSession(accountId: string): Promise<ConnectResult> {
+  const res = await apiFetch(`/api/accounts/${accountId}/start-manual-session`, { method: 'POST' })
+  if (!res.ok) throw new Error(await parseErrorResponse(res))
+  return res.json() as Promise<ConnectResult>
+}
+
 export async function loginBrowser(accountId: string): Promise<{ message: string }> {
   const res = await apiFetch(`/api/accounts/${accountId}/login-browser`, { method: 'POST' })
   if (!res.ok) {

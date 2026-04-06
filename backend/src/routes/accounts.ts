@@ -3,7 +3,7 @@ import type { Request, Response } from 'express'
 import { supabase } from '../lib/supabase'
 import { requireAuth } from '../middleware/auth'
 import type { AccountStatus } from '../types'
-import { startLogin, submitVerificationCode, getLoginStatus, checkPushApproval, getSessionScreenshot, getSessionPageInfo, getSessionDebugSnapshot, interactWithPage, testProxyRaw, requestVerificationCode } from '../linkedin/login'
+import { startLogin, startManualSession, submitVerificationCode, getLoginStatus, checkPushApproval, getSessionScreenshot, getSessionPageInfo, getSessionDebugSnapshot, interactWithPage, testProxyRaw, requestVerificationCode } from '../linkedin/login'
 import { createSession } from '../linkedin/session'
 // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-explicit-any
 const { chromium } = require('playwright-extra') as any
@@ -407,6 +407,22 @@ accountsRouter.get('/:id/proxy-test', async (req: Request, res: Response) => {
   const result = await testProxyRaw(String(req.params.id))
   const ok = result.includes('200')
   res.json({ result, ok, hint: ok ? 'Proxy authenticated OK' : 'Proxy auth failed or unreachable — check BrightData credentials' })
+})
+
+// POST /api/accounts/:id/start-manual-session
+// Opens a headless browser at LinkedIn's real login page.
+// Frontend polls connect-status and shows a live screenshot viewer — user logs in manually.
+accountsRouter.post('/:id/start-manual-session', async (req: Request, res: Response) => {
+  const { error: accountErr } = await supabase
+    .from('linkedin_accounts')
+    .select('id')
+    .eq('id', req.params.id)
+    .eq('user_id', req.user.id)
+    .single()
+  if (accountErr) { res.status(404).json({ error: 'Account not found' }); return }
+
+  const sessionKey = startManualSession(String(req.params.id))
+  res.json({ status: 'starting', session_key: sessionKey })
 })
 
 // DELETE /api/accounts/:id
