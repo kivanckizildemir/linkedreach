@@ -624,7 +624,7 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     // may not find inputs. We use a deep search that traverses shadow roots.
     const formFields = await page.evaluate((args: { emailVal: string }) => {
       // Helper: collect all inputs from the entire DOM including shadow roots
-      function collectInputs(root: Document | ShadowRoot | Element): HTMLInputElement[] {
+      const collectInputs = (root: Document | ShadowRoot | Element): HTMLInputElement[] => {
         const inputs: HTMLInputElement[] = []
         const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT)
         let node = walker.currentNode as Element
