@@ -236,16 +236,46 @@ export async function scrapeSalesNavSearchApi(
 
     console.log(`[sales-nav-api] Fetching page start=${start}: ${apiUrl.substring(0, 160)}`)
 
+    // LinkedIn sometimes returns a 302 self-redirect to set auth cookies before the API response.
+    // We follow it once manually: capture the Set-Cookie header and retry with the new cookies.
+    // Route through the residential proxy so LinkedIn doesn't detect a datacenter IP and delete session.
     const agent = getProxyAgent()
     let res: Response
+    let currentHeaders = { ...headers }
     try {
-      res = await fetch(apiUrl, { headers, ...(agent ? { dispatcher: agent } : {}) } as RequestInit)
+      const fetchOpts = { headers: currentHeaders, redirect: 'manual', ...(agent ? { dispatcher: agent } : {}) } as RequestInit
+      res = await fetch(apiUrl, fetchOpts)
+      if (res.status >= 300 && res.status < 400) {
+        const location = res.headers.get('location') ?? apiUrl
+        const setCookie = res.headers.get('set-cookie')
+        console.log(`[sales-nav-api] 302 redirect to ${location.substring(0, 80)}, set-cookie: ${setCookie ?? 'none'}`)
+        if (setCookie) {
+          // Merge new cookies into the cookie header
+          const newCookies = setCookie.split(',').map(c => c.split(';')[0].trim()).join('; ')
+          currentHeaders = { ...currentHeaders, Cookie: currentHeaders['Cookie'] + '; ' + newCookies }
+        }
+        // Follow the redirect once
+        res = await fetch(location, { headers: currentHeaders, redirect: 'manual', ...(agent ? { dispatcher: agent } : {}) } as RequestInit)
+        console.log(`[sales-nav-api] After redirect: ${res.status}`)
+      }
     } catch (fetchErr: unknown) {
-      const cause = (fetchErr as { cause?: unknown }).cause
-      throw new Error(`Network error fetching LinkedIn API: ${(fetchErr as Error).message} — cause: ${JSON.stringify(cause)}`)
+      const err = fetchErr as Error & { cause?: unknown }
+      const cause = err.cause
+      const causeStr = cause instanceof Error
+        ? `${cause.constructor.name}: ${cause.message}`
+        : JSON.stringify(cause ?? '')
+      console.error('[sales-nav-api] fetch error:', err.message, '| cause:', causeStr)
+      throw new Error(`Network error fetching LinkedIn API: ${err.message} — cause: ${causeStr}`)
     }
 
     console.log(`[sales-nav-api] Response status: ${res.status}`)
+
+    if (res.status >= 300 && res.status < 400) {
+      throw new Error(
+        `LinkedIn API redirected (${res.status}) to: ${res.headers.get('location') ?? 'unknown'}. ` +
+        `Session may be expired or Sales Navigator subscription required.`
+      )
+    }
 
     if (res.status === 401 || res.status === 403) {
       const body = await res.text()

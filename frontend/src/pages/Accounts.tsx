@@ -741,7 +741,30 @@ function SetSessionModal({
 }) {
   const [liAt, setLiAt] = useState('')
   const [saving, setSaving] = useState(false)
+  const [browserOpening, setBrowserOpening] = useState(false)
+  const [browserMsg, setBrowserMsg] = useState('')
   const [error, setError] = useState('')
+
+  async function handleBrowserLogin() {
+    setBrowserOpening(true)
+    setBrowserMsg('Opening Chrome window on your machine… Log in to LinkedIn there.')
+    setError('')
+    try {
+      const { loginBrowser } = await import('../api/accounts')
+      await loginBrowser(accountId)
+      setBrowserMsg('Session captured! Closing…')
+      setTimeout(onSaved, 800)
+    } catch (e) {
+      const msg = (e as Error).message
+      if (msg.includes('NO_DISPLAY')) {
+        setError('Browser login requires the backend to be running on your local machine.')
+      } else {
+        setError(msg)
+      }
+      setBrowserOpening(false)
+      setBrowserMsg('')
+    }
+  }
 
   async function handleSave() {
     const value = liAt.trim()
@@ -749,7 +772,6 @@ function SetSessionModal({
     setSaving(true)
     setError('')
     try {
-      // Format as a Playwright cookie array — only li_at is needed to authenticate
       const cookies = JSON.stringify([{
         name: 'li_at',
         value,
@@ -771,46 +793,57 @@ function SetSessionModal({
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg p-6 space-y-4">
         <div>
-          <h2 className="text-lg font-semibold text-gray-900">Set LinkedIn Session Cookie</h2>
+          <h2 className="text-lg font-semibold text-gray-900">Set LinkedIn Session</h2>
           <p className="mt-1 text-sm text-gray-500">
-            This lets the scraper log into LinkedIn as this account.
+            Choose a method to authenticate this account.
           </p>
         </div>
 
-        <div className="bg-gray-50 rounded-xl p-4 text-xs text-gray-600 space-y-2">
-          <p className="font-medium text-gray-700">How to get your li_at cookie:</p>
-          <ol className="list-decimal list-inside space-y-1">
-            <li>Open LinkedIn in Chrome and log in</li>
-            <li>Press F12 → Application tab → Cookies → <code className="bg-gray-200 px-1 rounded">https://www.linkedin.com</code></li>
-            <li>Find the cookie named <code className="bg-gray-200 px-1 rounded">li_at</code></li>
-            <li>Copy its Value and paste it below</li>
-          </ol>
+        {/* Option A — Open browser window (best: captures full session) */}
+        <div className="border border-blue-200 bg-blue-50 rounded-xl p-4 space-y-2">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-semibold text-blue-900">Option A — Open Browser Window</span>
+            <span className="text-[10px] font-bold px-2 py-0.5 bg-blue-600 text-white rounded-full uppercase tracking-wide">Recommended</span>
+          </div>
+          <p className="text-xs text-blue-700">
+            Opens a real Chrome window on your machine. Log in to LinkedIn normally — all cookies are captured automatically. Required for Sales Navigator scraping.
+          </p>
+          {browserMsg && <p className="text-xs text-blue-800 font-medium">{browserMsg}</p>}
+          <button
+            onClick={() => void handleBrowserLogin()}
+            disabled={browserOpening}
+            className="w-full py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-60 transition-colors"
+          >
+            {browserOpening ? 'Waiting for login…' : 'Open Chrome Window'}
+          </button>
         </div>
 
-        <div>
-          <label className="block text-xs font-medium text-gray-700 mb-1.5">li_at cookie value</label>
+        {/* Option B — Paste li_at manually */}
+        <div className="border border-gray-200 rounded-xl p-4 space-y-2">
+          <p className="text-sm font-semibold text-gray-700">Option B — Paste li_at Cookie</p>
+          <p className="text-xs text-gray-500">
+            F12 → Application → Cookies → <code className="bg-gray-100 px-1 rounded">https://www.linkedin.com</code> → find <code className="bg-gray-100 px-1 rounded">li_at</code> → copy Value.
+            <span className="ml-1 text-orange-600">Note: only li_at. Sales Navigator scraping needs Option A.</span>
+          </p>
           <textarea
-            autoFocus
             value={liAt}
             onChange={e => setLiAt(e.target.value)}
             placeholder="AQEDATxxxxxx..."
-            rows={3}
-            className="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono resize-none"
+            rows={2}
+            className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono resize-none"
           />
+          <button onClick={() => void handleSave()} disabled={saving || !liAt.trim()}
+            className="w-full py-2 bg-gray-700 text-white text-sm font-medium rounded-lg hover:bg-gray-800 disabled:opacity-50 transition-colors">
+            {saving ? 'Saving…' : 'Save Cookie Only'}
+          </button>
         </div>
 
         {error && <p className="text-xs text-red-600">{error}</p>}
 
-        <div className="flex gap-3">
-          <button type="button" onClick={onClose}
-            className="flex-1 py-2.5 border border-gray-300 text-sm font-medium rounded-lg hover:bg-gray-50 transition-colors">
-            Cancel
-          </button>
-          <button onClick={handleSave} disabled={saving}
-            className="flex-1 py-2.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-60 transition-colors">
-            {saving ? 'Saving…' : 'Save Session'}
-          </button>
-        </div>
+        <button type="button" onClick={onClose}
+          className="w-full py-2 border border-gray-300 text-sm font-medium rounded-lg hover:bg-gray-50 transition-colors">
+          Cancel
+        </button>
       </div>
     </div>
   )

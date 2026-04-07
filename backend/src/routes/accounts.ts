@@ -272,10 +272,16 @@ accountsRouter.post('/:id/health-check', async (req: Request, res: Response) => 
     } as RequestInit)
 
     const location = probe.headers.get('location') ?? ''
+    // 302 to the same /feed/ URL = LinkedIn setting cookies = li_at is valid
+    // 302 to /login or /uas/login = session expired
+    // 200 = fully loaded = valid
     const isExpired = probe.status === 401 || probe.status === 403
-      || (probe.status >= 300 && probe.status < 400 && location.includes('/login'))
+      || (probe.status >= 300 && probe.status < 400 && (location.includes('/login') || location.includes('/uas/')))
 
-    if (!isExpired && (probe.status === 200 || (probe.status >= 300 && !location.includes('/login')))) {
+    const isSelfRedirectOrOk = probe.status === 200
+      || (probe.status >= 300 && probe.status < 400 && !location.includes('/login') && !location.includes('/uas/'))
+
+    if (isSelfRedirectOrOk) {
       if (account.status === 'paused') {
         await supabase.from('linkedin_accounts').update({ status: 'active' }).eq('id', req.params.id)
       }
@@ -393,10 +399,11 @@ accountsRouter.post('/:id/login-browser', async (req: Request, res: Response) =>
       const found = cookies.find(c => c.name === 'li_at')
       if (found) {
         liAt = found.value
-        // Save all cookies to DB
+        // Save full storage_state (cookies + localStorage) — required for browser-based scraping
+        const storageState = await context.storageState()
         await supabase
           .from('linkedin_accounts')
-          .update({ cookies: JSON.stringify(cookies), status: 'active' })
+          .update({ cookies: JSON.stringify(storageState), status: 'active' })
           .eq('id', req.params.id)
         break
       }
