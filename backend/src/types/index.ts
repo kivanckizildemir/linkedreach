@@ -5,7 +5,7 @@ export type AccountStatus = 'active' | 'paused' | 'banned' | 'warming_up'
 export type CampaignStatus = 'draft' | 'active' | 'paused' | 'completed'
 export type StepType = 'connect' | 'message' | 'wait' | 'inmail' | 'view_profile' | 'react_post' | 'fork' | 'follow' | 'end'
 export type IcpFlag = 'hot' | 'warm' | 'cold' | 'disqualified'
-export type LeadSource = 'excel_import' | 'chrome_extension' | 'manual'
+export type LeadSource = 'excel_import' | 'chrome_extension' | 'manual' | 'sales_nav_import' | 'linkedin_import'
 export type CampaignLeadStatus =
   | 'pending'
   | 'connection_sent'
