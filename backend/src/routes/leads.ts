@@ -143,18 +143,30 @@ leadsRouter.post('/import', async (req: Request, res: Response) => {
     source: 'excel_import' as LeadSource,
   }))
 
-  const { data, error } = await supabase
+  // Deduplicate: skip leads whose linkedin_url already exists
+  const urls = rows.map(r => r.linkedin_url)
+  const { data: existing } = await supabase
     .from('leads')
-    .upsert(rows, { onConflict: 'linkedin_url' })
-    .select()
+    .select('linkedin_url')
+    .in('linkedin_url', urls)
+  const existingUrls = new Set((existing ?? []).map((e: { linkedin_url: string }) => e.linkedin_url))
+  const newRows = rows.filter(r => !existingUrls.has(r.linkedin_url))
 
-  if (error) {
-    res.status(500).json({ error: error.message })
-    return
+  let data: { id: string }[] = []
+  if (newRows.length > 0) {
+    const { data: ins, error } = await supabase
+      .from('leads')
+      .insert(newRows)
+      .select()
+    if (error) {
+      res.status(500).json({ error: error.message })
+      return
+    }
+    data = ins ?? []
   }
 
   // Enqueue AI qualification for each imported lead
-  if (data && data.length > 0) {
+  if (data.length > 0) {
     const jobs = data.map((lead: { id: string }) => ({
       name: 'qualify',
       data: { lead_id: lead.id, user_id: req.user.id },
@@ -163,7 +175,7 @@ leadsRouter.post('/import', async (req: Request, res: Response) => {
     await qualifyLeadsQueue.addBulk(jobs)
   }
 
-  res.status(201).json({ data, imported: data?.length ?? 0 })
+  res.status(201).json({ data, imported: data.length })
 })
 
 // POST /api/leads/import-sales-nav — scrape a Sales Navigator search URL
@@ -248,10 +260,15 @@ leadsRouter.post('/import-profiles', async (req: Request, res: Response) => {
       source:  'linkedin_import' as const,
     }))
 
-    const { data, error } = await supabase
-      .from('leads')
-      .upsert(rows, { onConflict: 'linkedin_url' })
-      .select('id')
+    const importUrls = rows.map(r => r.linkedin_url)
+    const { data: existingImport } = await supabase
+      .from('leads').select('linkedin_url').in('linkedin_url', importUrls)
+    const existingImportUrls = new Set((existingImport ?? []).map((e: { linkedin_url: string }) => e.linkedin_url))
+    const newImportRows = rows.filter(r => !existingImportUrls.has(r.linkedin_url))
+
+    const { data, error } = newImportRows.length > 0
+      ? await supabase.from('leads').insert(newImportRows).select('id')
+      : { data: [] as { id: string }[], error: null }
 
     if (error) throw new Error(error.message)
 

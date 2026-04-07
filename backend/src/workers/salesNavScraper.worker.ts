@@ -259,12 +259,25 @@ export const salesNavScraperWorker = new Worker<SalesNavJob>(
           source: 'sales_nav_import' as const,
         }))
 
-        const { data: inserted, error: insertErr } = await supabase
+        // Deduplicate: check which linkedin_urls already exist so we don't rely
+        // on a unique constraint (which may not be present on all DB instances).
+        const urls = rows.map(r => r.linkedin_url)
+        const { data: existing } = await supabase
           .from('leads')
-          .upsert(rows, { onConflict: 'linkedin_url' })
-          .select('id')
+          .select('linkedin_url')
+          .in('linkedin_url', urls)
+        const existingUrls = new Set((existing ?? []).map((e: { linkedin_url: string }) => e.linkedin_url))
+        const newRows = rows.filter(r => !existingUrls.has(r.linkedin_url))
 
-        if (insertErr) throw new Error(`DB insert failed: ${insertErr.message}`)
+        let inserted: { id: string }[] = []
+        if (newRows.length > 0) {
+          const { data: ins, error: insertErr } = await supabase
+            .from('leads')
+            .insert(newRows)
+            .select('id')
+          if (insertErr) throw new Error(`DB insert failed: ${insertErr.message}`)
+          inserted = ins ?? []
+        }
 
         savedCount = inserted?.length ?? 0
 
