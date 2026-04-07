@@ -6,6 +6,7 @@ import type { AccountStatus } from '../types'
 import { startLogin, startManualSession, submitVerificationCode, getLoginStatus, checkPushApproval, getSessionScreenshot, getSessionPageInfo, getSessionDebugSnapshot, interactWithPage, testProxyRaw, requestVerificationCode } from '../linkedin/login'
 import { extractCookies } from '../linkedin/session'
 import { chromium } from 'playwright'
+import { ProxyAgent } from 'undici'
 
 export const accountsRouter = Router()
 
@@ -245,41 +246,42 @@ accountsRouter.post('/:id/health-check', async (req: Request, res: Response) => 
       return
     }
 
-    const cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join('; ')
-    // JSESSIONID doubles as the CSRF token (LinkedIn's convention)
-    const jsessionId = cookies.find(c => c.name === 'JSESSIONID')?.value ?? `ajax:${Date.now()}`
+    const cookieHeader = `li_at=${liAt}`
 
-    // Ping the Voyager identity API — lightweight, returns 200 when the session is valid,
-    // 401 when the li_at cookie has expired or been revoked. Works from any IP.
-    const probe = await fetch('https://www.linkedin.com/voyager/api/identity/profiles/me', {
+    // Route through the residential proxy so LinkedIn doesn't block datacenter IPs
+    const proxyUrl = process.env.PROXY_HOST && process.env.PROXY_USERNAME
+      ? `http://${encodeURIComponent(process.env.PROXY_USERNAME)}:${encodeURIComponent(process.env.PROXY_PASSWORD ?? '')}@${process.env.PROXY_HOST}:${process.env.PROXY_PORT ?? '10000'}`
+      : process.env.BRIGHTDATA_PROXY_URL ?? null
+
+    const agent = proxyUrl ? new ProxyAgent(proxyUrl) : undefined
+
+    // Hit the feed page and check if we get redirected to /login (expired) or stay on feed (valid)
+    const probe = await fetch('https://www.linkedin.com/feed/', {
+      method: 'GET',
       headers: {
         Cookie: cookieHeader,
-        'Csrf-Token': jsessionId,
         'User-Agent':
-          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
           '(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        Accept: 'application/json',
+        Accept: 'text/html,application/xhtml+xml',
         'Accept-Language': 'en-US,en;q=0.9',
-        'X-Li-Lang': 'en_US',
-        'X-Restli-Protocol-Version': '2.0.0',
-        'X-Li-Track': JSON.stringify({ clientVersion: '2024.1.0', osName: 'web', timezoneOffset: 0 }),
       },
-    })
+      redirect: 'manual',
+      ...(agent ? { dispatcher: agent } : {}),
+      signal: AbortSignal.timeout(12_000),
+    } as RequestInit)
 
-    if (probe.status === 200) {
-      // Optionally mark account as active if it was paused
+    const location = probe.headers.get('location') ?? ''
+    const isExpired = probe.status === 401 || probe.status === 403
+      || (probe.status >= 300 && probe.status < 400 && location.includes('/login'))
+
+    if (!isExpired && (probe.status === 200 || (probe.status >= 300 && !location.includes('/login')))) {
       if (account.status === 'paused') {
-        await supabase
-          .from('linkedin_accounts')
-          .update({ status: 'active' })
-          .eq('id', req.params.id)
+        await supabase.from('linkedin_accounts').update({ status: 'active' }).eq('id', req.params.id)
       }
       res.json({ ok: true, message: 'Session is active ✓' })
-    } else if (probe.status === 401 || probe.status === 403) {
-      await supabase
-        .from('linkedin_accounts')
-        .update({ status: 'paused' })
-        .eq('id', req.params.id)
+    } else if (isExpired) {
+      await supabase.from('linkedin_accounts').update({ status: 'paused' }).eq('id', req.params.id)
       res.json({ ok: false, message: 'Session expired — please reconnect.' })
     } else {
       res.json({ ok: false, message: `LinkedIn returned ${probe.status} — session may be invalid.` })
