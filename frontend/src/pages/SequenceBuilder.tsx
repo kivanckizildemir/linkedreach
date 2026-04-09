@@ -1297,6 +1297,12 @@ export function FlowCanvas({ sequence, campaignId }: { sequence: Sequence; campa
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([])
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([])
   const [steps, setSteps] = useState<SequenceStep[]>(sequence.sequence_steps)
+
+  // Sync steps whenever the sequence prop is updated externally (e.g. after AI apply)
+  useEffect(() => {
+    setSteps(sequence.sequence_steps ?? [])
+  }, [sequence])
+
   const [editingStep, setEditingStep] = useState<SequenceStep | null>(null)
   const [testingStep, setTestingStep] = useState<SequenceStep | null>(null)
   const [showTestModal, setShowTestModal] = useState(false)
