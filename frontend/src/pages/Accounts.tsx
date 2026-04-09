@@ -28,6 +28,10 @@ import {
 } from '../api/proxies'
 import { fetchActivity, ACTION_LABELS, ACTION_COLORS } from '../api/activity'
 
+// True when the frontend is talking to a remote backend (Railway) — features
+// that require a visible browser window on the server are disabled.
+const IS_REMOTE_BACKEND = !!(import.meta.env.VITE_API_BASE_URL as string | undefined)
+
 const STATUS_COLORS: Record<LinkedInAccount['status'], string> = {
   active:     'bg-green-100 text-green-700',
   paused:     'bg-yellow-100 text-yellow-700',
@@ -897,7 +901,11 @@ function SetSessionModal({
         </div>
 
         {/* Primary action */}
-        {browserMsg ? (
+        {IS_REMOTE_BACKEND ? (
+          <div className="rounded-xl px-4 py-3 text-sm bg-amber-50 border border-amber-200 text-amber-800">
+            ⚠️ Browser login only works when the backend is running on your local machine. Use the <strong>Set Session</strong> tab to paste your <code>li_at</code> cookie instead.
+          </div>
+        ) : browserMsg ? (
           <div className={`rounded-xl px-4 py-3 text-sm font-medium ${browserMsg.startsWith('✓') ? 'bg-green-50 text-green-800' : 'bg-blue-50 text-blue-800'}`}>
             {browserMsg}
           </div>
@@ -1294,23 +1302,39 @@ export function ConnectModal({
                 </div>
               </button>
 
-              {/* Interactive Browser Login */}
-              <button
-                onClick={() => { setMethod('browser'); void handleBrowserLogin() }}
-                className="w-full text-left border border-gray-200 rounded-xl p-4 hover:bg-gray-50 transition-colors group"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex-1">
-                    <span className="text-sm font-semibold text-gray-900">Interactive Browser Login</span>
-                    <p className="mt-1 text-xs text-gray-500">
-                      LinkedIn's real login page opens in a browser below. You type your credentials directly — handles any 2FA automatically.
-                    </p>
+              {/* Interactive Browser Login — local dev only */}
+              {IS_REMOTE_BACKEND ? (
+                <div className="w-full text-left border border-gray-100 rounded-xl p-4 bg-gray-50 opacity-60 cursor-not-allowed">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-semibold text-gray-500">Interactive Browser Login</span>
+                        <span className="text-xs px-1.5 py-0.5 bg-gray-200 text-gray-500 rounded font-medium">Local only</span>
+                      </div>
+                      <p className="mt-1 text-xs text-gray-400">
+                        Requires the backend to run on your local machine — not available in the cloud deployment.
+                      </p>
+                    </div>
                   </div>
-                  <svg className="w-5 h-5 text-gray-400 flex-shrink-0 mt-0.5 group-hover:translate-x-0.5 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                  </svg>
                 </div>
-              </button>
+              ) : (
+                <button
+                  onClick={() => { setMethod('browser'); void handleBrowserLogin() }}
+                  className="w-full text-left border border-gray-200 rounded-xl p-4 hover:bg-gray-50 transition-colors group"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex-1">
+                      <span className="text-sm font-semibold text-gray-900">Interactive Browser Login</span>
+                      <p className="mt-1 text-xs text-gray-500">
+                        LinkedIn's real login page opens in a browser below. You type your credentials directly — handles any 2FA automatically.
+                      </p>
+                    </div>
+                    <svg className="w-5 h-5 text-gray-400 flex-shrink-0 mt-0.5 group-hover:translate-x-0.5 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  </div>
+                </button>
+              )}
             </div>
           )}
 
