@@ -1,13 +1,14 @@
 {
   "manifest_version": 3,
   "name": "LinkedReach",
-  "version": "1.1.0",
-  "description": "Export LinkedIn sessions and scrape leads directly into LinkedReach",
-  "permissions": ["cookies", "storage", "activeTab", "scripting", "tabs"],
+  "version": "1.2.0",
+  "description": "LinkedIn automation — runs sequences from your real browser session",
+  "permissions": ["cookies", "storage", "activeTab", "scripting", "tabs", "windows"],
   "host_permissions": [
     "https://*.linkedin.com/*",
     "https://api-production-5994.up.railway.app/*",
-    "http://localhost:3001/*"
+    "http://localhost:3001/*",
+    "http://localhost:3002/*"
   ],
   "background": { "service_worker": "background.js" },
   "content_scripts": [

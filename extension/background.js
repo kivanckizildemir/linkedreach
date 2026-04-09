@@ -171,6 +171,398 @@ async function handle(msg, sender) {
 
     case 'CAPTURE_UPDATE': return { ok: true }
 
+    case 'EXTENSION_STATUS': return { online: ws?.readyState === WS_OPEN }
+
     default: throw new Error('Unknown: ' + msg.type)
   }
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// WEBSOCKET AUTOMATION ENGINE
+// Connects to the backend hub, receives LinkedIn action jobs, executes them
+// in a hidden background window, and reports results back.
+// ══════════════════════════════════════════════════════════════════════════════
+
+const WS_OPEN = 1  // WebSocket.OPEN (not available as a global in service workers)
+let ws = null
+let wsReconnectTimer = null
+let bgWindowId = null   // the hidden automation window
+
+// ── WebSocket lifecycle ───────────────────────────────────────────────────────
+
+async function connectWs() {
+  const { backend, token } = await getConfig()
+  if (!token || isTokenExpired(token)) return  // not logged in
+
+  const wsUrl = backend
+    .replace(/^https:\/\//i, 'wss://')
+    .replace(/^http:\/\//i,  'ws://')
+    + '/ws/extension?token=' + encodeURIComponent(token)
+
+  try {
+    ws = new WebSocket(wsUrl)
+  } catch (e) {
+    console.warn('[LR-WS] Failed to create WebSocket:', e.message)
+    scheduleReconnect()
+    return
+  }
+
+  ws.onopen = () => {
+    console.log('[LR-WS] Connected to backend hub')
+    clearTimeout(wsReconnectTimer)
+  }
+
+  ws.onmessage = (event) => {
+    let msg
+    try { msg = JSON.parse(event.data) } catch { return }
+
+    if (msg.type === 'job')   void executeJob(msg.job)
+    if (msg.type === 'pong')  { /* heartbeat ok */ }
+    if (msg.type === 'connected') console.log('[LR-WS] Hub acknowledged connection')
+  }
+
+  ws.onclose = () => {
+    console.log('[LR-WS] Disconnected — will reconnect in 30s')
+    scheduleReconnect()
+  }
+
+  ws.onerror = (e) => {
+    console.warn('[LR-WS] Error:', e.type)
+  }
+}
+
+function scheduleReconnect() {
+  clearTimeout(wsReconnectTimer)
+  wsReconnectTimer = setTimeout(connectWs, 30_000)
+}
+
+function wsSend(data) {
+  if (ws && ws.readyState === WS_OPEN) ws.send(JSON.stringify(data))
+}
+
+// ── Background window management ─────────────────────────────────────────────
+// All LinkedIn automation runs in a hidden 1×1 popup off-screen.
+// The user never sees it — their main Chrome window is unaffected.
+
+async function getOrCreateBgWindow() {
+  if (bgWindowId != null) {
+    try {
+      await chrome.windows.get(bgWindowId)
+      return bgWindowId
+    } catch {
+      bgWindowId = null
+    }
+  }
+  const win = await chrome.windows.create({
+    url:     'about:blank',
+    type:    'popup',
+    width:   1024,
+    height:  768,
+    left:    -2000,   // off-screen — invisible to the user
+    top:     0,
+    focused: false,
+  })
+  bgWindowId = win.id
+  return bgWindowId
+}
+
+async function openTab(windowId, url) {
+  const tab = await chrome.tabs.create({ windowId, url, active: false })
+  // Wait for the tab to finish loading
+  await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('Tab load timeout')), 30_000)
+    function onUpdated(tabId, info) {
+      if (tabId === tab.id && info.status === 'complete') {
+        clearTimeout(timeout)
+        chrome.tabs.onUpdated.removeListener(onUpdated)
+        resolve()
+      }
+    }
+    chrome.tabs.onUpdated.addListener(onUpdated)
+  })
+  return tab.id
+}
+
+async function closeTab(tabId) {
+  try { await chrome.tabs.remove(tabId) } catch { /* already closed */ }
+}
+
+// ── Action executor ───────────────────────────────────────────────────────────
+
+async function executeJob(job) {
+  const { jobId, action, profileUrl, note, message, reaction } = job
+  console.log(`[LR-Ext] Executing ${action} → ${profileUrl}`)
+
+  try {
+    const windowId = await getOrCreateBgWindow()
+    let result
+
+    switch (action) {
+      case 'view_profile':
+        result = await actionViewProfile(windowId, profileUrl)
+        break
+      case 'follow':
+        result = await actionFollow(windowId, profileUrl)
+        break
+      case 'connect':
+        result = await actionConnect(windowId, profileUrl, note)
+        break
+      case 'message':
+        result = await actionMessage(windowId, profileUrl, message)
+        break
+      case 'react_post':
+        result = await actionReactPost(windowId, profileUrl, reaction || 'like')
+        break
+      default:
+        throw new Error('Unknown action: ' + action)
+    }
+
+    wsSend({ type: 'result', jobId, success: true, data: result })
+  } catch (err) {
+    console.error(`[LR-Ext] ${action} failed:`, err.message)
+    wsSend({ type: 'result', jobId, success: false, error: err.message })
+  }
+}
+
+// ── LinkedIn DOM helpers (injected via chrome.scripting.executeScript) ────────
+
+async function injectScript(tabId, func, args = []) {
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    func,
+    args,
+  })
+  return results?.[0]?.result
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)) }
+
+// ── Individual actions ────────────────────────────────────────────────────────
+
+async function actionViewProfile(windowId, profileUrl) {
+  const tabId = await openTab(windowId, profileUrl)
+  await sleep(2000 + Math.random() * 2000)  // human-like pause
+
+  // Check for warnings/captchas
+  const warning = await injectScript(tabId, () => {
+    return !!(
+      document.querySelector('.captcha-internal') ||
+      document.querySelector('[data-test-id="checkpoint"]') ||
+      document.title.toLowerCase().includes('checkpoint')
+    )
+  })
+
+  await closeTab(tabId)
+  if (warning) return { warning: true }
+  return { success: true }
+}
+
+async function actionFollow(windowId, profileUrl) {
+  const tabId = await openTab(windowId, profileUrl)
+  await sleep(1500 + Math.random() * 1500)
+
+  const result = await injectScript(tabId, () => {
+    // Find Follow button (not "Following" or "Connect")
+    const buttons = Array.from(document.querySelectorAll('button'))
+    const followBtn = buttons.find(b => {
+      const txt = b.textContent?.trim()
+      return txt === 'Follow' || txt?.startsWith('Follow ')
+    })
+    if (!followBtn) return { skipped: true, reason: 'follow_button_not_found' }
+    followBtn.click()
+    return { success: true }
+  })
+
+  await sleep(1000)
+  await closeTab(tabId)
+  return result
+}
+
+async function actionConnect(windowId, profileUrl, note) {
+  const tabId = await openTab(windowId, profileUrl)
+  await sleep(2000 + Math.random() * 2000)
+
+  const result = await injectScript(tabId, (noteText) => {
+    // Find Connect button
+    const buttons = Array.from(document.querySelectorAll('button'))
+    const connectBtn = buttons.find(b => b.textContent?.trim() === 'Connect')
+    if (!connectBtn) {
+      // May be inside "More" dropdown
+      const moreBtn = buttons.find(b => b.textContent?.trim() === 'More')
+      if (moreBtn) {
+        moreBtn.click()
+        return { needsMore: true }
+      }
+      return { skipped: true, reason: 'connect_button_not_found' }
+    }
+    connectBtn.click()
+    return { clicked: true, noteText }
+  }, [note || ''])
+
+  if (result?.needsMore) {
+    // Re-inject after "More" menu opens
+    await sleep(800)
+    const result2 = await injectScript(tabId, () => {
+      const items = Array.from(document.querySelectorAll('[role="menuitem"]'))
+      const connectItem = items.find(el => el.textContent?.trim() === 'Connect')
+      if (!connectItem) return { skipped: true, reason: 'connect_not_in_menu' }
+      ;(connectItem as HTMLElement).click()
+      return { clicked: true }
+    })
+    if (!result2?.clicked) { await closeTab(tabId); return result2 }
+  }
+
+  if (result?.skipped) { await closeTab(tabId); return result }
+
+  // Handle the connection dialog
+  await sleep(1200)
+  const dialogResult = await injectScript(tabId, (noteText) => {
+    // If "Add a note" modal appeared
+    const addNoteBtn = document.querySelector('button[aria-label="Add a note"]')
+    if (addNoteBtn && noteText) {
+      ;(addNoteBtn as HTMLElement).click()
+      return { addingNote: true }
+    }
+    // Send without note
+    const sendBtn = document.querySelector('button[aria-label="Send without a note"]')
+      || Array.from(document.querySelectorAll('button')).find(b => b.textContent?.trim() === 'Send without a note')
+    if (sendBtn) { ;(sendBtn as HTMLElement).click(); return { sent: true } }
+    return { sent: false }
+  }, [note || ''])
+
+  if (dialogResult?.addingNote && note) {
+    await sleep(600)
+    await injectScript(tabId, (noteText) => {
+      const textarea = document.querySelector('textarea[name="message"]')
+        || document.querySelector('#custom-message')
+      if (textarea) {
+        const nativeSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+        nativeSetter?.call(textarea, noteText)
+        textarea.dispatchEvent(new Event('input', { bubbles: true }))
+      }
+    }, [note])
+    await sleep(400)
+    await injectScript(tabId, () => {
+      const sendBtn = document.querySelector('button[aria-label="Send invitation"]')
+        || Array.from(document.querySelectorAll('button')).find(b => b.textContent?.trim() === 'Send')
+      ;(sendBtn as HTMLElement)?.click()
+      return { sent: true }
+    })
+  }
+
+  await sleep(1500)
+  await closeTab(tabId)
+  return { success: true }
+}
+
+async function actionMessage(windowId, profileUrl, messageText) {
+  if (!messageText) throw new Error('No message content provided')
+
+  const tabId = await openTab(windowId, profileUrl)
+  await sleep(2000 + Math.random() * 1500)
+
+  const result = await injectScript(tabId, (text) => {
+    // Find the Message button on the profile
+    const buttons = Array.from(document.querySelectorAll('button'))
+    const msgBtn  = buttons.find(b => b.textContent?.trim() === 'Message')
+    if (!msgBtn) return { skipped: true, reason: 'message_button_not_found' }
+    ;(msgBtn as HTMLElement).click()
+    return { clicked: true }
+  }, [messageText])
+
+  if (result?.skipped) { await closeTab(tabId); return result }
+
+  await sleep(1500)
+
+  // Type and send the message
+  const sendResult = await injectScript(tabId, (text) => {
+    const editor = document.querySelector('.msg-form__contenteditable[contenteditable="true"]')
+      || document.querySelector('[data-placeholder="Write a message…"]')
+    if (!editor) return { error: 'message_editor_not_found' }
+
+    ;(editor as HTMLElement).focus()
+    document.execCommand('insertText', false, text)
+    editor.dispatchEvent(new Event('input', { bubbles: true }))
+
+    // Small delay then click Send
+    return { typed: true }
+  }, [messageText])
+
+  if (sendResult?.error) { await closeTab(tabId); throw new Error(sendResult.error) }
+
+  await sleep(600)
+  await injectScript(tabId, () => {
+    const sendBtn = document.querySelector('button.msg-form__send-button')
+      || document.querySelector('[data-control-name="send-message-from-thread"]')
+      || Array.from(document.querySelectorAll('button')).find(b => b.textContent?.trim() === 'Send')
+    ;(sendBtn as HTMLElement)?.click()
+    return { sent: true }
+  })
+
+  await sleep(1000)
+  await closeTab(tabId)
+  return { success: true }
+}
+
+async function actionReactPost(windowId, profileUrl, reaction) {
+  const tabId = await openTab(windowId, profileUrl)
+  await sleep(2500 + Math.random() * 1500)
+
+  const result = await injectScript(tabId, (reactionType) => {
+    // Find the first "Like" reaction button on the most recent post
+    const likeBtn = document.querySelector('button[aria-label*="Like"]')
+      || document.querySelector('.react-button__trigger')
+    if (!likeBtn) return { skipped: true, reason: 'no_post_found' }
+
+    // Hover to open reaction picker (if not just 'like')
+    if (reactionType !== 'like') {
+      likeBtn.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }))
+      return { hovered: true, reactionType }
+    }
+
+    ;(likeBtn as HTMLElement).click()
+    return { reacted: true, reaction: 'like' }
+  }, [reaction])
+
+  if (result?.hovered) {
+    await sleep(1000)  // wait for reaction picker to appear
+    await injectScript(tabId, (reactionType) => {
+      const btn = document.querySelector(`button[aria-label="${reactionType}"]`)
+        || document.querySelector(`[data-reaction-type="${reactionType}"]`)
+      ;(btn as HTMLElement)?.click()
+      return { reacted: true, reaction: reactionType }
+    }, [reaction])
+  }
+
+  await sleep(1000)
+  await closeTab(tabId)
+  return { success: true }
+}
+
+// ── Auto-connect WebSocket on startup + after auth ────────────────────────────
+
+chrome.runtime.onStartup.addListener(() => {
+  setTimeout(connectWs, 2000)  // give service worker a moment to settle
+})
+
+chrome.runtime.onInstalled.addListener(() => {
+  setTimeout(connectWs, 2000)
+})
+
+// Also connect whenever the token changes (user logs in/out)
+chrome.storage.onChanged.addListener((changes) => {
+  if (changes.lr_token) {
+    if (ws) { ws.close(); ws = null }
+    if (changes.lr_token.newValue) {
+      setTimeout(connectWs, 500)
+    }
+  }
+})
+
+// Heartbeat — ping every 25s to keep the connection alive
+setInterval(() => {
+  wsSend({ type: 'ping' })
+}, 25_000)
+
+// Initial connection attempt
+setTimeout(connectWs, 1000)

@@ -31,6 +31,8 @@ import { scraperRouter } from './routes/scraper'
 import { sequenceAiRouter } from './routes/sequenceAi'
 import { errorHandler, notFound } from './middleware/errors'
 import { testProxyRaw, getLastErrorSnapshot, clearLastErrorSnapshot } from './linkedin/login'
+import { setupExtensionHub, isExtensionOnline, onlineUsers } from './lib/extensionHub'
+import { createServer } from 'http'
 
 dotenv.config({ override: true })
 
@@ -149,9 +151,25 @@ app.use('/api/lead-lists', leadListsRouter)
 app.use('/api/scraper', scraperRouter)
 app.use('/api/sequence-ai', sequenceAiRouter)
 
+// Extension status endpoints (no auth required — extension status is non-sensitive)
+app.get('/api/extension/status', (req, res) => {
+  const userId = (req as { user?: { id?: string } }).user?.id
+    ?? req.headers['x-user-id'] as string | undefined
+  if (!userId) { res.json({ online: false }); return }
+  res.json({ online: isExtensionOnline(userId) })
+})
+
+app.get('/api/extension/online-users', (_req, res) => {
+  res.json({ users: onlineUsers() })
+})
+
 app.use(notFound)
 app.use(errorHandler)
 
-app.listen(PORT, () => {
+// Wrap Express in a plain http.Server so we can handle WebSocket upgrades
+const httpServer = createServer(app)
+setupExtensionHub(httpServer)
+
+httpServer.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`)
 })

@@ -114,6 +114,18 @@ export function Accounts() {
     queryFn: fetchAccounts,
   })
 
+  // Poll for which user accounts have the Chrome extension connected
+  const { data: extensionStatus } = useQuery({
+    queryKey: ['extension-online-users'],
+    queryFn: async () => {
+      const res = await apiFetch('/api/extension/online-users')
+      if (!res.ok) return { users: [] as string[] }
+      return res.json() as Promise<{ users: string[] }>
+    },
+    refetchInterval: 10_000,  // re-check every 10s
+  })
+  const extensionOnlineUsers = new Set(extensionStatus?.users ?? [])
+
   const createMutation = useMutation({
     mutationFn: createAccount,
     onSuccess: () => {
@@ -226,6 +238,18 @@ export function Accounts() {
                               {account.linkedin_email}
                               {account.has_premium && (
                                 <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-700">Premium</span>
+                              )}
+                              {extensionOnlineUsers.has(account.user_id) && (
+                                <span
+                                  title="Chrome extension connected — actions run in your browser"
+                                  className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200"
+                                >
+                                  <span className="relative flex h-1.5 w-1.5">
+                                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                                    <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500" />
+                                  </span>
+                                  Extension
+                                </span>
                               )}
                             </div>
                           </td>
