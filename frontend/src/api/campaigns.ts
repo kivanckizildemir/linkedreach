@@ -152,3 +152,40 @@ export async function extractAudienceFromProducts(
   const { data } = await res.json() as { data: AudienceSuggestion }
   return data
 }
+
+// ── Chat-based sequence generation ───────────────────────────────────────────
+
+export interface ChatMessage {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+export interface GeneratedStep {
+  type: string
+  branch: string
+  step_order: number
+  message_template: string | null
+  subject: string | null
+  wait_days: number | null
+  ai_generation_mode: boolean
+  condition: Record<string, unknown> | null
+  parent_step_id: string | null
+}
+
+export interface SequenceChatResult {
+  reply: string
+  steps: GeneratedStep[] | null
+}
+
+export async function chatSequence(
+  campaignId: string,
+  sequenceId: string | null,
+  messages: ChatMessage[],
+): Promise<SequenceChatResult> {
+  const res = await apiFetch(`/api/campaigns/${campaignId}/chat-sequence`, {
+    method: 'POST',
+    body: JSON.stringify({ messages, sequenceId }),
+  })
+  if (!res.ok) throw new Error(await parseErrorResponse(res))
+  return res.json() as Promise<SequenceChatResult>
+}

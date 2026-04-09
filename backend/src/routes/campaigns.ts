@@ -4,6 +4,7 @@ import { supabase } from '../lib/supabase'
 import { requireAuth } from '../middleware/auth'
 import { scoreEngagement } from '../ai/engagementScore'
 import { extractAudienceFromProducts } from '../ai/extractAudience'
+import { chatGenerateSequence, type ChatMessage } from '../ai/generate-sequence'
 import type { CampaignStatus } from '../types'
 
 export const campaignsRouter = Router()
@@ -382,4 +383,66 @@ campaignsRouter.post('/:id/score-engagement', async (req: Request, res: Response
   }
 
   res.json({ scored, total: clRows.length })
+})
+
+// POST /api/campaigns/:id/chat-sequence
+// Chat with AI to generate a sequence. Returns a conversational reply
+// and optionally a structured steps array to apply to the sequence.
+campaignsRouter.post('/:id/chat-sequence', async (req: Request, res: Response) => {
+  const { id } = req.params
+  const { messages, sequenceId } = req.body as {
+    messages:   ChatMessage[]
+    sequenceId: string | null
+  }
+
+  if (!Array.isArray(messages)) {
+    res.status(400).json({ error: 'messages must be an array' }); return
+  }
+
+  // Verify campaign belongs to the authenticated user
+  const { data: campaign, error: campErr } = await supabase
+    .from('campaigns')
+    .select('name, target_audience')
+    .eq('id', id)
+    .eq('user_id', req.user.id)
+    .single()
+
+  if (campErr || !campaign) {
+    res.status(404).json({ error: 'Campaign not found' }); return
+  }
+
+  // Summarise existing steps so Claude has context
+  let existingSteps = ''
+  if (sequenceId) {
+    const { data: steps } = await supabase
+      .from('sequence_steps')
+      .select('type, step_order, message_template, wait_days, branch')
+      .eq('sequence_id', sequenceId)
+      .order('step_order', { ascending: true })
+
+    if (steps?.length) {
+      existingSteps = (steps as Array<{
+        type: string; step_order: number; message_template: string | null
+        wait_days: number | null; branch: string
+      }>)
+        .map(s =>
+          `${s.step_order + 1}. [${s.branch}] ${s.type}` +
+          (s.wait_days ? ` (${s.wait_days}d)` : '') +
+          (s.message_template ? ': ' + s.message_template.substring(0, 60) + '…' : '')
+        )
+        .join('\n')
+    }
+  }
+
+  try {
+    const result = await chatGenerateSequence(messages, {
+      name:           (campaign as { name: string; target_audience: string | null }).name,
+      targetAudience: (campaign as { name: string; target_audience: string | null }).target_audience,
+      existingSteps,
+    })
+    res.json(result)
+  } catch (err) {
+    console.error('[chat-sequence] AI error:', (err as Error).message)
+    res.status(500).json({ error: 'AI generation failed. Please try again.' })
+  }
 })
