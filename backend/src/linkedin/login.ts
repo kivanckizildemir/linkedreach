@@ -1584,6 +1584,37 @@ export function startLogin(
   return key
 }
 
+/**
+ * Headless auto-reconnect — resolves true on success, false on failure/timeout.
+ * Used by the keep-alive worker to silently refresh expired sessions.
+ * Only works when TOTP secret is stored (fully automatic 2FA) or when the
+ * account has no 2FA. Accounts requiring push/SMS approval will time out.
+ */
+export async function loginAndWait(
+  accountId:   string,
+  email:       string,
+  password:    string,
+  totpSecret?: string,
+  timeoutMs  = 3 * 60 * 1000, // 3 minutes
+): Promise<boolean> {
+  const key = startLogin(accountId, email, password, totpSecret)
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 3000))
+    const s = sessions.get(key)
+    if (!s) return false
+    if (s.status === 'success') return true
+    if (s.status === 'error') return false
+    // pending_push or needs_verification — only TOTP can resolve these automatically
+    // (the runLogin background task handles TOTP filling); for SMS/push we time out
+  }
+  // Clean up the dangling session on timeout
+  const s = sessions.get(key)
+  if (s?.browser) await s.browser.close().catch(() => {})
+  sessions.delete(key)
+  return false
+}
+
 export type LoginStatusResult =
   | { status: 'starting' }
   | { status: 'pending_push';       hint: string; pageUrl?: string }

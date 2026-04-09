@@ -50,10 +50,11 @@ import {
 import { clearSteps } from '../api/sequences'
 import { supabase } from '../lib/supabase'
 import {
-  generateAllSteps,
+  buildSequenceFlow,
   generateSingleStep,
   previewStepForLead,
   type PreviewResult,
+  type BuildFlowResult,
 } from '../api/sequenceAi'
 
 // ── Layout constants ──────────────────────────────────────────────────────────
@@ -396,6 +397,122 @@ function buildLayout(allSteps: SequenceStep[], cb: Callbacks): { nodes: Node[]; 
   return { nodes: rfNodes, edges: rfEdges }
 }
 
+// ── Lead → step mapping ───────────────────────────────────────────────────────
+
+/** Returns the step ID that best represents where this lead currently is. */
+function mapLeadToStepId(lead: CampaignLead, steps: SequenceStep[]): string | null {
+  if (lead.status === 'converted' || lead.status === 'stopped') return null
+
+  // Main branch steps ordered by step_order
+  const mainSteps = steps
+    .filter(s => s.branch === 'main' && s.parent_step_id === null)
+    .sort((a, b) => a.step_order - b.step_order)
+
+  switch (lead.status) {
+    case 'pending': {
+      // Find the main-branch step matching current_step index; fall back to first
+      const match = mainSteps.find(s => s.step_order === lead.current_step)
+      return match?.id ?? mainSteps[0]?.id ?? null
+    }
+    case 'connection_sent': {
+      // Waiting for connection acceptance — show on connect step or wait after it
+      const conn = steps.find(s => s.type === 'connect')
+      if (conn) return conn.id
+      return mainSteps.find(s => s.type === 'wait')?.id ?? null
+    }
+    case 'connected': {
+      // Past connection — show on the first fork (connected?) or first if_yes step
+      const fork = steps.find(s => s.type === 'fork' && (s.condition as Record<string,unknown>)?.type === 'connected')
+      if (fork) return fork.id
+      return steps.find(s => s.branch === 'if_yes' && s.step_order === 0)?.id ?? null
+    }
+    case 'messaged': {
+      return steps.find(s => s.type === 'message')?.id ?? null
+    }
+    case 'replied': {
+      // Show on the replied fork or the if_yes branch of it
+      const repliedFork = steps.find(s => s.type === 'fork' && (s.condition as Record<string,unknown>)?.type === 'replied')
+      if (repliedFork) return repliedFork.id
+      return steps.find(s => s.type === 'message')?.id ?? null
+    }
+    default:
+      return null
+  }
+}
+
+interface LeadPin { initials: string; name: string; status: CampaignLead['status']; icpFlag: CampaignLead['lead']['icp_flag'] }
+
+
+const MAX_VISIBLE_CHIPS = 3
+
+const ICP_CHIP: Record<NonNullable<CampaignLead['lead']['icp_flag']>, { bg: string; text: string; border: string }> = {
+  hot:          { bg: 'bg-red-50',    text: 'text-red-600',    border: 'border-red-200'    },
+  warm:         { bg: 'bg-amber-50',  text: 'text-amber-600',  border: 'border-amber-200'  },
+  cold:         { bg: 'bg-blue-50',   text: 'text-blue-600',   border: 'border-blue-200'   },
+  disqualified: { bg: 'bg-gray-100',  text: 'text-gray-400',   border: 'border-gray-200'   },
+}
+const ICP_DEFAULT = { bg: 'bg-white', text: 'text-gray-600', border: 'border-gray-200' }
+
+function LeadChip({ lead }: { lead: LeadPin }) {
+  const style = lead.icpFlag ? ICP_CHIP[lead.icpFlag] : ICP_DEFAULT
+  return (
+    <div className="relative group/chip shrink-0" style={{ fontSize: 10 }}>
+      <div className={`flex items-center rounded-full px-2 py-0.5 shadow-sm cursor-default border ${style.bg} ${style.text} ${style.border}`}>
+        <span className="font-semibold leading-none">{lead.initials}</span>
+      </div>
+      {/* Hover tooltip */}
+      <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 z-50
+                      hidden group-hover/chip:block pointer-events-none">
+        <div className="bg-gray-900 text-white rounded-lg px-2.5 py-1.5 shadow-xl whitespace-nowrap" style={{ fontSize: 11 }}>
+          <p className="font-semibold">{lead.name}</p>
+          {lead.icpFlag && <p className="text-gray-400 capitalize">{lead.icpFlag === 'hot' ? '🔥' : lead.icpFlag === 'warm' ? '☀️' : lead.icpFlag === 'cold' ? '❄️' : '✗'} {lead.icpFlag}</p>}
+          <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-gray-900" />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function LeadChips({ leads }: { leads: LeadPin[] }) {
+  if (leads.length === 0) return null
+
+  if (leads.length <= MAX_VISIBLE_CHIPS) {
+    return (
+      <div className="flex items-center gap-1 px-3 pb-2.5 pt-0">
+        {leads.map((l, i) => <LeadChip key={i} lead={l} />)}
+      </div>
+    )
+  }
+
+  // Scale mode: single neutral count badge
+  return (
+    <div className="flex items-center gap-1 px-3 pb-2.5 pt-0">
+      <div className="relative group/badge shrink-0">
+        <div className="flex items-center gap-1.5 rounded-full px-2 py-1 shadow-sm border border-gray-200 bg-white text-gray-600 cursor-default" style={{ fontSize: 10 }}>
+          <svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M16 11c1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3 1.34 3 3 3zm-8 0c1.66 0 3-1.34 3-3S9.66 5 8 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/>
+          </svg>
+          <span className="font-bold leading-none">{leads.length} leads</span>
+        </div>
+        {/* Hover tooltip — scrollable list */}
+        <div className="absolute bottom-full left-0 mb-1.5 z-50 hidden group-hover/badge:block pointer-events-none">
+          <div className="bg-gray-900 text-white rounded-xl shadow-xl overflow-hidden" style={{ fontSize: 11, minWidth: 160, maxHeight: 200 }}>
+            <div className="px-3 py-2 border-b border-gray-700 font-semibold text-gray-300">{leads.length} leads at this step</div>
+            <div className="overflow-y-auto" style={{ maxHeight: 160 }}>
+              {leads.map((l, i) => (
+                <div key={i} className="px-3 py-1.5 border-b border-gray-800 last:border-0">
+                  <span className="font-medium">{l.name}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="ml-4 border-4 border-transparent border-t-gray-900 w-0 h-0" />
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Custom nodes ──────────────────────────────────────────────────────────────
 
 function StartNodeComp() {
@@ -410,7 +527,7 @@ function StartNodeComp() {
 }
 
 function StepNodeComp({ data }: NodeProps) {
-  const { step } = data as { step: SequenceStep }
+  const { step, leadsHere = [] } = data as { step: SequenceStep; leadsHere: LeadPin[] }
   const cfg = STEP_CFG[step.type]
   const reaction = step.condition?.reaction as ReactionType | undefined
 
@@ -474,13 +591,15 @@ function StepNodeComp({ data }: NodeProps) {
         </div>
       </div>
 
+      <LeadChips leads={leadsHere} />
+
       <Handle type="source" position={Position.Bottom} className="!w-2 !h-2" style={{ background: cfg.color }} />
     </div>
   )
 }
 
 function ForkNodeComp({ data }: NodeProps) {
-  const { step } = data as { step: SequenceStep }
+  const { step, leadsHere = [] } = data as { step: SequenceStep; leadsHere: LeadPin[] }
   const forkCond = step.condition?.type as ForkCondition | undefined
   const condDef = FORK_CONDS.find(c => c.value === forkCond)
 
@@ -508,6 +627,8 @@ function ForkNodeComp({ data }: NodeProps) {
           </svg>
         </div>
       </div>
+
+      <LeadChips leads={leadsHere} />
 
       <div className="flex justify-between px-5 pb-3 text-[10px] font-bold">
         <span className="text-green-600">{condDef?.yes ?? '✓ Yes'}</span>
@@ -643,6 +764,9 @@ function EditModal({ step, sequenceId, defaultLengthPreset, onSave, onDelete, on
   const [reaction,     setRct]  = useState<ReactionType>((step.condition?.reaction as ReactionType) ?? 'like')
   const [aiMode,       setAiMode] = useState(step.ai_generation_mode ?? false)
   const [lengthPreset, setLengthPreset] = useState<string>((step.condition?.max_length_preset as string | undefined) ?? defaultLengthPreset)
+  const [profileSources, setProfileSources] = useState<string[]>(
+    (step.condition?.profile_sources as string[] | undefined) ?? ['basic', 'summary', 'experience', 'posts']
+  )
   const [regen,        setRegen] = useState(false)
   const [regenErr,     setRegenErr] = useState('')
   const cfg = STEP_CFG[step.type]
@@ -654,7 +778,7 @@ function EditModal({ step, sequenceId, defaultLengthPreset, onSave, onDelete, on
     setRegen(true)
     setRegenErr('')
     try {
-      const result = await generateSingleStep(sequenceId, step.id)
+      const result = await generateSingleStep(sequenceId, step.id, undefined, profileSources)
       setMsg(result.message_template ?? '')
       if (result.subject) setSubj(result.subject)
       setAiMode(true)
@@ -670,8 +794,8 @@ function EditModal({ step, sequenceId, defaultLengthPreset, onSave, onDelete, on
     if (step.type === 'wait')        { u.wait_days = waitVal; u.condition = { wait_unit: waitUnit } }
     if (step.type === 'fork')        u.condition = { type: forkCond }
     if (step.type === 'react_post')  u.condition = { reaction }
-    if (step.type === 'inmail')      { u.subject = subject; u.message_template = msg || null; u.ai_generation_mode = aiMode; u.condition = { max_length_preset: lengthPreset } }
-    if (step.type === 'connect' || step.type === 'message') { u.message_template = msg || null; u.ai_generation_mode = aiMode; u.condition = { max_length_preset: lengthPreset } }
+    if (step.type === 'inmail')      { u.subject = subject; u.message_template = msg || null; u.ai_generation_mode = aiMode; u.condition = { max_length_preset: lengthPreset, profile_sources: profileSources } }
+    if (step.type === 'connect' || step.type === 'message') { u.message_template = msg || null; u.ai_generation_mode = aiMode; u.condition = { max_length_preset: lengthPreset, profile_sources: profileSources } }
     onSave(u)
   }
 
@@ -805,51 +929,111 @@ function EditModal({ step, sequenceId, defaultLengthPreset, onSave, onDelete, on
 
           {(step.type === 'connect' || step.type === 'message' || step.type === 'inmail') && (
             <div>
-              <div className="flex items-center justify-between mb-1.5">
-                <label className="block text-sm font-semibold text-gray-700">
-                  {step.type === 'connect' ? 'Note (optional, max 300 chars)' : 'Message body'}
-                </label>
-                {aiMode && (
-                  <button
-                    onClick={handleRegenerate}
-                    disabled={regen}
-                    className="flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium text-violet-700 bg-violet-50 border border-violet-200 rounded-lg hover:bg-violet-100 disabled:opacity-50 transition-colors"
-                  >
-                    {regen ? '⏳ Regenerating…' : '✨ Regenerate'}
-                  </button>
-                )}
-              </div>
+              <label className="block text-sm font-semibold text-gray-700 mb-1.5">
+                {step.type === 'connect' ? 'Note (optional, max 300 chars)' : 'Message body'}
+              </label>
+
+              {/* AI Automated — profile data source selection */}
+              {aiMode && (
+                <div className="mb-3 bg-violet-50 border border-violet-100 rounded-xl px-4 py-3">
+                  <p className="text-[11px] font-semibold text-violet-700 mb-2 uppercase tracking-wide">Profile data to personalise with</p>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {([
+                      { key: 'basic',      label: 'Basic profile info',   desc: 'Name, title, company' },
+                      { key: 'summary',    label: 'Summary',              desc: 'LinkedIn About section' },
+                      { key: 'experience', label: 'Work experience',      desc: 'Current & past roles' },
+                      { key: 'articles',   label: 'Articles & projects',  desc: 'Coming soon', disabled: true },
+                      { key: 'posts',      label: 'Recent posts',         desc: 'What they posted' },
+                    ] as { key: string; label: string; desc: string; disabled?: boolean }[]).map(opt => {
+                      const checked = profileSources.includes(opt.key)
+                      return (
+                        <button
+                          key={opt.key}
+                          type="button"
+                          disabled={opt.disabled}
+                          onClick={() => {
+                            if (opt.disabled) return
+                            setProfileSources(prev =>
+                              checked ? prev.filter(s => s !== opt.key) : [...prev, opt.key]
+                            )
+                          }}
+                          className={[
+                            'flex items-start gap-2 px-3 py-2 rounded-lg border text-left transition-all',
+                            opt.disabled
+                              ? 'border-gray-100 opacity-40 cursor-not-allowed'
+                              : checked
+                                ? 'border-violet-300 bg-violet-100'
+                                : 'border-gray-200 bg-white hover:border-violet-200',
+                          ].join(' ')}
+                        >
+                          <span className={[
+                            'mt-0.5 w-3.5 h-3.5 rounded flex items-center justify-center shrink-0 border',
+                            checked && !opt.disabled ? 'bg-violet-600 border-violet-600' : 'border-gray-300',
+                          ].join(' ')}>
+                            {checked && !opt.disabled && (
+                              <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
+                                <path d="M1.5 4l2 2 3-3" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                              </svg>
+                            )}
+                          </span>
+                          <div>
+                            <p className="text-[11px] font-semibold text-gray-700 leading-tight">{opt.label}</p>
+                            <p className="text-[10px] text-gray-400 leading-tight">{opt.desc}</p>
+                          </div>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Manual mode — variable hint */}
               {!aiMode && (
                 <p className="text-xs text-gray-400 mb-2">
                   Personalise with{' '}
-                  {['{{first_name}}', '{{company}}', '{{title}}'].map(v => (
+                  {['{{first_name}}', '{{company}}', '{{title}}', '{{sender_name}}'].map(v => (
                     <code key={v} className="bg-gray-100 px-1.5 py-0.5 rounded mx-0.5 text-gray-600">{v}</code>
                   ))}
                 </p>
               )}
-              {regenErr && (
-                <p className="text-xs text-red-500 mb-2">{regenErr}</p>
+
+              {regenErr && <p className="text-xs text-red-500 mb-2">{regenErr}</p>}
+
+              {/* AI mode — no manual textarea, message is generated per-lead */}
+              {aiMode ? (
+                <div className="flex items-start gap-3 px-4 py-3.5 bg-violet-50 border border-violet-200 rounded-xl">
+                  <span className="text-violet-400 mt-0.5 shrink-0">✨</span>
+                  <div>
+                    <p className="text-xs font-semibold text-violet-700">AI generates a unique message for each lead</p>
+                    <p className="text-[11px] text-violet-500 mt-0.5">Based on their LinkedIn profile, your product, and the options above. Use <strong>Test</strong> to preview.</p>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <textarea
+                    value={msg}
+                    onChange={e => setMsg(e.target.value)}
+                    rows={5}
+                    maxLength={step.type === 'connect' ? 300 : undefined}
+                    placeholder={step.type === 'connect'
+                      ? 'Hi {{first_name}}, saw your work at {{company}} and thought it was worth reaching out…'
+                      : 'Hi {{first_name}}, noticed {{company}} has been…'}
+                    className="w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                  />
+                  <div className="flex items-center justify-between mt-1.5">
+                    <span className="text-[10px] text-gray-400">
+                      {msg.length}{step.type === 'connect' ? '/300' : ''} chars
+                    </span>
+                    <button
+                      onClick={handleRegenerate}
+                      disabled={regen}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium text-gray-600 bg-gray-50 border border-gray-200 rounded-lg hover:bg-gray-100 disabled:opacity-50 transition-colors"
+                    >
+                      {regen ? '⏳ Generating…' : '✨ Generate draft'}
+                    </button>
+                  </div>
+                </>
               )}
-              <textarea
-                value={msg}
-                onChange={e => { setMsg(e.target.value); setAiMode(false) }}
-                rows={5}
-                maxLength={step.type === 'connect' ? 300 : undefined}
-                placeholder={step.type === 'connect'
-                  ? 'Hi {{first_name}}, I came across your profile and would love to connect…'
-                  : 'Hi {{first_name}}, thanks for connecting! I wanted to reach out because…'}
-                className={[
-                  'w-full px-4 py-3 border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none',
-                  aiMode ? 'border-violet-200 bg-violet-50/30' : 'border-gray-200',
-                ].join(' ')}
-              />
-              <div className="flex items-center justify-between mt-1">
-                {aiMode
-                  ? <span className="text-[10px] text-violet-500 font-medium">✨ AI generated — edit freely or regenerate</span>
-                  : <span className="text-[10px] text-gray-400">Edit manually</span>
-                }
-                <span className="text-xs text-gray-400">{msg.length}{step.type === 'connect' ? '/300' : ''}</span>
-              </div>
             </div>
           )}
 
@@ -1005,48 +1189,11 @@ function TestMessageModal({
 
         <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
 
-          {/* Step picker */}
-          {messageSteps.length === 0 ? (
+          {/* No message steps warning */}
+          {messageSteps.length === 0 && (
             <p className="text-sm text-amber-600 bg-amber-50 px-4 py-3 rounded-xl">
               No message steps in this sequence yet. Add a Connection Request, Message, or InMail step first.
             </p>
-          ) : (
-            <div>
-              <label className="block text-sm font-semibold text-gray-700 mb-1.5">Step to preview</label>
-              <div className="grid gap-2">
-                {messageSteps.map(s => {
-                  const cfg = STEP_CFG[s.type]
-                  const isSelected = s.id === selectedStepId
-                  return (
-                    <button
-                      key={s.id}
-                      onClick={() => { setSelectedStepId(s.id); setResult(null); setErr('') }}
-                      className={[
-                        'flex items-center gap-3 px-4 py-3 rounded-xl border-2 text-left transition-all',
-                        isSelected
-                          ? 'border-violet-400 bg-violet-50'
-                          : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50',
-                      ].join(' ')}
-                    >
-                      <span className="text-lg shrink-0">{cfg.icon}</span>
-                      <div className="flex-1 min-w-0">
-                        <p className={`text-xs font-bold uppercase tracking-wider mb-0.5 ${isSelected ? 'text-violet-600' : 'text-gray-500'}`}>
-                          {cfg.label}
-                        </p>
-                        <p className="text-sm text-gray-700 truncate">
-                          {s.message_template
-                            ? s.message_template.substring(0, 70) + (s.message_template.length > 70 ? '…' : '')
-                            : <span className="italic text-gray-400">No message set yet</span>}
-                        </p>
-                      </div>
-                      {s.ai_generation_mode && (
-                        <span className="text-[10px] font-semibold text-violet-600 bg-violet-100 px-2 py-0.5 rounded-full shrink-0">✨ AI</span>
-                      )}
-                    </button>
-                  )
-                })}
-              </div>
-            </div>
           )}
 
           {/* Approach/Tone info banner */}
@@ -1142,7 +1289,7 @@ function TestMessageModal({
 
 // ── Flow canvas (inner — can use useReactFlow) ────────────────────────────────
 
-function FlowCanvas({ sequence, campaignId }: { sequence: Sequence; campaignId: string }) {
+export function FlowCanvas({ sequence, campaignId }: { sequence: Sequence; campaignId: string }) {
   const queryClient = useQueryClient()
   const { fitView } = useReactFlow()
   const viewport = useViewport()
@@ -1156,6 +1303,7 @@ function FlowCanvas({ sequence, campaignId }: { sequence: Sequence; campaignId: 
   const [generating, setGenerating] = useState(false)
   const [generateErr, setGenerateErr] = useState('')
   const [showGenConfirm, setShowGenConfirm] = useState(false)
+  const [buildRationale, setBuildRationale] = useState('')
 
   const { data: userSettings } = useQuery({
     queryKey: ['user-settings'],
@@ -1170,6 +1318,13 @@ function FlowCanvas({ sequence, campaignId }: { sequence: Sequence; campaignId: 
   const { data: campaignData } = useQuery({
     queryKey: ['campaign-detail', campaignId],
     queryFn: () => fetchCampaign(campaignId),
+    refetchInterval: 15_000,
+  })
+
+  const { data: flowLeads = [] } = useQuery({
+    queryKey: ['campaign-leads', campaignId],
+    queryFn: () => fetchCampaignLeads(campaignId),
+    refetchInterval: 15_000,
   })
 
   const invalidate = useCallback(async () => {
@@ -1220,13 +1375,14 @@ function FlowCanvas({ sequence, campaignId }: { sequence: Sequence; campaignId: 
   async function handleGenerateAll() {
     setGenerating(true)
     setGenerateErr('')
+    setBuildRationale('')
     setShowGenConfirm(false)
     try {
-      const result = await generateAllSteps(sequence.id)
+      const result: BuildFlowResult = await buildSequenceFlow(sequence.id)
       await invalidate()
       queryClient.invalidateQueries({ queryKey: ['sequences', campaignId] })
-      if (result.errors && result.errors.length > 0) {
-        setGenerateErr(`Generated ${result.updated} step(s). Some errors: ${result.errors.join('; ')}`)
+      if (result.rationale) {
+        setBuildRationale(result.rationale)
       }
     } catch (err) {
       setGenerateErr(err instanceof Error ? err.message : 'Generation failed')
@@ -1237,14 +1393,34 @@ function FlowCanvas({ sequence, campaignId }: { sequence: Sequence; campaignId: 
 
   const cb: Callbacks = { onAdd }
 
-  // Recompute layout whenever steps change
+  // Recompute layout whenever steps or leads change
   useEffect(() => {
+    // Build lead pins per step
+    const leadsByStep = new Map<string, LeadPin[]>()
+    for (const cl of flowLeads) {
+      const stepId = mapLeadToStepId(cl, steps)
+      if (!stepId) continue
+      const initials = [cl.lead.first_name?.[0], cl.lead.last_name?.[0]].filter(Boolean).join('').toUpperCase() || '?'
+      const name = `${cl.lead.first_name ?? ''} ${cl.lead.last_name ?? ''}`.trim()
+      const pin: LeadPin = { initials, name, status: cl.status, icpFlag: cl.lead.icp_flag }
+      leadsByStep.set(stepId, [...(leadsByStep.get(stepId) ?? []), pin])
+    }
+
     const layout = buildLayout(steps, cb)
-    setNodes(layout.nodes)
+    // Inject leadsHere into each step/fork node
+    const enriched = layout.nodes.map(n => {
+      if ((n.type === 'stepNode' || n.type === 'forkNode') && n.data) {
+        const step = (n.data as { step: SequenceStep }).step
+        const leadsHere = leadsByStep.get(step.id) ?? []
+        return { ...n, data: { ...n.data, leadsHere } }
+      }
+      return n
+    })
+    setNodes(enriched)
     setEdges(layout.edges)
     // Fit view after a tick to let nodes render
     setTimeout(() => fitView({ padding: 0.15, duration: 400 }), 50)
-  }, [steps])
+  }, [steps, flowLeads])
 
   // Compute overlay positions for add buttons using the current viewport transform.
   // node.position is in canvas coords; multiply by zoom and add viewport offset to get pixel coords.
@@ -1282,6 +1458,73 @@ function FlowCanvas({ sequence, campaignId }: { sequence: Sequence; campaignId: 
           </div>
         </div>
       )}
+
+      {/* ── Sequence Status Indicator ─────────────────────────────────────── */}
+      {(() => {
+        const campStatus = campaignData?.status ?? 'draft'
+        const total = flowLeads.length
+
+        const statusCfg = {
+          active:    { dot: 'bg-green-500',  text: 'text-green-700',  bg: 'bg-white',  border: 'border-green-200', label: 'Running', pulse: true  },
+          paused:    { dot: 'bg-yellow-400', text: 'text-yellow-700', bg: 'bg-white',  border: 'border-yellow-200', label: 'Paused',  pulse: false },
+          draft:     { dot: 'bg-gray-400',   text: 'text-gray-500',   bg: 'bg-white',  border: 'border-gray-200',  label: 'Draft',   pulse: false },
+          completed: { dot: 'bg-blue-400',   text: 'text-blue-700',   bg: 'bg-white',  border: 'border-blue-200',  label: 'Done',    pulse: false },
+        }[campStatus] ?? { dot: 'bg-gray-400', text: 'text-gray-500', bg: 'bg-white', border: 'border-gray-200', label: campStatus, pulse: false }
+
+        const leadStatuses: Array<{
+          key: CampaignLead['status']
+          label: string
+          dot: string
+          textColor: string
+        }> = [
+          { key: 'pending',         label: 'Pending',          dot: 'bg-gray-300',    textColor: 'text-gray-500'   },
+          { key: 'connection_sent', label: 'Conn. Sent',       dot: 'bg-blue-400',    textColor: 'text-blue-600'   },
+          { key: 'connected',       label: 'Connected',        dot: 'bg-sky-400',     textColor: 'text-sky-600'    },
+          { key: 'messaged',        label: 'Messaged',         dot: 'bg-violet-400',  textColor: 'text-violet-600' },
+          { key: 'replied',         label: 'Replied',          dot: 'bg-green-400',   textColor: 'text-green-600'  },
+          { key: 'converted',       label: 'Converted',        dot: 'bg-emerald-500', textColor: 'text-emerald-600'},
+          { key: 'stopped',         label: 'Stopped',          dot: 'bg-red-300',     textColor: 'text-red-400'    },
+        ]
+
+        const counts = leadStatuses.map(s => ({
+          ...s,
+          count: flowLeads.filter(l => l.status === s.key).length,
+        }))
+
+        const nonZero = counts.filter(c => c.count > 0)
+
+        return (
+          <div className="absolute top-4 left-4 z-10 pointer-events-none">
+            <div className={`rounded-2xl border shadow-lg ${statusCfg.bg} ${statusCfg.border} overflow-hidden`} style={{ minWidth: 180 }}>
+              {/* Status header */}
+              <div className={`flex items-center gap-2 px-3.5 py-2.5 border-b ${statusCfg.border}`}>
+                <span className="relative flex h-2.5 w-2.5 shrink-0">
+                  {statusCfg.pulse && (
+                    <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-60 ${statusCfg.dot}`} />
+                  )}
+                  <span className={`relative inline-flex rounded-full h-2.5 w-2.5 ${statusCfg.dot}`} />
+                </span>
+                <span className={`text-xs font-bold tracking-wide ${statusCfg.text}`}>{statusCfg.label}</span>
+                <span className="ml-auto text-[11px] font-semibold text-gray-400">{total} lead{total !== 1 ? 's' : ''}</span>
+              </div>
+
+              {/* Per-status breakdown */}
+              {total > 0 && (
+                <div className="px-3 py-2 space-y-1.5">
+                  {(nonZero.length > 0 ? nonZero : counts.slice(0, 3)).map(s => (
+                    <div key={s.key} className="flex items-center gap-2">
+                      <span className={`w-2 h-2 rounded-full shrink-0 ${s.dot}`} />
+                      <span className={`text-[11px] font-medium flex-1 ${s.textColor}`}>{s.label}</span>
+                      <span className={`text-[11px] font-bold tabular-nums ${s.count > 0 ? s.textColor : 'text-gray-300'}`}>{s.count}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )
+      })()}
+
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -1325,10 +1568,10 @@ function FlowCanvas({ sequence, campaignId }: { sequence: Sequence; campaignId: 
       <div className="absolute top-3 right-3 pointer-events-auto flex gap-2" style={{ zIndex: 10 }}>
         <button
           onClick={() => setShowGenConfirm(true)}
-          disabled={generating || steps.filter(s => ['connect','message','inmail'].includes(s.type)).length === 0}
+          disabled={generating}
           className="flex items-center gap-1.5 px-3 py-1.5 bg-violet-600 text-white text-xs font-medium rounded-lg shadow-sm hover:bg-violet-700 disabled:opacity-50 transition-colors"
         >
-          {generating ? '⏳ Generating…' : '✨ Generate with AI'}
+          {generating ? '⏳ Building…' : '✨ Generate with AI'}
         </button>
         <button
           onClick={() => setShowTestModal(true)}
@@ -1348,9 +1591,9 @@ function FlowCanvas({ sequence, campaignId }: { sequence: Sequence; campaignId: 
       {showGenConfirm && (
         <div className="absolute inset-0 bg-black/40 flex items-center justify-center z-20 pointer-events-auto">
           <div className="bg-white rounded-2xl shadow-2xl p-6 max-w-sm w-full mx-4">
-            <h3 className="text-base font-bold text-gray-900 mb-2">✨ Generate with AI</h3>
+            <h3 className="text-base font-bold text-gray-900 mb-2">✨ Build Sequence with AI</h3>
             <p className="text-sm text-gray-600 mb-4">
-              AI will write message templates for all message steps in this sequence based on your product settings and lead profiles. Existing messages will be overwritten.
+              Claude will design a complete outreach sequence tailored to your campaign — including the right steps, timing, and personalised message templates. Your existing steps will be replaced.
             </p>
             {generateErr && <p className="text-xs text-red-500 mb-3">{generateErr}</p>}
             <div className="flex gap-3">
@@ -1361,7 +1604,20 @@ function FlowCanvas({ sequence, campaignId }: { sequence: Sequence; campaignId: 
               <button
                 onClick={handleGenerateAll}
                 className="flex-1 py-2 text-sm font-semibold text-white bg-violet-600 rounded-xl hover:bg-violet-700 transition-colors"
-              >Generate All</button>
+              >Build Sequence</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* AI rationale banner shown after successful build */}
+      {buildRationale && !generating && (
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-20 pointer-events-auto w-[420px] max-w-[calc(100%-2rem)]">
+          <div className="bg-violet-50 border border-violet-200 text-violet-800 text-xs px-4 py-3 rounded-xl shadow-md">
+            <div className="flex items-start gap-2">
+              <span className="text-sm flex-shrink-0">✨</span>
+              <p className="leading-relaxed">{buildRationale}</p>
+              <button onClick={() => setBuildRationale('')} className="text-violet-400 hover:text-violet-600 flex-shrink-0 ml-1">✕</button>
             </div>
           </div>
         </div>
@@ -2225,7 +2481,7 @@ function pct(n: number, total: number): string {
   return `${Math.round((n / total) * 100)}%`
 }
 
-function AnalyticsTab({ campaignId }: { campaignId: string }) {
+export function AnalyticsTab({ campaignId }: { campaignId: string }) {
   const { data: rows = [], isLoading } = useQuery({
     queryKey: ['campaign-analytics', campaignId],
     queryFn: async () => {
@@ -2738,23 +2994,28 @@ function SettingsTab({ campaignId }: { campaignId: string }) {
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
-type Tab = 'sequence' | 'leads' | 'analytics' | 'settings'
+type Tab = 'sequence' | 'leads' | 'analytics'
 
 export function SequenceBuilder() {
   const { id: campaignId } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [campaignName, setCampaignName] = useState('')
+  const [headerStatus, setHeaderStatus] = useState<Campaign['status']>('draft')
   const [tab, setTab] = useState<Tab>('sequence')
 
   useQuery({
     queryKey: ['campaign', campaignId],
     queryFn: async () => {
-      const { data } = await supabase.from('campaigns').select('name').eq('id', campaignId!).single()
-      if (data) setCampaignName((data as { name: string }).name)
+      const { data } = await supabase.from('campaigns').select('name,status').eq('id', campaignId!).single()
+      if (data) {
+        setCampaignName((data as { name: string; status: Campaign['status'] }).name)
+        setHeaderStatus((data as { name: string; status: Campaign['status'] }).status)
+      }
       return data
     },
     enabled: !!campaignId,
+    refetchInterval: 15_000,
   })
 
   const { data: sequences = [], isLoading } = useQuery({
@@ -2775,7 +3036,6 @@ export function SequenceBuilder() {
     { key: 'sequence',  label: 'Sequence' },
     { key: 'leads',     label: 'Leads' },
     { key: 'analytics', label: 'Analytics' },
-    { key: 'settings',  label: 'Settings' },
   ]
 
   return (
@@ -2783,7 +3043,7 @@ export function SequenceBuilder() {
       {/* Header */}
       <div className="shrink-0 border-b border-gray-200 bg-white px-6 py-0 flex items-stretch gap-4">
         <button
-          onClick={() => navigate('/campaigns')}
+          onClick={() => navigate(`/campaigns/${campaignId}`)}
           className="self-center p-1.5 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors shrink-0"
         >
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -2812,6 +3072,13 @@ export function SequenceBuilder() {
               {t.label}
             </button>
           ))}
+          {/* Settings lives on the campaign page — navigate back there */}
+          <button
+            onClick={() => navigate(`/campaigns/${campaignId}`)}
+            className="px-4 py-3 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 transition-colors"
+          >
+            Settings
+          </button>
         </div>
 
         {tab === 'sequence' && sequence && (
@@ -2819,6 +3086,25 @@ export function SequenceBuilder() {
             {stepCount} step{stepCount !== 1 ? 's' : ''}
           </span>
         )}
+
+        {/* Campaign status badge — always visible in header */}
+        {(() => {
+          const cfg = {
+            active:    { dot: 'bg-green-500', text: 'text-green-700', bg: 'bg-green-50 border-green-200', label: 'Running', pulse: true  },
+            paused:    { dot: 'bg-yellow-400', text: 'text-yellow-700', bg: 'bg-yellow-50 border-yellow-200', label: 'Paused', pulse: false },
+            draft:     { dot: 'bg-gray-400',   text: 'text-gray-500',   bg: 'bg-gray-100 border-gray-200',   label: 'Draft',   pulse: false },
+            completed: { dot: 'bg-blue-400',   text: 'text-blue-700',   bg: 'bg-blue-50 border-blue-200',    label: 'Done',    pulse: false },
+          }[headerStatus] ?? { dot: 'bg-gray-400', text: 'text-gray-500', bg: 'bg-gray-100 border-gray-200', label: headerStatus, pulse: false }
+          return (
+            <div className={`${tab === 'sequence' && sequence ? '' : 'ml-auto'} self-center flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-xs font-semibold ${cfg.bg} ${cfg.text}`}>
+              <span className="relative flex h-2 w-2 shrink-0">
+                {cfg.pulse && <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${cfg.dot}`} />}
+                <span className={`relative inline-flex rounded-full h-2 w-2 ${cfg.dot}`} />
+              </span>
+              {cfg.label}
+            </div>
+          )
+        })()}
       </div>
 
       {/* Tab content */}
@@ -2851,8 +3137,6 @@ export function SequenceBuilder() {
       {tab === 'leads' && <CampaignLeadsTab campaignId={campaignId!} />}
 
       {tab === 'analytics' && <AnalyticsTab campaignId={campaignId!} />}
-
-      {tab === 'settings' && <SettingsTab campaignId={campaignId!} />}
     </div>
   )
 }

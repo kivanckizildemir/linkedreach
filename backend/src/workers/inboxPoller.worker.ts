@@ -11,9 +11,11 @@
  */
 
 import { supabase } from '../lib/supabase'
-import { createSession, closeSession, persistCookies, safeNavigate } from '../linkedin/session'
+import { persistCookies, safeNavigate } from '../linkedin/session'
 import { detectAndHandleChallenge } from '../linkedin/session'
 import { classifyReply } from '../ai/classify'
+import { acquireAccountLock } from '../lib/accountLock'
+import { getOrCreateBrowserSession, invalidateBrowserSession } from '../lib/browserPool'
 
 interface Account {
   id: string
@@ -31,7 +33,7 @@ interface ConversationSnippet {
 }
 
 async function pollAccountInbox(account: Account): Promise<void> {
-  const { browser, context, page } = await createSession(account)
+  const { context, page } = await getOrCreateBrowserSession(account)
 
   try {
     await safeNavigate(page, 'https://www.linkedin.com/messaging/', account.id)
@@ -159,8 +161,14 @@ async function pollAccountInbox(account: Account): Promise<void> {
     }
 
     await persistCookies(context, account.id)
-  } finally {
-    await closeSession(browser)
+  } catch (err) {
+    const msg = (err as Error).message ?? ''
+    if (msg.includes('SESSION_EXPIRED') || msg.includes('SECURITY_CHALLENGE')) {
+      // Mark paused immediately so the UI reflects the broken state.
+      try { await supabase.from('linkedin_accounts').update({ status: 'paused' }).eq('id', account.id) } catch {}
+      invalidateBrowserSession(account.id)
+    }
+    throw err
   }
 }
 
@@ -178,17 +186,28 @@ export async function pollAllInboxes(): Promise<void> {
   if (!accounts || accounts.length === 0) return
 
   for (const acc of accounts as Account[]) {
+    const release = await acquireAccountLock(acc.id)
+    if (!release) {
+      console.log(`[inbox] Account ${acc.id} locked by another worker — skipping this poll cycle`)
+      continue
+    }
     try {
       await pollAccountInbox(acc)
     } catch (err) {
       console.error(`[inbox] Failed to poll account ${acc.id}:`, err)
+    } finally {
+      await release()
     }
   }
 }
 
 // Run every 10 minutes
 export function startInboxPoller(): void {
-  console.log('[inbox] Poller started — running every 10 minutes')
-  pollAllInboxes().catch(console.error)
-  setInterval(() => pollAllInboxes().catch(console.error), 10 * 60 * 1000)
+  console.log('[inbox] Poller started — first run in 3 minutes, then every 10 minutes')
+  // Delay first run by 3 minutes so a warm browser session is already established
+  // before inbox polling touches LinkedIn. Cold-starting on inbox = instant session kill.
+  setTimeout(() => {
+    pollAllInboxes().catch(console.error)
+    setInterval(() => pollAllInboxes().catch(console.error), 10 * 60 * 1000)
+  }, 3 * 60 * 1000)
 }

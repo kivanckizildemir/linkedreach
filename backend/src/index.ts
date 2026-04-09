@@ -1,6 +1,17 @@
+// ── Timestamped logging ───────────────────────────────────────────────────────
+const ts = () => new Date().toLocaleTimeString('en-GB', { hour12: false })
+const _log   = console.log.bind(console)
+const _warn  = console.warn.bind(console)
+const _error = console.error.bind(console)
+console.log   = (...a) => _log(`[${ts()}]`, ...a)
+console.warn  = (...a) => _warn(`[${ts()}]`, ...a)
+console.error = (...a) => _error(`[${ts()}]`, ...a)
+// ─────────────────────────────────────────────────────────────────────────────
+
 import express from 'express'
 import cors from 'cors'
 import dotenv from 'dotenv'
+// override: true forces .env values to win over any empty/stale shell env vars
 import { authRouter } from './routes/auth'
 import { accountsRouter } from './routes/accounts'
 import { campaignsRouter } from './routes/campaigns'
@@ -15,12 +26,13 @@ import { activityLogRouter } from './routes/activityLog'
 import { labelsRouter } from './routes/labels'
 import { settingsRouter } from './routes/settings'
 import { proxiesRouter } from './routes/proxies'
+import { leadListsRouter } from './routes/leadLists'
 import { scraperRouter } from './routes/scraper'
 import { sequenceAiRouter } from './routes/sequenceAi'
 import { errorHandler, notFound } from './middleware/errors'
 import { testProxyRaw, getLastErrorSnapshot, clearLastErrorSnapshot } from './linkedin/login'
 
-dotenv.config()
+dotenv.config({ override: true })
 
 const app = express()
 const PORT = process.env.PORT || 3001
@@ -133,6 +145,7 @@ app.use('/api/activity', activityLogRouter)
 app.use('/api/labels', labelsRouter)
 app.use('/api/settings', settingsRouter)
 app.use('/api/proxies', proxiesRouter)
+app.use('/api/lead-lists', leadListsRouter)
 app.use('/api/scraper', scraperRouter)
 app.use('/api/sequence-ai', sequenceAiRouter)
 

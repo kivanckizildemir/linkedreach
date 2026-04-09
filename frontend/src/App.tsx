@@ -7,10 +7,10 @@ import { Dashboard } from './pages/Dashboard'
 import { Campaigns } from './pages/Campaigns'
 import { CampaignDetail } from './pages/CampaignDetail'
 import { Leads } from './pages/Leads'
+import { LeadLists } from './pages/LeadLists'
 import { Inbox } from './pages/Inbox'
 import { Accounts } from './pages/Accounts'
 import { Blacklist } from './pages/Blacklist'
-import { Templates } from './pages/Templates'
 import { Settings } from './pages/Settings'
 import { SequenceBuilder } from './pages/SequenceBuilder'
 import { Login } from './pages/Login'
@@ -41,12 +41,13 @@ function App() {
                 <Route path="/" element={<Dashboard />} />
                 <Route path="/campaigns" element={<Campaigns />} />
                 <Route path="/campaigns/:id" element={<CampaignDetail />} />
-                <Route path="/campaigns/:id/sequence" element={<SequenceBuilder />} />
-                <Route path="/leads" element={<Leads />} />
+                {/* Sequence is now a tab inside CampaignDetail — redirect old deep-link */}
+                <Route path="/campaigns/:id/sequence" element={<Navigate to=".." replace />} />
+                <Route path="/leads" element={<LeadLists />} />
+                <Route path="/leads/:listId" element={<Leads />} />
                 <Route path="/inbox" element={<Inbox />} />
                 <Route path="/accounts" element={<Accounts />} />
                 <Route path="/blacklist" element={<Blacklist />} />
-                <Route path="/templates" element={<Templates />} />
                 <Route path="/settings" element={<Settings />} />
               </Route>
             </Route>

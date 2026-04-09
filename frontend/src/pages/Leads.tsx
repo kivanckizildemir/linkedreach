@@ -1,11 +1,13 @@
-import { useState, useRef, useEffect, useCallback, useMemo, type FormEvent } from 'react'
+import { useState, useRef, useEffect, useCallback, useMemo, Fragment, type FormEvent } from 'react'
+import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { fetchLeads, requalifyLead, qualifyAllLeads, importLeads, startSalesNavImport, getScrapeStatus, fetchLeadNotes, addLeadNote, deleteLeadNote, personaliseOpeningLine, fetchLeadCampaigns, bulkDeleteLeads, createManualLead } from '../api/leads'
+import { fetchLeads, requalifyLead, qualifyAllLeads, importLeads, startSalesNavImport, getScrapeStatus, fetchLeadNotes, addLeadNote, deleteLeadNote, personaliseOpeningLine, fetchLeadCampaigns, bulkDeleteLeads, createManualLead, enrichProfiles, getEnrichStatus, cancelEnrichJob, cancelQualify } from '../api/leads'
 import type { Lead, LeadNote, LeadCampaignMembership } from '../api/leads'
 import { supabase } from '../lib/supabase'
 import { fetchLabels, fetchLeadLabels, fetchAllLeadLabelAssignments, assignLabel, removeLabel, createLabel, type LeadLabel } from '../api/labels'
 import { fetchAccounts } from '../api/accounts'
 import { addLeadsToCampaign } from '../api/campaigns'
+import { scrapeIntoList, importExcelIntoList, fetchLeadList } from '../api/leadLists'
 import * as XLSX from 'xlsx'
 
 const FLAG_COLORS: Record<NonNullable<Lead['icp_flag']>, string> = {
@@ -142,6 +144,8 @@ function BestFitCell({ lead, products }: { lead: Lead; products: ProductRef[] })
 type SortCol = 'name' | 'title' | 'company' | 'icp_score' | 'icp_flag' | 'source' | 'created_at'
 
 export function Leads() {
+  const { listId } = useParams<{ listId?: string }>()
+  const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [search, setSearch] = useState('')
   const [icpFlag, setIcpFlag] = useState('')
@@ -156,17 +160,70 @@ export function Leads() {
   const [notesLead, setNotesLead] = useState<Lead | null>(null)
 
   const [showManageLabels, setShowManageLabels] = useState(false)
-  const [detailLead, setDetailLead] = useState<Lead | null>(null)
+
   const [showManualAdd, setShowManualAdd] = useState(false)
+  const [expandedLeadId, setExpandedLeadId] = useState<string | null>(null)
+
+  // List-context "Add Leads" modal
+  const [showAddToList, setShowAddToList] = useState(false)
+  const [addToListTab, setAddToListTab] = useState<'manual' | 'sales_nav' | 'excel'>('manual')
+  const [listScrapeUrl, setListScrapeUrl] = useState('')
+  const [listScrapeAccount, setListScrapeAccount] = useState('')
+  const [listScrapeMax, setListScrapeMax] = useState(100)
+  const [listScrapeStatus, setListScrapeStatus] = useState<'idle' | 'scraping' | 'done' | 'error'>('idle')
+  const [listScrapeError, setListScrapeError] = useState('')
+  const [listScrapeProgress, setListScrapeProgress] = useState(0)
+  const [listScrapeResult, setListScrapeResult] = useState<{ scraped: number; saved: number } | null>(null)
+  const listScrapePollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const [listExcelFile, setListExcelFile] = useState<File | null>(null)
+  const [listExcelError, setListExcelError] = useState('')
+  const [listExcelLoading, setListExcelLoading] = useState(false)
+  const [listExcelResult, setListExcelResult] = useState<{ saved: number; skipped: number } | null>(null)
+  const listExcelRef = useRef<HTMLInputElement>(null)
+
+  const [showEnrichModal, setShowEnrichModal] = useState(false)
+  const [enrichAccountId, setEnrichAccountId] = useState('')
+  const [enrichJobId, setEnrichJobId] = useState<string | null>(null)
+  const [enrichStatus, setEnrichStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle')
+  const [enrichProgress, setEnrichProgress] = useState(0)
+  const [enrichCount, setEnrichCount] = useState(0)
+  const [enrichError, setEnrichError] = useState('')
+  const enrichPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // Re-score All tracking
+  const [isScoringAll, setIsScoringAll] = useState(false)
+  const [scoringDone, setScoringDone] = useState(0)
+  const [scoringTotal, setScoringTotal] = useState(0)
+  const scoringStartTimeRef = useRef<number>(0)
+  const scoringPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const { data: accounts = [] } = useQuery({
+    queryKey: ['accounts'],
+    queryFn: fetchAccounts,
+  })
+
+  useEffect(() => {
+    return () => {
+      if (listScrapePollRef.current) clearInterval(listScrapePollRef.current)
+      if (enrichPollRef.current) clearInterval(enrichPollRef.current)
+      if (scoringPollRef.current) clearInterval(scoringPollRef.current)
+    }
+  }, [])
 
   function toggleSort(col: SortCol) {
     if (sortCol === col) setSortDir(d => d === 'asc' ? 'desc' : 'asc')
     else { setSortCol(col); setSortDir('asc') }
   }
 
+  const { data: currentList } = useQuery({
+    queryKey: ['lead-list', listId],
+    queryFn: () => fetchLeadList(listId!),
+    enabled: !!listId,
+  })
+
   const { data: leads = [], isLoading } = useQuery({
-    queryKey: ['leads', { search, icp_flag: icpFlag, source: sourceFilter }],
-    queryFn: () => fetchLeads({ search: search || undefined, icp_flag: icpFlag || undefined, source: sourceFilter || undefined }),
+    queryKey: ['leads', { search, icp_flag: icpFlag, source: sourceFilter, list_id: listId }],
+    queryFn: () => fetchLeads({ search: search || undefined, icp_flag: icpFlag || undefined, source: sourceFilter || undefined, list_id: listId }),
   })
 
   const requalifyMutation = useMutation({
@@ -184,15 +241,50 @@ export function Leads() {
   })
 
   const qualifyAllMutation = useMutation({
-    mutationFn: (opts?: { force?: boolean; ids?: string[] }) => qualifyAllLeads(opts),
-    onSuccess: (result) => {
-      if (result.queued > 0) {
-        setTimeout(() => queryClient.invalidateQueries({ queryKey: ['leads'] }), 6000)
-      }
+    mutationFn: (opts?: { force?: boolean; ids?: string[]; list_id?: string }) => qualifyAllLeads(opts),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['leads'] })
     },
   })
 
   const unscoredCount = leads.filter(l => l.icp_score == null).length
+
+  // Detect when all scoring is done by checking updated_at > scoringStartTime
+  useEffect(() => {
+    if (!isScoringAll || scoringTotal === 0) return
+    const startIso = new Date(scoringStartTimeRef.current).toISOString()
+    const freshlyScored = leads.filter(l =>
+      l.icp_score != null && (l as unknown as { updated_at?: string }).updated_at
+        ? ((l as unknown as { updated_at: string }).updated_at >= startIso)
+        : false
+    ).length
+    setScoringDone(freshlyScored)
+    if (freshlyScored >= scoringTotal) {
+      if (scoringPollRef.current) clearInterval(scoringPollRef.current)
+      scoringPollRef.current = null
+      setIsScoringAll(false)
+    }
+  }, [leads, isScoringAll, scoringTotal])
+
+  async function handleCancelScoring() {
+    if (scoringPollRef.current) clearInterval(scoringPollRef.current)
+    scoringPollRef.current = null
+    setIsScoringAll(false)
+    await cancelQualify(leads.map(l => l.id)).catch(() => null)
+  }
+
+  // On-demand qualification: silently score unqualified leads when a list is opened.
+  // Fires once per listId — the ref prevents re-triggering when leads reload mid-scoring.
+  const qualifiedListRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!listId || isLoading) return
+    if (qualifiedListRef.current === listId) return   // already triggered for this list
+    const unscored = leads.filter(l => l.icp_score == null)
+    if (unscored.length === 0) return
+    qualifiedListRef.current = listId
+    qualifyAllLeads({ list_id: listId }).catch(() => null)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [listId, isLoading, leads.length])
 
   const sortedLeads = useMemo(() => {
     const arr = [...leads]
@@ -240,19 +332,37 @@ export function Leads() {
     }
   }, [allLeadLabels, queryClient])
 
-  // Real-time subscription — invalidate leads cache when rows change (score updates, new imports, etc.)
+  // Real-time subscription — patch the React Query cache surgically as scores arrive.
+  // UPDATE events (score writes): merge changed fields directly into the cached row — no refetch.
+  // INSERT events (new imports): invalidate so the new row appears in the list.
   useEffect(() => {
+    const channelName = `leads-realtime-${Date.now()}`
     let channel: ReturnType<typeof supabase.channel> | null = null
     void supabase.auth.getUser().then(({ data }) => {
       if (!data.user) return
       channel = supabase
-        .channel('leads-realtime')
+        .channel(channelName)
         .on('postgres_changes', {
-          event: '*',
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'leads',
+          filter: `user_id=eq.${data.user.id}`,
+        }, (payload) => {
+          // Patch every cached leads query that contains this lead
+          queryClient.setQueriesData<Lead[]>({ queryKey: ['leads'] }, (old) => {
+            if (!old) return old
+            return old.map(l =>
+              l.id === (payload.new as Lead).id ? { ...l, ...(payload.new as Lead) } : l
+            )
+          })
+        })
+        .on('postgres_changes', {
+          event: 'INSERT',
           schema: 'public',
           table: 'leads',
           filter: `user_id=eq.${data.user.id}`,
         }, () => {
+          // New lead imported — need full refetch to add it to the list
           void queryClient.invalidateQueries({ queryKey: ['leads'] })
         })
         .subscribe()
@@ -294,25 +404,115 @@ export function Leads() {
     },
   })
 
+  async function handleCancelEnrich() {
+    if (enrichPollRef.current) clearInterval(enrichPollRef.current)
+    enrichPollRef.current = null
+    if (enrichJobId) await cancelEnrichJob(enrichJobId).catch(() => null)
+    setEnrichStatus('idle')
+    setEnrichJobId(null)
+    setEnrichProgress(0)
+    setShowEnrichModal(false)
+  }
+
+  async function handleEnrichProfiles() {
+    if (!enrichAccountId) return
+    try {
+      setEnrichStatus('running')
+      setEnrichProgress(0)
+      const result = await enrichProfiles({
+        account_id: enrichAccountId,
+        ...(listId ? { list_id: listId } : {}),
+      })
+      setEnrichJobId(result.job_id)
+      setEnrichCount(result.count)
+      setShowEnrichModal(false)   // close modal — progress shows on button
+
+      enrichPollRef.current = setInterval(async () => {
+        try {
+          const status = await getEnrichStatus(result.job_id)
+          setEnrichProgress(status.progress)
+          if (status.state === 'completed') {
+            clearInterval(enrichPollRef.current!)
+            setEnrichStatus('done')
+            void queryClient.invalidateQueries({ queryKey: ['leads'] })
+            setTimeout(() => setEnrichStatus('idle'), 3000)
+          } else if (status.state === 'failed') {
+            clearInterval(enrichPollRef.current!)
+            setEnrichError('Worker job failed — check server logs')
+            setEnrichStatus('error')
+            setTimeout(() => setEnrichStatus('idle'), 4000)
+          }
+        } catch {
+          // ignore poll errors
+        }
+      }, 3000)
+    } catch (err) {
+      setEnrichError((err as Error).message)
+      setEnrichStatus('error')
+      console.error(err)
+    }
+  }
+
   return (
     <div className="p-8">
+      {listId && (
+        <button
+          onClick={() => navigate('/leads')}
+          className="mb-4 flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-800 transition-colors"
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 19l-7-7 7-7" />
+          </svg>
+          Back to Lead Lists
+        </button>
+      )}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Leads</h1>
-          <p className="mt-1 text-sm text-gray-500">Import and manage your lead lists</p>
+          <h1 className="text-2xl font-bold text-gray-900">{listId && currentList ? currentList.name : 'Leads'}</h1>
+          <p className="mt-1 text-sm text-gray-500">{listId ? `${leads.length} lead${leads.length !== 1 ? 's' : ''}` : 'Import and manage your lead lists'}</p>
         </div>
         <div className="flex gap-3">
           {leads.length > 0 && (
             <button
-              onClick={() => qualifyAllMutation.mutate({ force: true })}
-              disabled={qualifyAllMutation.isPending}
-              className="px-4 py-2 border border-violet-300 text-violet-700 text-sm font-medium rounded-lg hover:bg-violet-50 transition-colors disabled:opacity-60"
+              onClick={() => {
+                if (isScoringAll) { handleCancelScoring(); return }
+                // Start animation immediately, then fire the mutation
+                scoringStartTimeRef.current = Date.now()
+                setIsScoringAll(true)
+                setScoringTotal(leads.length)
+                setScoringDone(0)
+                if (scoringPollRef.current) clearInterval(scoringPollRef.current)
+                scoringPollRef.current = setInterval(() => {
+                  void queryClient.invalidateQueries({ queryKey: ['leads'] })
+                }, 2000)
+                qualifyAllMutation.mutate({ force: true, list_id: listId ?? undefined })
+              }}
+              disabled={qualifyAllMutation.isPending && !isScoringAll}
+              className={`px-4 py-2 border text-sm font-medium rounded-lg transition-colors flex items-center gap-2 ${
+                isScoringAll
+                  ? 'border-violet-400 bg-violet-50 text-violet-700 hover:bg-red-50 hover:border-red-300 hover:text-red-600'
+                  : 'border-violet-300 text-violet-700 hover:bg-violet-50 disabled:opacity-60'
+              }`}
             >
-              {qualifyAllMutation.isPending
-                ? '⏳ Queuing…'
-                : unscoredCount > 0
-                  ? `✨ Score All (${unscoredCount} unscored)`
-                  : `✨ Re-score All (${leads.length})`}
+              {isScoringAll ? (
+                <>
+                  <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                  </svg>
+                  <span>Scoring {scoringDone}/{scoringTotal} · click to stop</span>
+                </>
+              ) : qualifyAllMutation.isPending ? (
+                <>
+                  <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                  </svg>
+                  <span>Queuing…</span>
+                </>
+              ) : unscoredCount > 0
+                ? `✨ Score All (${unscoredCount} unscored)`
+                : `✨ Re-score All (${leads.length})`}
             </button>
           )}
           {leads.length > 0 && (
@@ -349,24 +549,86 @@ export function Leads() {
             </svg>
             Labels
           </button>
-          <button
-            onClick={() => setShowCsvModal(true)}
-            className="px-4 py-2 border border-gray-300 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-50 transition-colors"
-          >
-            Import CSV / Excel
-          </button>
-          <button
-            onClick={() => setShowImportModal(true)}
-            className="px-4 py-2 border border-gray-300 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-50 transition-colors"
-          >
-            Import from Sales Nav
-          </button>
-          <button
-            onClick={() => setShowManualAdd(true)}
-            className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors"
-          >
-            Add Lead
-          </button>
+          {listId && leads.length > 0 && (
+            <button
+              onClick={() => {
+                if (enrichStatus === 'running') { handleCancelEnrich(); return }
+                setShowEnrichModal(true); setEnrichStatus('idle'); setEnrichProgress(0); setEnrichAccountId(''); setEnrichError('')
+              }}
+              className={`px-4 py-2 border text-sm font-medium rounded-lg transition-colors flex items-center gap-1.5 ${
+                enrichStatus === 'running'
+                  ? 'border-blue-400 bg-blue-50 text-blue-700 hover:bg-red-50 hover:border-red-300 hover:text-red-600'
+                  : enrichStatus === 'done'
+                    ? 'border-green-400 bg-green-50 text-green-700'
+                    : enrichStatus === 'error'
+                      ? 'border-red-300 bg-red-50 text-red-600'
+                      : 'border-gray-300 text-gray-700 hover:bg-gray-50'
+              }`}
+            >
+              {enrichStatus === 'running' ? (
+                <>
+                  <svg className="w-3.5 h-3.5 animate-spin shrink-0" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                  </svg>
+                  <span>Enriching {enrichProgress}% · click to stop</span>
+                </>
+              ) : enrichStatus === 'done' ? (
+                <>
+                  <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                  Enrichment done
+                </>
+              ) : enrichStatus === 'error' ? (
+                <>
+                  <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  Enrich failed
+                </>
+              ) : (
+                <>
+                  <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                  </svg>
+                  Enrich Profiles
+                </>
+              )}
+            </button>
+          )}
+          {listId ? (
+            <button
+              onClick={() => { setShowAddToList(true); setAddToListTab('manual'); setListScrapeError(''); setListExcelError(''); setListExcelResult(null) }}
+              className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+              </svg>
+              Add Leads
+            </button>
+          ) : (
+            <>
+              <button
+                onClick={() => setShowCsvModal(true)}
+                className="px-4 py-2 border border-gray-300 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-50 transition-colors"
+              >
+                Import CSV / Excel
+              </button>
+              <button
+                onClick={() => setShowImportModal(true)}
+                className="px-4 py-2 border border-gray-300 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-50 transition-colors"
+              >
+                Import from Sales Nav
+              </button>
+              <button
+                onClick={() => setShowManualAdd(true)}
+                className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors"
+              >
+                Add Lead
+              </button>
+            </>
+          )}
         </div>
       </div>
 
@@ -492,7 +754,7 @@ export function Leads() {
                 <th className="px-4 py-3" />
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-100">
+            <tbody>
               {isLoading ? (
                 <tr>
                   <td colSpan={10} className="px-4 py-16 text-center text-gray-400 text-sm">Loading…</td>
@@ -508,9 +770,15 @@ export function Leads() {
                   const isQueued = requalifyMutation.isPending && requalifyMutation.variables === lead.id
                   const reasoning = lead.raw_data?.ai_reasoning
                   const openingLine = lead.raw_data?.opening_line
+                  const isExpanded = expandedLeadId === lead.id
+                  const hasEnrichedData = !!(lead.about || lead.experience_description || lead.skills?.length || lead.recent_posts?.length)
                   return (
-                    <tr key={lead.id} className={`hover:bg-gray-50 transition-colors ${selectedIds.has(lead.id) ? 'bg-blue-50' : ''}`}>
-                      <td className="px-4 py-3 w-8">
+                    <Fragment key={lead.id}>
+                    <tr
+                      onClick={() => setExpandedLeadId(isExpanded ? null : lead.id)}
+                      className={`cursor-pointer transition-colors border-b border-gray-100 ${isExpanded ? 'bg-violet-50' : `${selectedIds.has(lead.id) ? 'bg-blue-50 hover:bg-blue-100' : 'hover:bg-gray-50'}`}`}
+                    >
+                      <td className="px-4 py-3 w-8" onClick={e => e.stopPropagation()}>
                         <input
                           type="checkbox"
                           checked={selectedIds.has(lead.id)}
@@ -524,12 +792,26 @@ export function Leads() {
                         />
                       </td>
                       <td className="px-4 py-3 font-medium text-gray-900 whitespace-nowrap">
-                        <button
-                          onClick={() => setDetailLead(lead)}
-                          className="text-left hover:text-blue-600 hover:underline transition-colors"
-                        >
-                          {lead.first_name} {lead.last_name}
-                        </button>
+                        <div className="flex items-center gap-1.5">
+                          <span className={`text-[10px] text-gray-400 transition-transform duration-150 inline-block ${isExpanded ? 'rotate-90' : ''}`}>▶</span>
+                          <span className="text-gray-900">
+                            {lead.first_name} {lead.last_name}
+                          </span>
+                          {lead.linkedin_url && (
+                            <a
+                              href={lead.linkedin_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={e => e.stopPropagation()}
+                              title="Open LinkedIn profile"
+                              className="text-[#0A66C2] hover:text-[#004182] shrink-0"
+                            >
+                              <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
+                                <path d="M19 0h-14c-2.761 0-5 2.239-5 5v14c0 2.761 2.239 5 5 5h14c2.762 0 5-2.239 5-5v-14c0-2.761-2.238-5-5-5zm-11 19h-3v-11h3v11zm-1.5-12.268c-.966 0-1.75-.79-1.75-1.764s.784-1.764 1.75-1.764 1.75.79 1.75 1.764-.783 1.764-1.75 1.764zm13.5 12.268h-3v-5.604c0-3.368-4-3.113-4 0v5.604h-3v-11h3v1.765c1.396-2.586 7-2.777 7 2.476v6.759z"/>
+                              </svg>
+                            </a>
+                          )}
+                        </div>
                       </td>
                       <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{lead.title ?? '—'}</td>
                       <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{lead.company ?? '—'}</td>
@@ -559,8 +841,8 @@ export function Leads() {
                       <td className="px-4 py-3">
                         <LeadLabelCell leadId={lead.id} allLabels={labels} queryClient={queryClient} />
                       </td>
-                      <td className="px-4 py-3 text-gray-500 capitalize">{lead.source.replace('_', ' ')}</td>
-                      <td className="px-4 py-3 text-right">
+                      <td className="px-4 py-3 text-gray-500 capitalize whitespace-nowrap">{lead.source.replace('_', ' ')}</td>
+                      <td className="px-4 py-3 text-right" onClick={e => e.stopPropagation()}>
                         <div className="flex items-center justify-end gap-3">
                           {openingLine && (
                             <span
@@ -618,6 +900,65 @@ export function Leads() {
                         </div>
                       </td>
                     </tr>
+
+                    {/* ── Expanded profile row ── */}
+                    {isExpanded && (
+                      <tr className="bg-violet-50 border-b border-gray-100">
+                        <td colSpan={10} className="px-6 pb-5 pt-0 max-w-0 overflow-hidden">
+                          {hasEnrichedData ? (
+                            <div className="flex flex-wrap gap-x-8 gap-y-4 pt-2">
+
+                              {lead.about && (
+                                <div className="min-w-[200px] flex-1">
+                                  <p className="text-[10px] font-bold uppercase tracking-wider text-violet-400 mb-1.5">About</p>
+                                  <p className="text-xs text-gray-600 leading-relaxed line-clamp-4">{lead.about}</p>
+                                </div>
+                              )}
+
+                              {lead.experience_description && (
+                                <div className="min-w-[200px] flex-1">
+                                  <p className="text-[10px] font-bold uppercase tracking-wider text-violet-400 mb-1.5">Current Role</p>
+                                  <p className="text-xs text-gray-600 leading-relaxed line-clamp-3">{lead.experience_description}</p>
+                                </div>
+                              )}
+
+                              {lead.skills && lead.skills.length > 0 && (
+                                <div className="min-w-[160px]">
+                                  <p className="text-[10px] font-bold uppercase tracking-wider text-violet-400 mb-1.5">Skills</p>
+                                  <div className="flex flex-wrap gap-1.5">
+                                    {lead.skills.slice(0, 8).map((skill, i) => (
+                                      <span key={i} className="px-2 py-0.5 bg-white border border-violet-200 text-violet-700 text-[10px] font-medium rounded-full">
+                                        {skill}
+                                      </span>
+                                    ))}
+                                    {lead.skills.length > 8 && (
+                                      <span className="text-[10px] text-gray-400 self-center">+{lead.skills.length - 8} more</span>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
+
+                              {lead.recent_posts && lead.recent_posts.length > 0 && (
+                                <div className="min-w-[260px] flex-[2]">
+                                  <p className="text-[10px] font-bold uppercase tracking-wider text-violet-400 mb-1.5">Recent Posts</p>
+                                  <div className="space-y-1.5">
+                                    {lead.recent_posts.slice(0, 3).map((post, i) => (
+                                      <p key={i} className="text-xs text-gray-600 leading-relaxed line-clamp-2 pl-2 border-l-2 border-violet-200">
+                                        {post}
+                                      </p>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+
+                            </div>
+                          ) : (
+                            <p className="text-xs text-gray-400 italic pt-1">No profile data yet — click Enrich Profiles to scrape this lead's LinkedIn.</p>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                    </Fragment>
                   )
                 })
               )}
@@ -635,12 +976,195 @@ export function Leads() {
 
       {showManualAdd && (
         <ManualAddLeadModal
+          listId={listId}
           onClose={() => setShowManualAdd(false)}
           onAdded={() => {
             setShowManualAdd(false)
             void queryClient.invalidateQueries({ queryKey: ['leads'] })
           }}
         />
+      )}
+
+      {/* Add Leads to list modal */}
+      {showAddToList && listId && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6 space-y-4">
+            <h2 className="text-lg font-semibold text-gray-900">Add Leads</h2>
+
+            {/* Tab selector */}
+            <div className="flex gap-1 bg-gray-100 rounded-xl p-1">
+              {(['manual', 'sales_nav', 'excel'] as const).map(tab => (
+                <button
+                  key={tab}
+                  onClick={() => { setAddToListTab(tab); setListScrapeError(''); setListExcelError(''); setListExcelResult(null) }}
+                  className={`flex-1 py-2 text-sm font-medium rounded-lg transition-colors ${
+                    addToListTab === tab ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                  }`}
+                >
+                  {tab === 'manual' ? '✏️ Manual' : tab === 'sales_nav' ? '🔍 Sales Nav' : '📊 Excel'}
+                </button>
+              ))}
+            </div>
+
+            {addToListTab === 'manual' && (
+              <ManualAddLeadModal
+                listId={listId}
+                inline
+                onClose={() => setShowAddToList(false)}
+                onAdded={() => {
+                  void queryClient.invalidateQueries({ queryKey: ['leads'] })
+                }}
+              />
+            )}
+
+            {addToListTab === 'sales_nav' && (
+              <div className="space-y-3">
+                {listScrapeStatus === 'done' ? (
+                  <div className="space-y-4 py-4 text-center">
+                    <div className="w-12 h-12 rounded-full bg-green-100 flex items-center justify-center mx-auto">
+                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#16A34A" strokeWidth="2.5"><path d="M20 6L9 17l-5-5" /></svg>
+                    </div>
+                    <div>
+                      <p className="text-base font-semibold text-gray-900">Import complete</p>
+                      <p className="text-sm text-gray-500 mt-1">
+                        Scraped {listScrapeResult?.scraped ?? 0} profiles · {listScrapeResult?.saved ?? 0} leads saved — AI scoring queued
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => {
+                        setShowAddToList(false)
+                        setListScrapeStatus('idle')
+                        setListScrapeProgress(0)
+                        setListScrapeResult(null)
+                        void queryClient.invalidateQueries({ queryKey: ['leads'] })
+                        void queryClient.invalidateQueries({ queryKey: ['lead-list', listId] })
+                      }}
+                      className="w-full py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-xl hover:bg-blue-700"
+                    >
+                      Done
+                    </button>
+                  </div>
+                ) : listScrapeStatus === 'scraping' ? (
+                  <div className="space-y-4 py-6">
+                    <div className="text-center">
+                      <p className="text-sm font-medium text-gray-700 mb-1">Scraping Sales Navigator…</p>
+                      <p className="text-xs text-gray-400">This can take a few minutes depending on result count.</p>
+                    </div>
+                    <div className="w-full bg-gray-100 rounded-full h-2 overflow-hidden">
+                      <div className="h-full bg-blue-500 rounded-full transition-all duration-500" style={{ width: `${Math.max(5, listScrapeProgress)}%` }} />
+                    </div>
+                    <p className="text-center text-xs text-gray-400">{listScrapeProgress}% complete</p>
+                    {listScrapeError && <p className="text-sm text-red-600 text-center">{listScrapeError}</p>}
+                  </div>
+                ) : (
+                  <>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-700 mb-1.5">LinkedIn Search URL</label>
+                      <input
+                        value={listScrapeUrl}
+                        onChange={e => setListScrapeUrl(e.target.value)}
+                        placeholder="https://www.linkedin.com/sales/search/people?… or /search/results/people/…"
+                        className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-xs font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                      <p className="text-[10px] text-gray-400 mt-1">Sales Navigator or regular LinkedIn people search URL</p>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-700 mb-1.5">LinkedIn Account</label>
+                      <AccountSelector value={listScrapeAccount} onChange={setListScrapeAccount} />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-700 mb-1.5">Max leads</label>
+                      <input
+                        type="number"
+                        value={listScrapeMax}
+                        onChange={e => setListScrapeMax(Number(e.target.value))}
+                        min={1} max={2500}
+                        className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+                    {listScrapeError && <p className="text-xs text-red-600">{listScrapeError}</p>}
+                    <div className="flex gap-3 pt-1">
+                      <button onClick={() => setShowAddToList(false)} className="flex-1 py-2.5 border border-gray-300 text-sm font-medium rounded-lg hover:bg-gray-50">Cancel</button>
+                      <button
+                        disabled={!listScrapeUrl.trim() || !listScrapeAccount}
+                        onClick={async () => {
+                          setListScrapeError('')
+                          setListScrapeStatus('scraping')
+                          setListScrapeProgress(0)
+                          try {
+                            const { job_id } = await scrapeIntoList(listId, { search_url: listScrapeUrl, account_id: listScrapeAccount, max_leads: listScrapeMax })
+                            listScrapePollRef.current = setInterval(async () => {
+                              try {
+                                const s = await getScrapeStatus(job_id)
+                                setListScrapeProgress(s.progress ?? 0)
+                                if (s.state === 'completed') {
+                                  clearInterval(listScrapePollRef.current!)
+                                  setListScrapeResult(s.result ?? { scraped: 0, saved: 0 })
+                                  setListScrapeStatus('done')
+                                } else if (s.state === 'failed') {
+                                  clearInterval(listScrapePollRef.current!)
+                                  setListScrapeError(s.error ?? 'Scrape job failed.')
+                                  setListScrapeStatus('error')
+                                }
+                              } catch { /* transient error, keep polling */ }
+                            }, 3000)
+                          } catch (e) {
+                            setListScrapeError((e as Error).message)
+                            setListScrapeStatus('error')
+                          }
+                        }}
+                        className="flex-1 py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-blue-700 disabled:opacity-60"
+                      >
+                        Start Scrape
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
+            {addToListTab === 'excel' && (
+              <div className="space-y-3">
+                <div
+                  onClick={() => listExcelRef.current?.click()}
+                  className="border-2 border-dashed border-gray-200 rounded-xl p-6 text-center cursor-pointer hover:border-blue-400 transition-colors"
+                >
+                  {listExcelFile ? (
+                    <p className="text-sm text-gray-700 font-medium">{listExcelFile.name}</p>
+                  ) : (
+                    <>
+                      <p className="text-sm text-gray-500">Click to upload</p>
+                      <p className="text-xs text-gray-400 mt-1">Columns: First Name, Last Name, LinkedIn URL</p>
+                    </>
+                  )}
+                </div>
+                <input ref={listExcelRef} type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={e => { setListExcelFile(e.target.files?.[0] ?? null); setListExcelResult(null) }} />
+                {listExcelError && <p className="text-xs text-red-600">{listExcelError}</p>}
+                {listExcelResult && <p className="text-xs text-green-600">{listExcelResult.saved} leads added, {listExcelResult.skipped} skipped (already exist)</p>}
+                <div className="flex gap-3 pt-1">
+                  <button onClick={() => setShowAddToList(false)} className="flex-1 py-2.5 border border-gray-300 text-sm font-medium rounded-lg hover:bg-gray-50">Cancel</button>
+                  <button
+                    disabled={listExcelLoading || !listExcelFile}
+                    onClick={async () => {
+                      if (!listExcelFile) return
+                      setListExcelLoading(true); setListExcelError('')
+                      try {
+                        const result = await importExcelIntoList(listId, listExcelFile)
+                        setListExcelResult(result)
+                        setListExcelFile(null)
+                        void queryClient.invalidateQueries({ queryKey: ['leads'] })
+                      } catch (e) { setListExcelError((e as Error).message) }
+                      finally { setListExcelLoading(false) }
+                    }}
+                    className="flex-1 py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-blue-700 disabled:opacity-60"
+                  >
+                    {listExcelLoading ? 'Importing…' : 'Import'}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
       )}
 
       {showCsvModal && (
@@ -663,16 +1187,6 @@ export function Leads() {
         />
       )}
 
-      {/* Lead Detail Drawer */}
-      {detailLead && (
-        <LeadDetailDrawer
-          lead={detailLead}
-          allLabels={labels}
-          onClose={() => setDetailLead(null)}
-          onOpenNotes={(lead) => { setDetailLead(null); setNotesLead(lead) }}
-          queryClient={queryClient}
-        />
-      )}
 
       {/* Lead Notes Drawer */}
       {notesLead && (
@@ -690,6 +1204,72 @@ export function Leads() {
           onClose={() => setShowManageLabels(false)}
           queryClient={queryClient}
         />
+      )}
+
+      {showEnrichModal && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-semibold text-gray-900">Enrich Profiles</h2>
+              <button onClick={() => { setShowEnrichModal(false); if (enrichPollRef.current) clearInterval(enrichPollRef.current) }} className="text-gray-400 hover:text-gray-600">✕</button>
+            </div>
+
+            {enrichStatus === 'idle' && (
+              <>
+                <p className="text-sm text-gray-500">Visit each lead's LinkedIn profile and scrape their About, Experience, Skills, and recent posts.</p>
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 mb-1">LinkedIn Account</label>
+                  <select
+                    value={enrichAccountId}
+                    onChange={e => setEnrichAccountId(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
+                  >
+                    <option value="">Select account…</option>
+                    {accounts.filter(a => a.status === 'active' || a.status === 'warming_up').map(a => (
+                      <option key={a.id} value={a.id}>{a.linkedin_email}</option>
+                    ))}
+                  </select>
+                </div>
+                <p className="text-xs text-gray-400">Will visit {leads.filter(l => l.linkedin_url?.includes('/in/')).length} profiles. Takes ~25–35s per profile.</p>
+                <button
+                  onClick={handleEnrichProfiles}
+                  disabled={!enrichAccountId}
+                  className="w-full py-2 bg-violet-600 text-white text-sm font-medium rounded-lg hover:bg-violet-700 transition-colors disabled:opacity-50"
+                >
+                  Start Enriching
+                </button>
+              </>
+            )}
+
+            {enrichStatus === 'running' && (
+              <div className="space-y-3">
+                <p className="text-sm text-gray-600">Scraping {enrichCount} profiles…</p>
+                <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
+                  <div className="h-full bg-violet-500 rounded-full transition-all duration-500" style={{ width: `${enrichProgress}%` }} />
+                </div>
+                <p className="text-xs text-gray-400 text-center">{enrichProgress}% — profiles update live as they're scraped</p>
+              </div>
+            )}
+
+            {enrichStatus === 'done' && (
+              <div className="text-center space-y-3 py-2">
+                <div className="text-3xl">✅</div>
+                <p className="text-sm font-medium text-gray-800">Enrichment complete</p>
+                <p className="text-xs text-gray-500">{enrichCount} profiles visited</p>
+                <button onClick={() => setShowEnrichModal(false)} className="w-full py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-200 transition-colors">Close</button>
+              </div>
+            )}
+
+            {enrichStatus === 'error' && (
+              <div className="text-center space-y-3 py-2">
+                <div className="text-3xl">❌</div>
+                <p className="text-sm text-gray-600">Enrichment failed</p>
+                {enrichError && <p className="text-xs text-red-500 bg-red-50 rounded-lg px-3 py-2 text-left break-all">{enrichError}</p>}
+                <button onClick={() => setShowEnrichModal(false)} className="w-full py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-200 transition-colors">Close</button>
+              </div>
+            )}
+          </div>
+        </div>
       )}
 
       {/* Add to Campaign modal */}
@@ -735,13 +1315,14 @@ export function Leads() {
 
 // ── Manual Add Lead Modal ────────────────────────────────────────────────────
 
-function ManualAddLeadModal({ onClose, onAdded }: { onClose: () => void; onAdded: () => void }) {
+function ManualAddLeadModal({ onClose, onAdded, listId, inline }: { onClose: () => void; onAdded: () => void; listId?: string; inline?: boolean }) {
   const [form, setForm] = useState({
     first_name: '', last_name: '', linkedin_url: '',
     title: '', company: '', location: '',
   })
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [added, setAdded] = useState(false)
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
@@ -759,8 +1340,15 @@ function ManualAddLeadModal({ onClose, onAdded }: { onClose: () => void; onAdded
         title: form.title.trim() || undefined,
         company: form.company.trim() || undefined,
         location: form.location.trim() || undefined,
+        list_id: listId,
       })
-      onAdded()
+      if (inline) {
+        setAdded(true)
+        setForm({ first_name: '', last_name: '', linkedin_url: '', title: '', company: '', location: '' })
+        onAdded()
+      } else {
+        onAdded()
+      }
     } catch (err) {
       setError((err as Error).message)
     } finally {
@@ -768,11 +1356,9 @@ function ManualAddLeadModal({ onClose, onAdded }: { onClose: () => void; onAdded
     }
   }
 
-  return (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6">
-        <h2 className="text-lg font-semibold text-gray-900 mb-4">Add Lead Manually</h2>
-        <form onSubmit={handleSubmit} className="space-y-3">
+  const formContent = (
+    <form onSubmit={handleSubmit} className="space-y-3">
+      {added && <p className="text-xs text-green-600 font-medium">Lead added! Fill in another or close.</p>}
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-medium text-gray-700 mb-1">First Name *</label>
@@ -856,8 +1442,35 @@ function ManualAddLeadModal({ onClose, onAdded }: { onClose: () => void; onAdded
             </button>
           </div>
         </form>
+  )
+
+  if (inline) return formContent
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6">
+        <h2 className="text-lg font-semibold text-gray-900 mb-4">Add Lead Manually</h2>
+        {formContent}
       </div>
     </div>
+  )
+}
+
+// ── Account selector helper ──────────────────────────────────────────────────
+
+function AccountSelector({ value, onChange }: { value: string; onChange: (id: string) => void }) {
+  const { data: accounts = [] } = useQuery({ queryKey: ['accounts'], queryFn: fetchAccounts })
+  return (
+    <select
+      value={value}
+      onChange={e => onChange(e.target.value)}
+      className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+    >
+      <option value="">Select account…</option>
+      {accounts.filter(a => a.status === 'active').map(a => (
+        <option key={a.id} value={a.id}>{a.linkedin_email}</option>
+      ))}
+    </select>
   )
 }
 

@@ -1,7 +1,11 @@
 import Anthropic from '@anthropic-ai/sdk'
 import type { IcpFlag } from '../types'
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+let _client: Anthropic | null = null
+function getClient(): Anthropic {
+  if (!_client) _client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+  return _client
+}
 
 export interface LeadProfile {
   first_name: string
@@ -27,13 +31,6 @@ export interface QualifyResult {
   best_product_id?: string
 }
 
-interface Product {
-  id?: string
-  name: string
-  description: string
-  target_use_case: string
-}
-
 interface CustomCriterion {
   id?: string
   label: string
@@ -41,14 +38,29 @@ interface CustomCriterion {
   weight: 'must_have' | 'nice_to_have' | 'disqualifier'
 }
 
-interface IcpConfig {
+interface Product {
+  id?: string
+  name: string
+  description: string
+  target_use_case: string
+  // Target audience now lives per-product
   target_titles?: string[]
   target_industries?: string[]
   target_locations?: string[]
   min_company_size?: number | null
   max_company_size?: number | null
+  custom_criteria?: CustomCriterion[]
+}
+
+interface IcpConfig {
   notes?: string
   products_services?: Product[]
+  // Legacy fields — still accepted but products take precedence
+  target_titles?: string[]
+  target_industries?: string[]
+  target_locations?: string[]
+  min_company_size?: number | null
+  max_company_size?: number | null
   custom_criteria?: CustomCriterion[]
 }
 
@@ -69,84 +81,81 @@ function buildPrompt(lead: LeadProfile, icp: IcpConfig): string {
   lines.push(`- Connection Degree: ${lead.connection_degree ?? 'Unknown'}`)
   lines.push('')
 
-  // ── Target audience ──
-  lines.push('## Target Audience Criteria')
-  if (icp.target_titles?.length) {
-    lines.push(`- Target titles: ${icp.target_titles.join(', ')}`)
-  }
-  if (icp.target_industries?.length) {
-    lines.push(`- Target industries: ${icp.target_industries.join(', ')}`)
-  }
-  if (icp.target_locations?.length) {
-    lines.push(`- Target locations: ${icp.target_locations.join(', ')}`)
-  }
-  if (icp.min_company_size != null || icp.max_company_size != null) {
-    const min = icp.min_company_size ?? 1
-    const max = icp.max_company_size ?? '∞'
-    lines.push(`- Company size: ${min}–${max} employees`)
-  }
-  lines.push('')
-
   // ── Products & services ──
-  // Products with IDs use per-product scoring; those without fall back to single-score mode.
+  // Each product now carries its own target audience. Score the lead separately per product.
+  // Fall back to legacy global criteria if products have none.
   const productsWithIds = (icp.products_services ?? []).filter(p => p.name && p.id)
   const productsNoId    = (icp.products_services ?? []).filter(p => p.name && !p.id)
 
+  function productAudienceLines(p: Product): string[] {
+    const out: string[] = []
+    // Prefer product-level audience; fall back to global icp fields for legacy data
+    const titles     = toArr(p.target_titles)     || toArr(icp.target_titles)
+    const industries = toArr(p.target_industries) || toArr(icp.target_industries)
+    const locations  = toArr(p.target_locations)  || toArr(icp.target_locations)
+    const minSize    = p.min_company_size ?? icp.min_company_size ?? null
+    const maxSize    = p.max_company_size ?? icp.max_company_size ?? null
+    const criteria   = p.custom_criteria?.length ? p.custom_criteria : (icp.custom_criteria ?? [])
+
+    if (titles.length)     out.push(`  Target titles: ${titles.join(', ')}`)
+    if (industries.length) out.push(`  Target industries: ${industries.join(', ')}`)
+    if (locations.length)  out.push(`  Target locations: ${locations.join(', ')}`)
+    if (minSize != null || maxSize != null) {
+      out.push(`  Company size: ${minSize ?? 1}–${maxSize ?? '∞'} employees`)
+    }
+
+    const disq    = criteria.filter(c => c.weight === 'disqualifier' && c.label)
+    const must    = criteria.filter(c => c.weight === 'must_have' && c.label)
+    const nice    = criteria.filter(c => c.weight === 'nice_to_have' && c.label)
+    if (disq.length) out.push(`  Disqualifiers: ${disq.map(c => c.label).join('; ')}`)
+    if (must.length) out.push(`  Must have: ${must.map(c => c.label).join('; ')}`)
+    if (nice.length) out.push(`  Nice to have: ${nice.map(c => c.label).join('; ')}`)
+
+    return out
+  }
+
   if (productsWithIds.length > 0) {
     lines.push('## Products & Services We Sell')
-    lines.push('You will score this lead SEPARATELY for each product. Each product has a unique [PRODUCT_ID] tag.')
+    lines.push('Score this lead SEPARATELY for each product using that product\'s own audience criteria.')
+    lines.push('Each product has a unique [PRODUCT_ID] tag.')
     for (const p of productsWithIds) {
       lines.push('')
       lines.push(`### ${p.name} [PRODUCT_ID: ${p.id!}]`)
-      if (p.description) lines.push(`Description: ${p.description}`)
-      if (p.target_use_case) lines.push(`Ideal customer: ${p.target_use_case}`)
+      if (p.description) lines.push(`  Description: ${p.description}`)
+      if (p.target_use_case) lines.push(`  Ideal customer: ${p.target_use_case}`)
+      const audience = productAudienceLines(p)
+      if (audience.length) {
+        lines.push('  Target audience for this product:')
+        audience.forEach(l => lines.push(l))
+      }
     }
     lines.push('')
   } else if (productsNoId.length > 0) {
     lines.push('## Products & Services We Sell')
-    lines.push('Use this to assess whether the lead is likely to have a need for what we offer.')
     for (const p of productsNoId) {
       lines.push('')
       lines.push(`### ${p.name}`)
-      if (p.description) lines.push(`Description: ${p.description}`)
-      if (p.target_use_case) lines.push(`Ideal customer: ${p.target_use_case}`)
+      if (p.description) lines.push(`  Description: ${p.description}`)
+      if (p.target_use_case) lines.push(`  Ideal customer: ${p.target_use_case}`)
+      const audience = productAudienceLines(p)
+      audience.forEach(l => lines.push(l))
     }
     lines.push('')
-  }
-
-  // ── Custom criteria ──
-  if (icp.custom_criteria?.length) {
-    const mustHave    = icp.custom_criteria.filter(c => c.weight === 'must_have' && c.label)
-    const niceToHave  = icp.custom_criteria.filter(c => c.weight === 'nice_to_have' && c.label)
-    const disqualify  = icp.custom_criteria.filter(c => c.weight === 'disqualifier' && c.label)
-
-    lines.push('## Custom Qualification Criteria')
-
-    if (disqualify.length) {
-      lines.push('')
-      lines.push('### Disqualifiers (if any apply, score must be < 25 and flag must be "disqualified"):')
-      for (const c of disqualify) {
-        lines.push(`- ${c.label}${c.description ? ': ' + c.description : ''}`)
+  } else {
+    // No products defined — fall back to global audience criteria
+    const titles     = toArr(icp.target_titles)
+    const industries = toArr(icp.target_industries)
+    const locations  = toArr(icp.target_locations)
+    if (titles.length || industries.length || locations.length || icp.min_company_size != null || icp.max_company_size != null) {
+      lines.push('## Target Audience Criteria')
+      if (titles.length)     lines.push(`- Target titles: ${titles.join(', ')}`)
+      if (industries.length) lines.push(`- Target industries: ${industries.join(', ')}`)
+      if (locations.length)  lines.push(`- Target locations: ${locations.join(', ')}`)
+      if (icp.min_company_size != null || icp.max_company_size != null) {
+        lines.push(`- Company size: ${icp.min_company_size ?? 1}–${icp.max_company_size ?? '∞'} employees`)
       }
-    }
-
-    if (mustHave.length) {
       lines.push('')
-      lines.push('### Must Have (heavily penalise if missing — reduce score significantly):')
-      for (const c of mustHave) {
-        lines.push(`- ${c.label}${c.description ? ': ' + c.description : ''}`)
-      }
     }
-
-    if (niceToHave.length) {
-      lines.push('')
-      lines.push('### Nice to Have (boost score if present, small penalty if absent):')
-      for (const c of niceToHave) {
-        lines.push(`- ${c.label}${c.description ? ': ' + c.description : ''}`)
-      }
-    }
-
-    lines.push('')
   }
 
   // ── Additional notes ──
@@ -190,23 +199,43 @@ function buildPrompt(lead: LeadProfile, icp: IcpConfig): string {
   return lines.join('\n')
 }
 
+function toArr(v: unknown): string[] {
+  if (Array.isArray(v)) return v.filter((x): x is string => typeof x === 'string')
+  if (typeof v === 'string' && v.trim()) return v.split(',').map(s => s.trim()).filter(Boolean)
+  return []
+}
+
 export async function qualifyLead(
   lead: LeadProfile,
   icpConfig: Record<string, unknown>
 ): Promise<QualifyResult> {
-  const icp = icpConfig as IcpConfig
+  const raw = icpConfig as IcpConfig
+  const icp: IcpConfig = {
+    ...raw,
+    // Normalise legacy top-level arrays (may be stored as comma-separated strings)
+    target_titles:     toArr(raw.target_titles),
+    target_industries: toArr(raw.target_industries),
+    target_locations:  toArr(raw.target_locations),
+    // Normalise per-product audience arrays too
+    products_services: (raw.products_services ?? []).map(p => ({
+      ...p,
+      target_titles:     toArr(p.target_titles),
+      target_industries: toArr(p.target_industries),
+      target_locations:  toArr(p.target_locations),
+    })),
+  }
   const hasPerProductScoring = (icp.products_services ?? []).some(p => p.name && p.id)
 
   const prompt = buildPrompt(lead, icp)
 
-  const message = await client.messages.create({
+  const message = await getClient().messages.create({
     model: 'claude-haiku-4-5-20251001',
     max_tokens: hasPerProductScoring ? 1024 : 256,
     messages: [{ role: 'user', content: prompt }],
   })
 
-  const raw = (message.content[0] as { type: string; text: string }).text.trim()
-  const json = raw.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '')
+  const rawText = (message.content[0] as { type: string; text: string }).text.trim()
+  const json = rawText.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '')
 
   if (hasPerProductScoring) {
     // Per-product response: { product_scores: { [id]: { score, flag, reasoning } } }

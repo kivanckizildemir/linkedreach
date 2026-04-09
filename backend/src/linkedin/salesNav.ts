@@ -210,7 +210,7 @@ export async function scrapeSalesNavSearch(
   if (page.url().includes('/sales/contract-chooser')) {
     try {
       const btn = await page.waitForSelector('button, a[href*="/sales/"]', { timeout: 8_000 })
-      if (btn) await btn.click()
+      if (btn) await btn.click({ force: true })
       await page.waitForURL(u => !u.toString().includes('/sales/contract-chooser'), { timeout: 15_000 })
     } catch { /* proceed */ }
   }
@@ -299,7 +299,7 @@ export async function scrapeSalesNavSearch(
         const disabled = await nextBtn.getAttribute('disabled')
         if (disabled !== null) break
 
-        await nextBtn.click()
+        await nextBtn.click({ force: true })
         await DELAY(2500 + Math.random() * 1000)
         await detectAndHandleChallenge(page, accountId)
 
@@ -370,7 +370,7 @@ export async function scrapeSalesNavSearch(
     if (disabled !== null) break
 
     page_num++
-    await nextBtn.click()
+    await nextBtn.click({ force: true })
     await DELAY(2000 + Math.random() * 1000)
     await detectAndHandleChallenge(page, accountId)
 

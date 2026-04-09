@@ -3,7 +3,7 @@ import type { Request, Response } from 'express'
 import { supabase } from '../lib/supabase'
 import { requireAuth } from '../middleware/auth'
 import { generateMessage } from '../ai/generate-message'
-import type { MessageType, Approach } from '../ai/generate-message'
+import type { MessageType, Approach, SenderContext } from '../ai/generate-message'
 
 export const messageTemplatesRouter = Router()
 messageTemplatesRouter.use(requireAuth)
@@ -92,11 +92,14 @@ messageTemplatesRouter.patch('/:id', async (req: Request, res: Response) => {
 })
 
 // POST /api/message-templates/generate
+// Body: { type, approach, product_index?, campaign_id? }
+//   campaign_id: if provided, pulls tone and sender from that campaign's account
 messageTemplatesRouter.post('/generate', async (req: Request, res: Response) => {
-  const { type, approach, product_index } = req.body as {
+  const { type, approach, product_index, campaign_id } = req.body as {
     type?: MessageType
     approach?: Approach
     product_index?: number
+    campaign_id?: string
   }
 
   if (!type || !approach) {
@@ -104,24 +107,52 @@ messageTemplatesRouter.post('/generate', async (req: Request, res: Response) => 
     return
   }
 
-  // Fetch user's ICP config
-  const { data: settings, error: settingsError } = await supabase
-    .from('user_settings')
-    .select('icp_config')
-    .eq('user_id', req.user.id)
-    .single()
+  // Fetch ICP config and optionally campaign context in parallel
+  const [settingsRes, campaignRes] = await Promise.all([
+    supabase.from('user_settings').select('icp_config').eq('user_id', req.user.id).single(),
+    campaign_id
+      ? supabase.from('campaigns').select('account_id, icp_config').eq('id', campaign_id).eq('user_id', req.user.id).single()
+      : Promise.resolve({ data: null, error: null }),
+  ])
 
-  if (settingsError || !settings) {
+  if (settingsRes.error || !settingsRes.data) {
     res.status(500).json({ error: 'Could not load your ICP settings' })
     return
+  }
+
+  // Resolve campaign tone and sender identity
+  let tone: string | null = null
+  let sender: SenderContext | null = null
+
+  if (campaignRes.data) {
+    const campData = campaignRes.data as { account_id?: string | null; icp_config?: Record<string, unknown> | null }
+    const icp = campData.icp_config ?? {}
+    tone = (icp.message_tone as string) ?? null
+
+    if (campData.account_id) {
+      const { data: acc } = await supabase
+        .from('linkedin_accounts')
+        .select('sender_name, sender_headline, sender_about')
+        .eq('id', campData.account_id)
+        .single()
+      if (acc && (acc as { sender_name?: string | null }).sender_name) {
+        sender = {
+          name: (acc as { sender_name: string }).sender_name,
+          headline: (acc as { sender_headline?: string | null }).sender_headline ?? null,
+          about: (acc as { sender_about?: string | null }).sender_about ?? null,
+        }
+      }
+    }
   }
 
   try {
     const result = await generateMessage({
       type,
       approach,
-      icp_config: settings.icp_config as Record<string, unknown> as Parameters<typeof generateMessage>[0]['icp_config'],
+      icp_config: settingsRes.data.icp_config as Record<string, unknown> as Parameters<typeof generateMessage>[0]['icp_config'],
       product_index,
+      sender,
+      tone,
     })
     res.json({ data: result })
   } catch (err: unknown) {

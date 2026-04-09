@@ -4,7 +4,11 @@ import { supabase } from '../lib/supabase'
 import { requireAuth } from '../middleware/auth'
 import Anthropic from '@anthropic-ai/sdk'
 
-const ai = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+let _ai: Anthropic | null = null
+function getAi(): Anthropic {
+  if (!_ai) _ai = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+  return _ai
+}
 
 export const settingsRouter = Router()
 settingsRouter.use(requireAuth)
@@ -89,7 +93,7 @@ settingsRouter.post('/extract-product', async (req: Request, res: Response) => {
   const pageContent = `META SIGNALS:\n${metaSignals}\n\nPAGE TEXT (truncated):\n${bodyText}`
 
   // Ask Claude to extract product info
-  const message = await ai.messages.create({
+  const message = await getAi().messages.create({
     model: 'claude-haiku-4-5-20251001',
     max_tokens: 256,
     messages: [{

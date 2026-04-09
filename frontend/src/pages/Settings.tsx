@@ -13,6 +13,13 @@ interface Product {
   usps: string[]
   differentiators: string[]
   website_url: string
+  // Target audience owned by each product:
+  target_titles: string[]
+  target_industries: string[]
+  target_locations: string[]
+  min_company_size: number | null
+  max_company_size: number | null
+  custom_criteria: CustomCriterion[]
 }
 
 interface CustomCriterion {
@@ -23,14 +30,8 @@ interface CustomCriterion {
 }
 
 interface IcpConfig {
-  target_titles: string[]
-  target_industries: string[]
-  target_locations: string[]
-  min_company_size: number | null
-  max_company_size: number | null
   notes: string
   products_services: Product[]
-  custom_criteria: CustomCriterion[]
   default_ai_mode?: boolean
   default_message_length?: string
 }
@@ -82,23 +83,6 @@ const TIMEZONES = [
   'Pacific/Auckland',
 ]
 
-const SUGGESTED_TITLES = [
-  'CEO', 'CTO', 'CMO', 'CFO', 'COO', 'CPO', 'CRO', 'CISO',
-  'VP Sales', 'VP Marketing', 'VP Engineering', 'VP Product',
-  'Director of Sales', 'Director of Marketing', 'Director of Engineering',
-  'Head of Sales', 'Head of Growth', 'Head of Product',
-  'Founder', 'Co-Founder', 'Managing Director', 'General Manager',
-  'Partner', 'Principal', 'President',
-]
-
-const SUGGESTED_INDUSTRIES = [
-  'SaaS', 'FinTech', 'HealthTech', 'EdTech', 'E-commerce', 'Retail',
-  'Financial Services', 'Banking', 'Insurance', 'Healthcare', 'Pharmaceuticals',
-  'Manufacturing', 'Logistics', 'Real Estate', 'Construction', 'Energy',
-  'Telecommunications', 'Media', 'Marketing & Advertising', 'Consulting',
-  'Legal', 'Education', 'Non-profit', 'Government',
-]
-
 // ─── Message length presets ───────────────────────────────────────────────────
 
 const MESSAGE_LENGTH_PRESETS = [
@@ -109,96 +93,37 @@ const MESSAGE_LENGTH_PRESETS = [
   { key: 'long_form', label: 'Long-form', words: 250, range: '200–300 words', desc: 'InMail & relationship building' },
 ] as const
 
-const WEIGHT_OPTIONS: { value: CustomCriterion['weight']; label: string; color: string }[] = [
-  { value: 'must_have',    label: 'Must Have',    color: 'bg-green-100 text-green-800 border-green-200' },
-  { value: 'nice_to_have', label: 'Nice to Have', color: 'bg-blue-100 text-blue-800 border-blue-200' },
-  { value: 'disqualifier', label: 'Disqualifier', color: 'bg-red-100 text-red-800 border-red-200' },
-]
-
 function uid() {
   return Math.random().toString(36).slice(2, 10)
 }
 
-// ─── TagInput ─────────────────────────────────────────────────────────────────
-
-function TagInput({
-  label,
-  values,
-  suggestions,
-  onChange,
-  placeholder,
-}: {
-  label: string
-  values: string[]
-  suggestions: string[]
-  onChange: (vals: string[]) => void
-  placeholder: string
-}) {
-  const [input, setInput] = useState('')
-  const [showSuggestions, setShowSuggestions] = useState(false)
-
-  const filtered = suggestions
-    .filter(s => !values.includes(s) && s.toLowerCase().includes(input.toLowerCase()))
-    .slice(0, 8)
-
-  function add(val: string) {
-    const trimmed = val.trim()
-    if (trimmed && !values.includes(trimmed)) onChange([...values, trimmed])
-    setInput('')
-    setShowSuggestions(false)
-  }
-
-  function remove(val: string) {
-    onChange(values.filter(v => v !== val))
-  }
-
-  return (
-    <div>
-      <label className="block text-sm font-medium text-gray-700 mb-2">{label}</label>
-      <div className="min-h-[44px] flex flex-wrap gap-1.5 px-3 py-2 border border-gray-300 rounded-xl bg-white focus-within:ring-2 focus-within:ring-blue-500 focus-within:border-blue-500">
-        {values.map(v => (
-          <span
-            key={v}
-            className="inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 bg-blue-100 text-blue-800 rounded-full"
-          >
-            {v}
-            <button type="button" onClick={() => remove(v)} className="text-blue-500 hover:text-blue-800 leading-none">×</button>
-          </span>
-        ))}
-        <div className="relative flex-1 min-w-[120px]">
-          <input
-            type="text"
-            value={input}
-            onChange={e => { setInput(e.target.value); setShowSuggestions(true) }}
-            onFocus={() => setShowSuggestions(true)}
-            onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
-            onKeyDown={e => {
-              if (e.key === 'Enter' && input.trim()) { e.preventDefault(); add(input) }
-              if (e.key === 'Backspace' && !input && values.length > 0) remove(values[values.length - 1])
-            }}
-            placeholder={values.length === 0 ? placeholder : ''}
-            className="w-full text-sm text-gray-700 outline-none bg-transparent py-0.5"
-          />
-          {showSuggestions && filtered.length > 0 && (
-            <div className="absolute left-0 top-full mt-1 z-50 bg-white rounded-xl shadow-xl border border-gray-200 py-1.5 min-w-[200px]">
-              {filtered.map(s => (
-                <button
-                  key={s}
-                  type="button"
-                  onMouseDown={() => add(s)}
-                  className="block w-full text-left px-3 py-1.5 text-sm text-gray-700 hover:bg-blue-50 hover:text-blue-700"
-                >
-                  {s}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-      <p className="mt-1 text-xs text-gray-400">Type and press Enter, or pick from suggestions</p>
-    </div>
-  )
-}
+const SUGGESTED_LOCATIONS = [
+  // ── Regions ──
+  'EMEA', 'APAC', 'AMER', 'LATAM', 'DACH',
+  'North America', 'Latin America', 'Western Europe', 'Northern Europe',
+  'Southern Europe', 'Eastern Europe', 'Asia Pacific', 'Southeast Asia',
+  'Middle East', 'North Africa', 'Sub-Saharan Africa', 'Nordics',
+  // ── Countries ──
+  'Afghanistan', 'Albania', 'Algeria', 'Angola', 'Argentina', 'Armenia',
+  'Australia', 'Austria', 'Azerbaijan', 'Bahrain', 'Bangladesh', 'Belarus',
+  'Belgium', 'Bolivia', 'Bosnia and Herzegovina', 'Botswana', 'Brazil',
+  'Bulgaria', 'Cambodia', 'Cameroon', 'Canada', 'Chile', 'China', 'Colombia',
+  'Costa Rica', 'Croatia', 'Cyprus', 'Czech Republic', 'Denmark',
+  'Dominican Republic', 'Ecuador', 'Egypt', 'El Salvador', 'Estonia',
+  'Ethiopia', 'Finland', 'France', 'Georgia', 'Germany', 'Ghana', 'Greece',
+  'Guatemala', 'Honduras', 'Hong Kong', 'Hungary', 'Iceland', 'India',
+  'Indonesia', 'Ireland', 'Israel', 'Italy', 'Ivory Coast', 'Japan',
+  'Jordan', 'Kazakhstan', 'Kenya', 'Kuwait', 'Latvia', 'Lebanon', 'Lithuania',
+  'Luxembourg', 'Malaysia', 'Malta', 'Mexico', 'Moldova', 'Morocco',
+  'Mozambique', 'Myanmar', 'Netherlands', 'New Zealand', 'Nigeria', 'Norway',
+  'Oman', 'Pakistan', 'Panama', 'Paraguay', 'Peru', 'Philippines', 'Poland',
+  'Portugal', 'Qatar', 'Romania', 'Russia', 'Saudi Arabia', 'Senegal',
+  'Serbia', 'Singapore', 'Slovakia', 'Slovenia', 'South Africa', 'South Korea',
+  'Spain', 'Sri Lanka', 'Sweden', 'Switzerland', 'Taiwan', 'Tanzania',
+  'Thailand', 'Tunisia', 'Turkey', 'Uganda', 'Ukraine', 'United Arab Emirates',
+  'United Kingdom', 'United States', 'Uruguay', 'Uzbekistan', 'Venezuela',
+  'Vietnam', 'Zambia', 'Zimbabwe',
+]
 
 // ─── ProductCard ──────────────────────────────────────────────────────────────
 
@@ -213,24 +138,32 @@ async function extractProductFromUrl(url: string): Promise<{ name: string; descr
   return body.data!
 }
 
-/** Inline tag-list editor for USPs and differentiators */
+/** Inline tag-list editor — supports optional typeahead suggestions */
 function TagListInput({
   items,
   onChange,
   placeholder,
+  suggestions,
 }: {
   items: string[]
   onChange: (items: string[]) => void
   placeholder: string
+  suggestions?: string[]
 }) {
   const [draft, setDraft] = useState('')
+  const [showSuggestions, setShowSuggestions] = useState(false)
 
-  function add() {
-    const trimmed = draft.trim()
+  const filtered = suggestions
+    ? suggestions.filter(s => !items.includes(s) && s.toLowerCase().includes(draft.toLowerCase())).slice(0, 8)
+    : []
+
+  function add(val: string) {
+    const trimmed = val.trim()
     if (trimmed && !items.includes(trimmed)) {
       onChange([...items, trimmed])
     }
     setDraft('')
+    setShowSuggestions(false)
   }
 
   return (
@@ -243,23 +176,39 @@ function TagListInput({
           </span>
         ))}
       </div>
-      <div className="flex gap-1.5">
+      <div className="relative flex gap-1.5">
         <input
           type="text"
           value={draft}
-          onChange={e => setDraft(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); add() } }}
+          onChange={e => { setDraft(e.target.value); setShowSuggestions(true) }}
+          onFocus={() => setShowSuggestions(true)}
+          onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
+          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); add(draft) } }}
           placeholder={placeholder}
           className="flex-1 px-2.5 py-1.5 text-xs border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
         <button
           type="button"
-          onClick={add}
+          onClick={() => add(draft)}
           disabled={!draft.trim()}
           className="px-2.5 py-1.5 text-xs font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-40 transition-colors"
         >
           + Add
         </button>
+        {showSuggestions && filtered.length > 0 && (
+          <div className="absolute left-0 top-full mt-1 z-50 bg-white rounded-xl shadow-xl border border-gray-200 py-1.5 min-w-[200px]">
+            {filtered.map(s => (
+              <button
+                key={s}
+                type="button"
+                onMouseDown={() => add(s)}
+                className="block w-full text-left px-3 py-1.5 text-xs text-gray-700 hover:bg-blue-50 hover:text-blue-700"
+              >
+                {s}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   )
@@ -286,6 +235,12 @@ function ProductCard({
     usps: product.usps ?? [],
     differentiators: product.differentiators ?? [],
     website_url: product.website_url ?? '',
+    target_titles: product.target_titles ?? [],
+    target_industries: product.target_industries ?? [],
+    target_locations: product.target_locations ?? [],
+    min_company_size: product.min_company_size ?? null,
+    max_company_size: product.max_company_size ?? null,
+    custom_criteria: product.custom_criteria ?? [],
   }
 
   async function handleExtract() {
@@ -401,6 +356,98 @@ function ProductCard({
             />
           </div>
 
+          {/* Target Titles */}
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1.5">Target Job Titles</label>
+            <TagListInput
+              items={p.target_titles}
+              onChange={target_titles => onChange({ ...p, target_titles })}
+              placeholder="e.g. CEO, VP Sales, Head of Growth…"
+            />
+          </div>
+
+          {/* Target Industries */}
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1.5">Target Industries</label>
+            <TagListInput
+              items={p.target_industries}
+              onChange={target_industries => onChange({ ...p, target_industries })}
+              placeholder="e.g. SaaS, FinTech, E-commerce…"
+            />
+          </div>
+
+          {/* Target Locations */}
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1.5">Target Locations <span className="text-gray-400 font-normal">(optional)</span></label>
+            <TagListInput
+              items={p.target_locations}
+              onChange={target_locations => onChange({ ...p, target_locations })}
+              placeholder="e.g. EMEA, United Kingdom, United States…"
+              suggestions={SUGGESTED_LOCATIONS}
+            />
+          </div>
+
+          {/* Company size */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Min Company Size <span className="text-gray-400 font-normal">(employees)</span></label>
+              <input
+                type="number" min={1}
+                value={p.min_company_size ?? ''}
+                onChange={e => onChange({ ...p, min_company_size: e.target.value ? parseInt(e.target.value) : null })}
+                placeholder="e.g. 10"
+                className="w-full px-2.5 py-1.5 text-xs border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Max Company Size <span className="text-gray-400 font-normal">(employees)</span></label>
+              <input
+                type="number" min={1}
+                value={p.max_company_size ?? ''}
+                onChange={e => onChange({ ...p, max_company_size: e.target.value ? parseInt(e.target.value) : null })}
+                placeholder="e.g. 500"
+                className="w-full px-2.5 py-1.5 text-xs border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+          </div>
+
+          {/* Custom Criteria */}
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1.5">Qualification Criteria <span className="text-gray-400 font-normal">(optional)</span></label>
+            <div className="space-y-2">
+              {(p.custom_criteria ?? []).map(cr => (
+                <div key={cr.id} className="flex items-center gap-2">
+                  <select
+                    value={cr.weight}
+                    onChange={e => onChange({ ...p, custom_criteria: p.custom_criteria.map(c => c.id === cr.id ? { ...c, weight: e.target.value as CustomCriterion['weight'] } : c) })}
+                    className="text-xs px-2 py-1 border border-gray-300 rounded-lg bg-white focus:outline-none"
+                  >
+                    <option value="must_have">Must have</option>
+                    <option value="nice_to_have">Nice to have</option>
+                    <option value="disqualifier">Disqualifier</option>
+                  </select>
+                  <input
+                    type="text"
+                    value={cr.label}
+                    onChange={e => onChange({ ...p, custom_criteria: p.custom_criteria.map(c => c.id === cr.id ? { ...c, label: e.target.value } : c) })}
+                    placeholder="e.g. Uses Salesforce"
+                    className="flex-1 px-2.5 py-1 text-xs border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => onChange({ ...p, custom_criteria: p.custom_criteria.filter(c => c.id !== cr.id) })}
+                    className="text-gray-400 hover:text-red-500 transition-colors"
+                  >×</button>
+                </div>
+              ))}
+              <button
+                type="button"
+                onClick={() => onChange({ ...p, custom_criteria: [...(p.custom_criteria ?? []), { id: Math.random().toString(36).slice(2,10), label: '', description: '', weight: 'nice_to_have' }] })}
+                className="text-xs text-blue-600 hover:text-blue-700 font-medium"
+              >+ Add criterion</button>
+            </div>
+          </div>
+
           {/* USPs */}
           <div>
             <label className="block text-xs font-medium text-gray-500 mb-1.5">Value Propositions <span className="text-gray-400 font-normal">(key benefits you deliver to the customer)</span></label>
@@ -427,89 +474,11 @@ function ProductCard({
   )
 }
 
-// ─── CriterionRow ─────────────────────────────────────────────────────────────
-
-function CriterionRow({
-  criterion,
-  onChange,
-  onRemove,
-}: {
-  criterion: CustomCriterion
-  onChange: (c: CustomCriterion) => void
-  onRemove: () => void
-}) {
-  const weightInfo = WEIGHT_OPTIONS.find(w => w.value === criterion.weight)!
-
-  return (
-    <div className="rounded-xl border border-gray-200 bg-gray-50 p-4 space-y-3">
-      <div className="flex items-start gap-3">
-        <div className="flex-1 space-y-2">
-          <input
-            type="text"
-            value={criterion.label}
-            onChange={e => onChange({ ...criterion, label: e.target.value })}
-            placeholder="Criterion name (e.g. Uses Salesforce, Has raised Series A+)"
-            className="w-full text-sm font-semibold text-gray-900 bg-transparent border-b border-gray-300 focus:border-blue-500 outline-none pb-0.5 placeholder:font-normal placeholder:text-gray-400"
-          />
-          <textarea
-            rows={2}
-            value={criterion.description}
-            onChange={e => onChange({ ...criterion, description: e.target.value })}
-            placeholder="Explain what to look for — the AI will use this to evaluate the lead"
-            className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
-          />
-        </div>
-        <button
-          type="button"
-          onClick={onRemove}
-          className="text-gray-400 hover:text-red-500 transition-colors mt-0.5 shrink-0"
-          title="Remove"
-        >
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-          </svg>
-        </button>
-      </div>
-
-      {/* Weight selector */}
-      <div className="flex items-center gap-2">
-        <span className="text-xs text-gray-500 mr-1">Weight:</span>
-        {WEIGHT_OPTIONS.map(opt => (
-          <button
-            key={opt.value}
-            type="button"
-            onClick={() => onChange({ ...criterion, weight: opt.value })}
-            className={`px-3 py-1 text-xs font-medium rounded-full border transition-all ${
-              criterion.weight === opt.value
-                ? opt.color + ' ring-2 ring-offset-1 ' + (
-                    opt.value === 'must_have' ? 'ring-green-400' :
-                    opt.value === 'nice_to_have' ? 'ring-blue-400' : 'ring-red-400'
-                  )
-                : 'bg-white text-gray-500 border-gray-200 hover:border-gray-300'
-            }`}
-          >
-            {opt.label}
-          </button>
-        ))}
-        <span className={`ml-auto text-xs px-2 py-0.5 rounded-full border font-medium ${weightInfo.color}`}>
-          {weightInfo.label}
-        </span>
-      </div>
-    </div>
-  )
-}
-
 // ─── Main Settings page ───────────────────────────────────────────────────────
 
 const DEFAULT_ICP: IcpConfig = {
-  target_titles: [],
-  target_industries: [],
-  target_locations: [],
-  min_company_size: null,
-  max_company_size: null,
   notes: '',
   products_services: [],
-  custom_criteria: [],
   default_ai_mode: false,
   default_message_length: 'concise',
 }
@@ -534,7 +503,6 @@ export function Settings() {
         ...DEFAULT_ICP,
         ...settings.icp_config,
         products_services: settings.icp_config.products_services ?? [],
-        custom_criteria: settings.icp_config.custom_criteria ?? [],
       })
       setTimezone(settings.timezone)
       setConnectionLimit(settings.daily_connection_limit)
@@ -562,7 +530,13 @@ export function Settings() {
       ...c,
       products_services: [
         ...c.products_services,
-        { id: uid(), name: '', one_liner: '', description: '', target_use_case: '', usps: [], differentiators: [], website_url: '' },
+        {
+          id: uid(), name: '', one_liner: '', description: '',
+          target_use_case: '', usps: [], differentiators: [],
+          website_url: '',
+          target_titles: [], target_industries: [], target_locations: [],
+          min_company_size: null, max_company_size: null, custom_criteria: [],
+        },
       ],
     }))
   }
@@ -581,31 +555,6 @@ export function Settings() {
     }))
   }
 
-  // Criteria helpers
-  function addCriterion() {
-    setIcp(c => ({
-      ...c,
-      custom_criteria: [
-        ...c.custom_criteria,
-        { id: uid(), label: '', description: '', weight: 'nice_to_have' },
-      ],
-    }))
-  }
-
-  function updateCriterion(id: string, updated: CustomCriterion) {
-    setIcp(c => ({
-      ...c,
-      custom_criteria: c.custom_criteria.map(cr => cr.id === id ? updated : cr),
-    }))
-  }
-
-  function removeCriterion(id: string) {
-    setIcp(c => ({
-      ...c,
-      custom_criteria: c.custom_criteria.filter(cr => cr.id !== id),
-    }))
-  }
-
   if (isLoading) {
     return (
       <div className="p-8">
@@ -618,11 +567,11 @@ export function Settings() {
     <div className="p-8 max-w-3xl space-y-8">
       <div>
         <h1 className="text-2xl font-bold text-gray-900">Settings</h1>
-        <p className="mt-1 text-sm text-gray-500">Configure your ICP criteria, sending limits, and preferences</p>
+        <p className="mt-1 text-sm text-gray-500">Configure your products, sending limits, and preferences</p>
       </div>
 
       {/* ── Preferences ── */}
-      <section className="bg-white rounded-xl border border-gray-200 p-6 space-y-5">
+      <section className="bg-violet-50 rounded-xl border border-violet-100 p-6 space-y-5">
         <SectionHeader
           icon={
             <svg className="w-5 h-5 text-violet-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -735,75 +684,8 @@ export function Settings() {
         </div>
       </section>
 
-      {/* ── ICP: Target Audience ── */}
-      <section className="bg-white rounded-xl border border-gray-200 p-6 space-y-5">
-        <SectionHeader
-          icon={
-            <svg className="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
-            </svg>
-          }
-          iconBg="bg-blue-50"
-          title="Target Audience"
-          subtitle="Define who your ideal lead looks like — titles, industries, locations, and company size."
-        />
-
-        <TagInput
-          label="Target Job Titles"
-          values={icp.target_titles}
-          suggestions={SUGGESTED_TITLES}
-          onChange={vals => setIcp(c => ({ ...c, target_titles: vals }))}
-          placeholder="e.g. CEO, VP Sales, Founder…"
-        />
-
-        <TagInput
-          label="Target Industries"
-          values={icp.target_industries}
-          suggestions={SUGGESTED_INDUSTRIES}
-          onChange={vals => setIcp(c => ({ ...c, target_industries: vals }))}
-          placeholder="e.g. SaaS, FinTech, Healthcare…"
-        />
-
-        <TagInput
-          label="Target Locations (optional)"
-          values={icp.target_locations}
-          suggestions={['United Kingdom', 'United States', 'Canada', 'Australia', 'Germany', 'France', 'Netherlands', 'Sweden', 'Denmark', 'Norway']}
-          onChange={vals => setIcp(c => ({ ...c, target_locations: vals }))}
-          placeholder="e.g. United Kingdom, United States…"
-        />
-
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">
-              Min Company Size <span className="text-gray-400 font-normal">(employees)</span>
-            </label>
-            <input
-              type="number"
-              min={1}
-              value={icp.min_company_size ?? ''}
-              onChange={e => setIcp(c => ({ ...c, min_company_size: e.target.value ? parseInt(e.target.value) : null }))}
-              placeholder="e.g. 10"
-              className="w-full px-3.5 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">
-              Max Company Size <span className="text-gray-400 font-normal">(employees)</span>
-            </label>
-            <input
-              type="number"
-              min={1}
-              value={icp.max_company_size ?? ''}
-              onChange={e => setIcp(c => ({ ...c, max_company_size: e.target.value ? parseInt(e.target.value) : null }))}
-              placeholder="e.g. 500"
-              className="w-full px-3.5 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
-        </div>
-      </section>
-
       {/* ── Products & Services ── */}
-      <section className="bg-white rounded-xl border border-gray-200 p-6 space-y-5">
+      <section className="bg-emerald-50 rounded-xl border border-emerald-100 p-6 space-y-5">
         <SectionHeader
           icon={
             <svg className="w-5 h-5 text-violet-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -812,7 +694,7 @@ export function Settings() {
           }
           iconBg="bg-violet-50"
           title="Products & Services"
-          subtitle="Tell the AI what you sell. It uses this to assess whether each lead has a likely need for your offering."
+          subtitle="Define what you sell and who you sell it to. Each product owns its own target audience."
         />
 
         <div className="space-y-3">
@@ -822,10 +704,9 @@ export function Settings() {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
               </svg>
               <p className="text-sm text-gray-400">No products added yet</p>
-              <p className="text-xs text-gray-400 mt-0.5">Add what you sell so the AI can assess product-market fit</p>
+              <p className="text-xs text-gray-400 mt-0.5">Add what you sell so the AI can assess product-market fit per campaign</p>
             </div>
           )}
-
           {icp.products_services.map(p => (
             <ProductCard
               key={p.id}
@@ -848,91 +729,8 @@ export function Settings() {
         </button>
       </section>
 
-      {/* ── Custom Qualification Criteria ── */}
-      <section className="bg-white rounded-xl border border-gray-200 p-6 space-y-5">
-        <SectionHeader
-          icon={
-            <svg className="w-5 h-5 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
-            </svg>
-          }
-          iconBg="bg-amber-50"
-          title="Custom Qualification Criteria"
-          subtitle="Add specific rules the AI must apply when scoring. Mark each as Must Have, Nice to Have, or a Disqualifier."
-        />
-
-        {/* Legend */}
-        <div className="flex items-center gap-3 flex-wrap">
-          {WEIGHT_OPTIONS.map(opt => (
-            <span key={opt.value} className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border font-medium ${opt.color}`}>
-              {opt.value === 'must_have' && (
-                <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd"/></svg>
-              )}
-              {opt.value === 'disqualifier' && (
-                <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd"/></svg>
-              )}
-              {opt.label}
-            </span>
-          ))}
-          <span className="text-xs text-gray-400 ml-1">— set importance for each rule</span>
-        </div>
-
-        <div className="space-y-3">
-          {icp.custom_criteria.length === 0 && (
-            <div className="rounded-xl border border-dashed border-gray-200 bg-gray-50 py-8 text-center">
-              <svg className="w-8 h-8 text-gray-300 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-              </svg>
-              <p className="text-sm text-gray-400">No custom criteria yet</p>
-              <p className="text-xs text-gray-400 mt-0.5">e.g. "Uses Salesforce", "Has raised Series A+", "Not an agency"</p>
-            </div>
-          )}
-
-          {icp.custom_criteria.map(cr => (
-            <CriterionRow
-              key={cr.id}
-              criterion={cr}
-              onChange={updated => updateCriterion(cr.id, updated)}
-              onRemove={() => removeCriterion(cr.id)}
-            />
-          ))}
-        </div>
-
-        <button
-          type="button"
-          onClick={addCriterion}
-          className="flex items-center gap-2 text-sm font-medium text-blue-600 hover:text-blue-700 transition-colors"
-        >
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-          </svg>
-          Add qualification criterion
-        </button>
-      </section>
-
-      {/* ── Additional Notes ── */}
-      <section className="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
-        <SectionHeader
-          icon={
-            <svg className="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-            </svg>
-          }
-          iconBg="bg-gray-100"
-          title="Additional Notes for AI"
-          subtitle="Free-text guidance for the AI — use this for anything that doesn't fit into structured criteria."
-        />
-        <textarea
-          rows={3}
-          value={icp.notes}
-          onChange={e => setIcp(c => ({ ...c, notes: e.target.value }))}
-          placeholder="e.g. Prioritise bootstrapped companies over VC-funded ones. Deprioritise anyone in an agency role."
-          className="w-full px-3.5 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
-        />
-      </section>
-
       {/* ── Sending Defaults ── */}
-      <section className="bg-white rounded-xl border border-gray-200 p-6 space-y-5">
+      <section className="bg-purple-50 rounded-xl border border-purple-100 p-6 space-y-5">
         <SectionHeader
           icon={
             <svg className="w-5 h-5 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">

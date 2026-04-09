@@ -189,9 +189,39 @@ export async function scrapeSalesNavSearchApi(
   const liAt = cookies.find(c => c.name === 'li_at')?.value
   if (!liAt) throw new Error('No li_at cookie found. Please reconnect from the Accounts page.')
 
-  // JSESSIONID is used as CSRF token (LinkedIn's pattern)
-  const jsessionId = cookies.find(c => c.name === 'JSESSIONID')?.value ?? `ajax:${Date.now()}`
-  const cookieHeader = parseCookieHeader(cookies)
+  // Bootstrap a fresh JSESSIONID by hitting the Sales Nav home page.
+  // LinkedIn requires JSESSIONID as the CSRF token for API calls — if it's
+  // missing from stored cookies, we fetch it from the Set-Cookie header first.
+  const agent = getProxyAgent()
+  let cookieHeader = parseCookieHeader(cookies)
+  let jsessionId = cookies.find(c => c.name === 'JSESSIONID')?.value
+
+  if (!jsessionId) {
+    console.log('[sales-nav-api] No JSESSIONID in stored cookies — bootstrapping from Sales Nav home…')
+    try {
+      const bootstrapRes = await fetch('https://www.linkedin.com/sales/home', {
+        headers: {
+          Cookie: cookieHeader,
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+          Accept: 'text/html',
+        },
+        redirect: 'manual',
+        ...(agent ? { dispatcher: agent } : {}),
+      } as RequestInit)
+
+      const setCookie = bootstrapRes.headers.get('set-cookie') ?? ''
+      const match = setCookie.match(/JSESSIONID=([^;,]+)/)
+      if (match) {
+        jsessionId = match[1]
+        cookieHeader = `${cookieHeader}; JSESSIONID=${jsessionId}`
+        console.log('[sales-nav-api] Bootstrapped JSESSIONID from Sales Nav home')
+      }
+    } catch (e) {
+      console.warn('[sales-nav-api] Bootstrap failed:', (e as Error).message)
+    }
+  }
+
+  if (!jsessionId) jsessionId = `ajax:${Date.now()}`
   const headers = buildHeaders(cookieHeader, jsessionId)
 
   // Parse saved search ID or query from URL
@@ -237,26 +267,27 @@ export async function scrapeSalesNavSearchApi(
     console.log(`[sales-nav-api] Fetching page start=${start}: ${apiUrl.substring(0, 160)}`)
 
     // LinkedIn sometimes returns a 302 self-redirect to set auth cookies before the API response.
-    // We follow it once manually: capture the Set-Cookie header and retry with the new cookies.
+    // Follow redirects manually up to 5 times, merging Set-Cookie headers each time.
     // Route through the residential proxy so LinkedIn doesn't detect a datacenter IP and delete session.
     const agent = getProxyAgent()
-    let res: Response
+    let res: Response = null!
     let currentHeaders = { ...headers }
+    let nextUrl = apiUrl
     try {
-      const fetchOpts = { headers: currentHeaders, redirect: 'manual', ...(agent ? { dispatcher: agent } : {}) } as RequestInit
-      res = await fetch(apiUrl, fetchOpts)
-      if (res.status >= 300 && res.status < 400) {
-        const location = res.headers.get('location') ?? apiUrl
+      let redirects = 0
+      while (redirects <= 5) {
+        const fetchOpts = { headers: currentHeaders, redirect: 'manual', ...(agent ? { dispatcher: agent } : {}) } as RequestInit
+        res = await fetch(nextUrl, fetchOpts)
+        if (res.status < 300 || res.status >= 400) break
+        const location = res.headers.get('location') ?? nextUrl
         const setCookie = res.headers.get('set-cookie')
-        console.log(`[sales-nav-api] 302 redirect to ${location.substring(0, 80)}, set-cookie: ${setCookie ?? 'none'}`)
+        console.log(`[sales-nav-api] redirect #${redirects + 1} → ${location.substring(0, 100)}, set-cookie: ${setCookie ? 'yes' : 'none'}`)
         if (setCookie) {
-          // Merge new cookies into the cookie header
           const newCookies = setCookie.split(',').map(c => c.split(';')[0].trim()).join('; ')
-          currentHeaders = { ...currentHeaders, Cookie: currentHeaders['Cookie'] + '; ' + newCookies }
+          currentHeaders = { ...currentHeaders, Cookie: (currentHeaders['Cookie'] ?? '') + '; ' + newCookies }
         }
-        // Follow the redirect once
-        res = await fetch(location, { headers: currentHeaders, redirect: 'manual', ...(agent ? { dispatcher: agent } : {}) } as RequestInit)
-        console.log(`[sales-nav-api] After redirect: ${res.status}`)
+        nextUrl = location
+        redirects++
       }
     } catch (fetchErr: unknown) {
       const err = fetchErr as Error & { cause?: unknown }

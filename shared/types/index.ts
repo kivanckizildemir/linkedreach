@@ -98,6 +98,8 @@ export interface Lead {
   updated_at: string
 }
 
+export type EngagementTrend = 'up' | 'down' | 'stable'
+
 export interface CampaignLead {
   id: string
   campaign_id: string
@@ -107,6 +109,11 @@ export interface CampaignLead {
   current_step: number
   last_action_at: string | null
   reply_classification: ReplyClassification
+  engagement_score: number | null
+  previous_engagement_score: number | null
+  engagement_trend: EngagementTrend | null
+  engagement_reasoning: string | null
+  engagement_updated_at: string | null
   created_at: string
   updated_at: string
 }

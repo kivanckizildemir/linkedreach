@@ -223,12 +223,14 @@ export async function followProfile(
 
 export function personaliseTemplate(
   template: string,
-  vars: { first_name?: string; last_name?: string; company?: string; title?: string; ai_opening?: string }
+  vars: { first_name?: string; last_name?: string; company?: string; title?: string; ai_opening?: string; sender_name?: string }
 ): string {
   return template
-    .replace(/\{\{first_name\}\}/g,  vars.first_name  ?? '')
-    .replace(/\{\{last_name\}\}/g,   vars.last_name   ?? '')
-    .replace(/\{\{company\}\}/g,     vars.company     ?? '')
-    .replace(/\{\{title\}\}/g,       vars.title       ?? '')
-    .replace(/\{\{ai_opening\}\}/g,  vars.ai_opening  ?? '')
+    .replace(/\{\{first_name\}\}/g,   vars.first_name   ?? '')
+    .replace(/\{\{last_name\}\}/g,    vars.last_name    ?? '')
+    .replace(/\{\{company\}\}/g,      vars.company      ?? '')
+    .replace(/\{\{title\}\}/g,        vars.title        ?? '')
+    .replace(/\{\{ai_opening\}\}/g,   vars.ai_opening   ?? '')
+    .replace(/\{\{sender_name\}\}/g,   vars.sender_name  ?? '')
+    .replace(/\{\{opening_line\}\}/g,  vars.ai_opening   ?? '')
 }

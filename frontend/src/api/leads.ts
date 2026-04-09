@@ -20,7 +20,11 @@ export interface Lead {
     product_scores?: Record<string, { score: number; flag: string; reasoning: string }>
     best_product_id?: string
   } | null
-  source: 'excel_import' | 'chrome_extension' | 'manual'
+  about: string | null
+  experience_description: string | null
+  skills: string[] | null
+  recent_posts: string[] | null
+  source: 'excel_import' | 'chrome_extension' | 'manual' | 'sales_nav_import' | 'linkedin_import' | 'excel'
   created_at: string
   updated_at: string
 }
@@ -37,7 +41,7 @@ export async function requalifyLead(id: string): Promise<void> {
 }
 
 export async function qualifyAllLeads(
-  opts?: { force?: boolean; ids?: string[] }
+  opts?: { force?: boolean; ids?: string[]; list_id?: string }
 ): Promise<{ queued: number }> {
   const res = await apiFetch('/api/leads/qualify-all', {
     method: 'POST',
@@ -172,6 +176,7 @@ export async function createManualLead(lead: {
   title?: string
   company?: string
   location?: string
+  list_id?: string
 }): Promise<Lead> {
   const res = await apiFetch('/api/leads', {
     method: 'POST',
@@ -183,16 +188,56 @@ export async function createManualLead(lead: {
   return data
 }
 
+export async function enrichProfiles(opts: {
+  account_id: string
+  list_id?: string
+  lead_ids?: string[]
+}): Promise<{ job_id: string; count: number }> {
+  const res = await apiFetch('/api/leads/enrich-profiles', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(opts),
+  })
+  if (!res.ok) throw new Error(await parseErrorResponse(res))
+  return res.json() as Promise<{ job_id: string; count: number }>
+}
+
+export async function getEnrichStatus(jobId: string): Promise<{
+  state: string
+  progress: number
+  result?: { enriched: number }
+}> {
+  const res = await apiFetch(`/api/leads/enrich-status/${jobId}`)
+  if (!res.ok) throw new Error(await parseErrorResponse(res))
+  return res.json() as Promise<{ state: string; progress: number; result?: { enriched: number } }>
+}
+
+export async function cancelEnrichJob(jobId: string): Promise<void> {
+  await apiFetch(`/api/leads/enrich-job/${jobId}`, { method: 'DELETE' })
+}
+
+export async function cancelQualify(leadIds: string[]): Promise<void> {
+  await apiFetch('/api/leads/qualify-cancel', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ lead_ids: leadIds }),
+  })
+}
+
 export async function fetchLeads(params: {
   icp_flag?: string
   search?: string
   source?: string
+  list_id?: string
 } = {}): Promise<Lead[]> {
   let query = supabase
     .from('leads')
     .select('*')
     .order('created_at', { ascending: false })
 
+  if (params.list_id) {
+    query = query.eq('list_id', params.list_id)
+  }
   if (params.icp_flag) {
     query = query.eq('icp_flag', params.icp_flag)
   }

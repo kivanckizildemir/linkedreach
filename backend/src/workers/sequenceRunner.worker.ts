@@ -10,7 +10,9 @@
 import { Worker } from 'bullmq'
 import { connection } from '../lib/queue'
 import { supabase } from '../lib/supabase'
-import { createSession, closeSession, persistCookies } from '../linkedin/session'
+import { persistCookies } from '../linkedin/session'
+import { acquireAccountLock } from '../lib/accountLock'
+import { getOrCreateBrowserSession, invalidateBrowserSession } from '../lib/browserPool'
 import {
   viewProfile,
   sendConnectionRequest,
@@ -108,6 +110,10 @@ interface Lead {
   last_name: string
   title: string | null
   company: string | null
+  about?: string | null
+  experience_description?: string | null
+  skills?: string[] | null
+  recent_posts?: string[] | null
 }
 
 interface Account {
@@ -118,6 +124,12 @@ interface Account {
   daily_connection_count: number
   daily_message_count: number
   has_premium: boolean
+  sender_name: string | null
+  sender_headline: string | null
+  sender_about: string | null
+  sender_experience: string | null
+  sender_skills: string[] | null
+  sender_recent_posts: string[] | null
 }
 
 /**
@@ -206,7 +218,7 @@ async function runSequenceStep(campaignLeadId: string): Promise<void> {
   // 3. Load lead
   const { data: lead } = await supabase
     .from('leads')
-    .select('id, linkedin_url, first_name, last_name, title, company')
+    .select('id, linkedin_url, first_name, last_name, title, company, about, experience_description, skills, recent_posts')
     .eq('id', campaignLead.lead_id)
     .single()
 
@@ -270,8 +282,14 @@ async function runSequenceStep(campaignLeadId: string): Promise<void> {
     currentStep = nextStep
   }
 
-  // 7. Open browser
-  const { browser, context, page } = await createSession(account)
+  // 7. Acquire per-account lock then open browser
+  const release = await acquireAccountLock(account.id)
+  if (!release) {
+    console.log(`[runner] Account ${account.id} locked by another worker — will retry`)
+    throw new Error(`Account ${account.id} is currently in use — retrying`)
+  }
+
+  const { browser: _browser, context, page } = await getOrCreateBrowserSession(account)
 
   try {
     // 8. Handle fork — evaluate condition and route to branch
@@ -303,16 +321,20 @@ async function runSequenceStep(campaignLeadId: string): Promise<void> {
     // 9. Execute the action step
     const tmpl = currentStep.message_template ?? ''
 
-    // Generate AI opening line if template uses {{ai_opening}}
+    // Generate AI opening line if template uses {{ai_opening}} or {{opening_line}}
     let aiOpening = ''
-    if (tmpl.includes('{{ai_opening}}')) {
+    if (tmpl.includes('{{ai_opening}}') || tmpl.includes('{{opening_line}}')) {
       try {
         const result = await personaliseOpeningLine({
-          first_name: leadData.first_name,
-          last_name:  leadData.last_name,
-          title:      leadData.title ?? null,
-          company:    leadData.company ?? null,
-          industry:   null,
+          first_name:             leadData.first_name,
+          last_name:              leadData.last_name,
+          title:                  leadData.title ?? null,
+          company:                leadData.company ?? null,
+          industry:               null,
+          about:                  leadData.about ?? null,
+          experience_description: leadData.experience_description ?? null,
+          skills:                 leadData.skills ?? undefined,
+          recent_posts:           leadData.recent_posts ?? undefined,
         })
         aiOpening = result.opening_line
       } catch {
@@ -321,11 +343,12 @@ async function runSequenceStep(campaignLeadId: string): Promise<void> {
     }
 
     const personalised = personaliseTemplate(tmpl, {
-      first_name:  leadData.first_name,
-      last_name:   leadData.last_name,
-      company:     leadData.company ?? undefined,
-      title:       leadData.title   ?? undefined,
-      ai_opening:  aiOpening || undefined,
+      first_name:   leadData.first_name,
+      last_name:    leadData.last_name,
+      company:      leadData.company      ?? undefined,
+      title:        leadData.title        ?? undefined,
+      ai_opening:   aiOpening             || undefined,
+      sender_name:  account.sender_name   ?? undefined,
     })
 
     let newStatus: CampaignLeadStatus | null = null
@@ -405,8 +428,28 @@ async function runSequenceStep(campaignLeadId: string): Promise<void> {
     console.log(
       `[runner] ${currentStep.type} done for lead ${leadData.first_name} ${leadData.last_name}`
     )
+  } catch (err) {
+    const msg = (err as Error).message ?? ''
+    if (msg.includes('SESSION_EXPIRED')) {
+      // Mark paused immediately so the UI reflects the broken state.
+      try { await supabase.from('linkedin_accounts').update({ status: 'paused' }).eq('id', account.id) } catch {}
+      // Trigger background reconnect and defer this step so reconnect can finish first
+      invalidateBrowserSession(account.id)
+      console.warn(`[runner] Session expired for ${account.id} — pausing account, deferring step 3min for reconnect`)
+      await supabase
+        .from('campaign_leads')
+        .update({ next_action_at: new Date(Date.now() + 3 * 60 * 1000).toISOString() })
+        .eq('id', campaignLeadId)
+        .catch(() => null)
+      // Don't rethrow — scheduler will re-queue from next_action_at
+      return
+    }
+    if (msg.includes('SECURITY_CHALLENGE')) {
+      invalidateBrowserSession(account.id)
+    }
+    throw err
   } finally {
-    await closeSession(browser)
+    await release()
   }
 }
 

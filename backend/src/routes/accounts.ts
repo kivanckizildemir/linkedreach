@@ -4,8 +4,10 @@ import { supabase } from '../lib/supabase'
 import { requireAuth } from '../middleware/auth'
 import type { AccountStatus } from '../types'
 import { startLogin, startManualSession, submitVerificationCode, getLoginStatus, checkPushApproval, getSessionScreenshot, getSessionPageInfo, getSessionDebugSnapshot, interactWithPage, testProxyRaw, requestVerificationCode } from '../linkedin/login'
-import { extractCookies } from '../linkedin/session'
+import { extractCookies, getProfileDir } from '../linkedin/session'
 import { chromium } from 'playwright'
+import * as fsSync from 'fs'
+import { execSync } from 'child_process'
 import { ProxyAgent } from 'undici'
 
 export const accountsRouter = Router()
@@ -79,7 +81,7 @@ accountsRouter.post('/', async (req: Request, res: Response) => {
 
 // PATCH /api/accounts/:id
 accountsRouter.patch('/:id', async (req: Request, res: Response) => {
-  const allowed = ['status', 'proxy_id', 'cookies', 'warmup_day', 'proxy_country'] as const
+  const allowed = ['status', 'proxy_id', 'cookies', 'warmup_day', 'proxy_country', 'linkedin_password', 'totp_secret', 'sender_name'] as const
   type AllowedKey = (typeof allowed)[number]
 
   const updates: Partial<Record<AllowedKey, unknown>> = {}
@@ -138,13 +140,15 @@ accountsRouter.post('/:id/connect', async (req: Request, res: Response) => {
     return
   }
 
-  // Persist TOTP secret if provided (enables Infinite Login on future re-auths)
-  if (totp_secret) {
-    await supabase
-      .from('linkedin_accounts')
-      .update({ totp_secret })
-      .eq('id', req.params.id)
-  }
+  // Persist credentials for auto-reconnect (Infinite Login)
+  // TOTP secret enables fully-automatic 2FA; password alone handles non-2FA accounts
+  await supabase
+    .from('linkedin_accounts')
+    .update({
+      linkedin_password: password,
+      ...(totp_secret ? { totp_secret } : {}),
+    })
+    .eq('id', req.params.id)
 
   const sessionKey = startLogin(String(req.params.id), email, password, totp_secret)
   res.json({ status: 'starting', session_key: sessionKey })
@@ -343,7 +347,7 @@ accountsRouter.post('/:id/connect-verify', async (req: Request, res: Response) =
 accountsRouter.post('/:id/login-browser', async (req: Request, res: Response) => {
   const { data: account, error: accountErr } = await supabase
     .from('linkedin_accounts')
-    .select('id')
+    .select('id, proxy_id')
     .eq('id', req.params.id)
     .eq('user_id', req.user.id)
     .single()
@@ -364,63 +368,311 @@ accountsRouter.post('/:id/login-browser', async (req: Request, res: Response) =>
     return
   }
 
-  let browser: import('playwright').Browser | null = null
+  // Resolve proxy from the account's proxy_id (set via the Proxies UI).
+  const disableProxy = process.env.DISABLE_PROXY === 'true'
+  let playwrightProxy: { server: string; username?: string; password?: string } | undefined
+
+  if (!disableProxy && (account as { proxy_id?: string | null }).proxy_id) {
+    const { data: proxyRow } = await supabase
+      .from('proxies')
+      .select('proxy_url')
+      .eq('id', (account as { proxy_id: string }).proxy_id)
+      .single()
+
+    if (proxyRow) {
+      const u = new URL((proxyRow as { proxy_url: string }).proxy_url)
+      playwrightProxy = {
+        server:   `${u.protocol}//${u.host}`,
+        username: decodeURIComponent(u.username) || undefined,
+        password: decodeURIComponent(u.password) || undefined,
+      }
+    }
+  }
+
+  // ── Persistent profile directory ────────────────────────────────────────────
+  // We use launchPersistentContext so the browser profile (cookies, IndexedDB,
+  // localStorage, fingerprint data) is written to disk and reused by the scraper.
+  // This is essential for li_a (Sales Navigator) which LinkedIn ties to the
+  // specific browser identity — a fresh browser instance invalidates li_a
+  // immediately, but the same profile keeps it alive indefinitely.
+  const profileDir = getProfileDir(req.params.id as string)
+  fsSync.mkdirSync(profileDir, { recursive: true })
+
+  // Clear Chrome singleton locks left by crashed/killed previous sessions
+  for (const lock of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
+    try { fsSync.unlinkSync(`${profileDir}/${lock}`) } catch { /* already gone */ }
+  }
+
+  let context: import('playwright').BrowserContext | null = null
+
+  // Calculate screen center for the login window (480×680)
+  const WIN_W = 480, WIN_H = 680
+  let winX = 400, winY = 60 // sensible fallback
+  try {
+    const bounds = execSync("osascript -e 'tell application \"Finder\" to get bounds of window of desktop'", { timeout: 3000 }).toString().trim()
+    const parts = bounds.split(', ').map(Number)
+    if (parts.length === 4) {
+      winX = Math.round((parts[2] - WIN_W) / 2)
+      winY = Math.round((parts[3] - WIN_H) / 2)
+    }
+  } catch { /* use fallback */ }
+
+  let windowClosed = false
 
   try {
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
-    browser = await chromium.launch({
+    console.log(`[login-browser] ${req.params.id} — launching Chrome with persistent profile${playwrightProxy ? ` via proxy ${playwrightProxy.server}` : ' (no proxy)'}`)
+
+    context = await chromium.launchPersistentContext(profileDir, {
       headless: false,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-blink-features=AutomationControlled',
+        '--app=https://www.linkedin.com/login', // app mode — no address bar
+        `--window-size=${WIN_W},${WIN_H}`,
+        `--window-position=${winX},${winY}`,
       ],
-    }) as import('playwright').Browser
-
-    const context = await browser.newContext({
       userAgent:
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
         '(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-      viewport: { width: 1280, height: 800 },
+      viewport: { width: WIN_W, height: WIN_H },
       locale: 'en-US',
+      ...(playwrightProxy ? { proxy: playwrightProxy } : {}),
     })
 
-    const page = await context.newPage()
-    await page.goto('https://www.linkedin.com/login', { waitUntil: 'domcontentloaded', timeout: 30_000 })
+    // Detect if the user manually closes the window — kill the Chrome process immediately.
+    // context.close() alone doesn't terminate the OS process in persistent context mode,
+    // so we also pkill by the unique profile directory path.
+    const killContext = () => {
+      if (windowClosed) return
+      windowClosed = true
+      console.log('[login-browser] Browser window closed by user — terminating Chrome process')
+      context?.close().catch(() => null)
+      context = null
+      try { execSync(`pkill -f "${profileDir}"`, { timeout: 3000 }) } catch { /* already gone */ }
+    }
+    context.on('close', killContext)
 
-    // Poll for li_at cookie — up to 5 minutes
+    const page = context.pages()[0] ?? await context.newPage()
+    page.on('close', killContext)
+
+    console.log('[login-browser] Navigating to linkedin.com/login…')
+    await page.goto('https://www.linkedin.com/login', { waitUntil: 'domcontentloaded', timeout: 30_000 })
+    // Focus the email field so the user can type immediately without clicking
+    await page.click('#username').catch(() => null)
+    console.log('[login-browser] Login page open — waiting for user to log in…')
+
+    // Phase 1 — wait for li_at (main session cookie, up to 5 min)
     const TIMEOUT_MS = 5 * 60 * 1000
-    const POLL_MS = 2_000
-    const deadline = Date.now() + TIMEOUT_MS
+    const POLL_MS    = 2_000
+    const deadline   = Date.now() + TIMEOUT_MS
     let liAt: string | null = null
 
     while (Date.now() < deadline) {
-      const cookies = await context.cookies()
-      const found = cookies.find(c => c.name === 'li_at')
-      if (found) {
-        liAt = found.value
-        // Save full storage_state (cookies + localStorage) — required for browser-based scraping
-        const storageState = await context.storageState()
-        await supabase
-          .from('linkedin_accounts')
-          .update({ cookies: JSON.stringify(storageState), status: 'active' })
-          .eq('id', req.params.id)
-        break
-      }
+      if (windowClosed) break
+      try {
+        const cookies = await context.cookies()
+        if (cookies.find(c => c.name === 'li_at')) {
+          liAt = cookies.find(c => c.name === 'li_at')!.value
+          break
+        }
+      } catch { break } // context destroyed
       await new Promise(r => setTimeout(r, POLL_MS))
     }
 
-    await browser.close()
-    browser = null
+    if (windowClosed) {
+      // killContext() already closed the context and set context = null
+      console.warn('[login-browser] Aborted — user closed the browser window')
+      res.status(400).json({ error: 'Login cancelled — browser window was closed' })
+      return
+    }
 
     if (!liAt) {
+      await context.close()
+      context = null
+      console.warn('[login-browser] Timed out — no li_at cookie after 5 minutes')
       res.status(408).json({ error: 'Login timed out — no session cookie detected after 5 minutes' })
       return
     }
 
-    res.json({ message: 'LinkedIn session saved successfully' })
+    console.log('[login-browser] ✓ li_at detected — saving session and closing browser…')
+
+    // Save the session immediately so the browser can close right away.
+    // Phase 2 (li_a) and Phase 3 (sender profile) run headlessly in background
+    // — the user doesn't need to see the browser navigating to Sales Nav.
+    const storageStateEarly = await context.storageState()
+    const { error: earlyErr } = await supabase
+      .from('linkedin_accounts')
+      .update({ cookies: JSON.stringify(storageStateEarly), status: 'active' })
+      .eq('id', req.params.id)
+    if (earlyErr) console.warn(`[login-browser] Early session save error: ${earlyErr.message}`)
+
+    // Close the visible browser window immediately — user sees it disappear right after login
+    windowClosed = true
+    await context.close().catch(() => null)
+    context = null
+    try { execSync(`pkill -f "${profileDir}"`, { timeout: 3000 }) } catch { /* already gone */ }
+
+    // Respond to the client immediately — login is done from the user's perspective
+    res.json({ message: 'LinkedIn session saved — finalising Sales Navigator setup in background…' })
+
+    // Background: Phase 2 (li_a) + Phase 3 (sender profile scrape) — fully headless
+    ;(async () => {
+      console.log('[login-browser] [bg] Starting headless Phase 2+3…')
+      let bgContext = null as import('playwright').BrowserContext | null
+      try {
+        // Clean singleton locks before re-opening the profile
+        for (const lock of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
+          try { fsSync.unlinkSync(`${profileDir}/${lock}`) } catch { /* ok */ }
+        }
+        bgContext = await chromium.launchPersistentContext(profileDir, {
+          headless: true,
+          args: [
+            '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
+            '--disable-blink-features=AutomationControlled',
+          ],
+          ...(playwrightProxy ? { proxy: playwrightProxy } : {}),
+          userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+          locale: 'en-US',
+          viewport: { width: 1280, height: 800 },
+        })
+        const bgPage = bgContext.pages()[0] ?? await bgContext.newPage()
+
+        // Phase 2 — capture li_a by visiting Sales Nav
+        try {
+          await bgPage.goto('https://www.linkedin.com/sales/home', { waitUntil: 'domcontentloaded', timeout: 30_000 })
+          await bgPage.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => null)
+          await bgPage.waitForTimeout(3000)
+          const bgCookies = await bgContext.cookies()
+          const hasLiA = bgCookies.some(c => c.name === 'li_a')
+          console.log(`[login-browser] [bg] li_a: ${hasLiA ? '✓ captured' : 'not found (no Sales Nav subscription?)'}`)
+        } catch (e) {
+          console.warn(`[login-browser] [bg] Sales Nav phase failed: ${(e as Error).message}`)
+        }
+
+        // Phase 3 — scrape sender profile
+        let senderName: string | null = null
+        let senderHeadline: string | null = null
+        let senderAbout: string | null = null
+        let senderExperience: string | null = null
+        let senderSkills: string[] = []
+        let senderRecentPosts: string[] = []
+        try {
+          await bgPage.goto('https://www.linkedin.com/in/me', { waitUntil: 'domcontentloaded', timeout: 20_000 })
+          await bgPage.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => null)
+          await bgPage.waitForTimeout(1500)
+          const redirectedUrl = bgPage.url().split('?')[0].replace(/\/$/, '')
+
+          await bgPage.goto(redirectedUrl, { waitUntil: 'domcontentloaded', timeout: 20_000 })
+          await bgPage.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => null)
+          await bgPage.waitForTimeout(2000)
+          await bgPage.evaluate(() => window.scrollTo(0, document.body.scrollHeight / 2))
+          await bgPage.waitForTimeout(1500)
+          await bgPage.evaluate(() => window.scrollTo(0, document.body.scrollHeight))
+          await bgPage.waitForTimeout(1500)
+          await bgPage.evaluate(() => window.scrollTo(0, 0))
+          await bgPage.waitForTimeout(500)
+
+          const pd = await bgPage.evaluate(() => {
+            const getText = (el: Element | null) => (el?.textContent ?? '').replace(/\s+/g, ' ').trim()
+            let name: string | null = null
+            for (const sel of ['h1', '.text-heading-xlarge', '.pv-text-details__left-panel h1']) {
+              for (const el of Array.from(document.querySelectorAll(sel))) {
+                const t = getText(el)
+                if (t && t.length > 1 && t.length < 80 && !t.includes('@')) { name = t; break }
+              }
+              if (name) break
+            }
+            let headline: string | null = null
+            for (const sel of ['.text-body-medium.break-words', '.pv-text-details__left-panel .text-body-medium']) {
+              const t = getText(document.querySelector(sel))
+              if (t && t.length > 2 && t.length < 250) { headline = t; break }
+            }
+            let about: string | null = null
+            const aboutAnchor = document.querySelector('#about')
+            if (aboutAnchor?.closest('section')) {
+              const spans = Array.from(aboutAnchor.closest('section')!.querySelectorAll('span[aria-hidden="true"]'))
+              const text = spans.map(s => (s.textContent ?? '').trim()).filter(t => t.length > 20).join(' ')
+              if (text) about = text.slice(0, 800)
+            }
+            let experience: string | null = null
+            const expAnchor = document.querySelector('#experience')
+            if (expAnchor?.closest('section')) {
+              const firstItem = expAnchor.closest('section')!.querySelector('li')
+              if (firstItem) {
+                const descSpans = Array.from(firstItem.querySelectorAll('span[aria-hidden="true"]'))
+                  .map(s => getText(s)).filter(t => t.length > 40 && !t.includes('·') && !/^\d/.test(t))
+                if (descSpans.length > 0) experience = descSpans.slice(-1)[0]?.slice(0, 600) ?? null
+              }
+            }
+            const skills: string[] = []
+            const skillsAnchor = document.querySelector('#skills')
+            if (skillsAnchor?.closest('section')) {
+              Array.from(skillsAnchor.closest('section')!.querySelectorAll('li')).slice(0, 5).forEach(item => {
+                const sp = Array.from(item.querySelectorAll('span[aria-hidden="true"]'))
+                  .find(s => { const t = getText(s); return t.length > 1 && t.length < 60 && !t.includes('endorsement') })
+                if (sp) skills.push(getText(sp))
+              })
+            }
+            return { name, headline, about, experience, skills }
+          }).catch(() => ({ name: null, headline: null, about: null, experience: null, skills: [] as string[] }))
+
+          senderName = pd.name; senderHeadline = pd.headline
+          senderAbout = pd.about; senderExperience = pd.experience; senderSkills = pd.skills
+
+          // Recent posts
+          try {
+            const activityUrl = `${redirectedUrl}/recent-activity/all/`
+            await bgPage.goto(activityUrl, { waitUntil: 'domcontentloaded', timeout: 20_000 })
+            await bgPage.waitForTimeout(2500)
+            senderRecentPosts = await bgPage.evaluate(() => {
+              const found: string[] = []
+              for (const sel of ['.feed-shared-update-v2__description span[dir]', '.feed-shared-text span[aria-hidden="true"]', '[data-urn*="activity"] .break-words']) {
+                if (found.length >= 3) break
+                document.querySelectorAll(sel).forEach(el => {
+                  if (found.length >= 3) return
+                  const text = (el.textContent ?? '').replace(/\s+/g, ' ').trim()
+                  if (text.length > 30 && !found.includes(text)) found.push(text.slice(0, 300))
+                })
+              }
+              return found
+            }).catch(() => [] as string[])
+          } catch { /* non-fatal */ }
+
+          console.log(`[login-browser] [bg] Sender: ${senderName ?? '(not found)'}${senderHeadline ? ` — ${senderHeadline}` : ''} | skills=${senderSkills.length} posts=${senderRecentPosts.length}`)
+        } catch (e) {
+          console.warn(`[login-browser] [bg] Sender profile scrape failed: ${(e as Error).message}`)
+        }
+
+        // Save final storage state + sender profile
+        const finalState = await bgContext.storageState()
+        await supabase.from('linkedin_accounts').update({
+          cookies:         JSON.stringify(finalState),
+          status:          'active',
+          sender_name:     senderName     ?? null,
+          sender_headline: senderHeadline ?? null,
+          sender_about:    senderAbout    ?? null,
+        }).eq('id', req.params.id)
+
+        try {
+          await supabase.from('linkedin_accounts').update({
+            sender_experience:   senderExperience   ?? null,
+            sender_skills:       senderSkills,
+            sender_recent_posts: senderRecentPosts,
+          }).eq('id', req.params.id)
+        } catch { /* pre-migration — ignore */ }
+
+        console.log('[login-browser] [bg] Phase 2+3 complete ✓')
+      } catch (e) {
+        console.warn(`[login-browser] [bg] Background phase failed: ${(e as Error).message}`)
+      } finally {
+        if (bgContext) await bgContext.close().catch(() => null)
+      }
+    })().catch(e => console.warn('[login-browser] [bg] Unhandled:', e.message))
   } catch (err) {
-    if (browser) await browser.close().catch(() => {})
+    windowClosed = true // disarm handler before closing
+    if (context) await context.close().catch(() => {})
+    try { execSync(`pkill -f "${profileDir}"`, { timeout: 3000 }) } catch { /* already gone */ }
     res.status(500).json({ error: err instanceof Error ? err.message : 'Unknown error' })
   }
 })

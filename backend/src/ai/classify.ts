@@ -1,7 +1,11 @@
 import Anthropic from '@anthropic-ai/sdk'
 import type { ReplyClassification } from '../types'
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+let _client: Anthropic | null = null
+function getClient(): Anthropic {
+  if (!_client) _client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+  return _client
+}
 
 export interface ClassifyResult {
   classification: ReplyClassification
@@ -28,7 +32,7 @@ Respond ONLY with valid JSON in this exact format:
   "reasoning": "<1 sentence explanation>"
 }`
 
-  const message = await client.messages.create({
+  const message = await getClient().messages.create({
     model: 'claude-sonnet-4-20250514',
     max_tokens: 128,
     messages: [{ role: 'user', content: prompt }],

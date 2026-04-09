@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import React, { useState, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useForm } from 'react-hook-form'
 import {
@@ -101,8 +101,8 @@ export function Accounts() {
   const [tab, setTab] = useState<PageTab>('accounts')
   const [showAddAccount, setShowAddAccount] = useState(false)
   const [sessionAccountId, setSessionAccountId] = useState<string | null>(null)
-  const [connectingAccountId, setConnectingAccountId] = useState<string | null>(null)
   const [healthResults, setHealthResults] = useState<Record<string, { ok: boolean; message: string } | 'loading'>>({})
+  const [expandedSenderId, setExpandedSenderId] = useState<string | null>(null)
   const queryClient = useQueryClient()
 
   const { data: accounts = [], isLoading } = useQuery({
@@ -195,6 +195,7 @@ export function Accounts() {
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Messages Today</th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Warmup Day</th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Proxy Country</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Sender Profile</th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
                   </tr>
                 </thead>
@@ -211,8 +212,11 @@ export function Accounts() {
                   ) : (
                     accounts.map(account => {
                       const limit = account.status === 'warming_up' ? WARMUP_LIMIT(account.warmup_day) : 25
+                      const isExpanded = expandedSenderId === account.id
+                      const hasSenderData = !!(account.sender_name || account.sender_headline || account.sender_about)
                       return (
-                        <tr key={account.id} className="hover:bg-gray-50 transition-colors">
+                        <React.Fragment key={account.id}>
+                        <tr className="hover:bg-gray-50 transition-colors">
                           <td className="px-4 py-3 font-medium text-gray-900 whitespace-nowrap">
                             <div className="flex items-center gap-2">
                               {account.linkedin_email}
@@ -260,6 +264,31 @@ export function Accounts() {
                             </select>
                           </td>
                           <td className="px-4 py-3">
+                            <button
+                              onClick={() => setExpandedSenderId(isExpanded ? null : account.id)}
+                              className="flex items-center gap-2 text-left group"
+                            >
+                              {hasSenderData ? (
+                                <div>
+                                  <p className="text-xs font-semibold text-gray-800 group-hover:text-violet-700 transition-colors">
+                                    {account.sender_name ?? '—'}
+                                  </p>
+                                  {account.sender_headline && (
+                                    <p className="text-[11px] text-gray-400 truncate max-w-[160px]">{account.sender_headline}</p>
+                                  )}
+                                </div>
+                              ) : (
+                                <span className="text-xs text-gray-400 italic group-hover:text-violet-600 transition-colors">No profile — Connect to scrape</span>
+                              )}
+                              <svg
+                                className={`w-3.5 h-3.5 text-gray-400 shrink-0 transition-transform ${isExpanded ? 'rotate-180' : ''}`}
+                                fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"
+                              >
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                              </svg>
+                            </button>
+                          </td>
+                          <td className="px-4 py-3">
                             <div className="flex items-center gap-2">
                               {account.status === 'active' && (
                                 <button
@@ -286,16 +315,10 @@ export function Accounts() {
                                 </button>
                               )}
                               <button
-                                onClick={() => setConnectingAccountId(account.id)}
+                                onClick={() => setSessionAccountId(account.id)}
                                 className="text-xs text-indigo-700 hover:underline font-medium"
                               >
                                 Connect
-                              </button>
-                              <button
-                                onClick={() => setSessionAccountId(account.id)}
-                                className="text-xs text-purple-700 hover:underline"
-                              >
-                                Set Session
                               </button>
                               {(() => {
                                 const hr = healthResults[account.id]
@@ -339,6 +362,85 @@ export function Accounts() {
                             </div>
                           </td>
                         </tr>
+
+                        {/* Sender profile expandable row */}
+                        {isExpanded && (
+                          <tr className="bg-violet-50/60 border-t border-violet-100">
+                            <td colSpan={7} className="px-6 py-4">
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                {/* Name + Headline editable */}
+                                <div className="space-y-2">
+                                  <p className="text-[10px] font-bold text-violet-500 uppercase tracking-wider">Name</p>
+                                  <input
+                                    type="text"
+                                    defaultValue={account.sender_name ?? ''}
+                                    onBlur={e => {
+                                      const val = e.target.value.trim()
+                                      if (val !== (account.sender_name ?? '')) {
+                                        updateMutation.mutate({ id: account.id, updates: { sender_name: val || null } })
+                                      }
+                                    }}
+                                    placeholder="Full name"
+                                    className="text-sm border border-gray-200 rounded-lg px-3 py-1.5 w-full bg-white focus:outline-none focus:ring-2 focus:ring-violet-400"
+                                  />
+                                  <p className="text-[10px] font-bold text-violet-500 uppercase tracking-wider mt-2">Headline</p>
+                                  <p className="text-xs text-gray-600">{account.sender_headline ?? <span className="italic text-gray-400">Not scraped yet</span>}</p>
+                                </div>
+
+                                {/* Skills */}
+                                <div>
+                                  <p className="text-[10px] font-bold text-violet-500 uppercase tracking-wider mb-1">Skills</p>
+                                  {account.sender_skills && account.sender_skills.length > 0 ? (
+                                    <div className="flex flex-wrap gap-1.5">
+                                      {account.sender_skills.map((s, i) => (
+                                        <span key={i} className="text-xs bg-violet-100 text-violet-700 px-2 py-0.5 rounded-full">{s}</span>
+                                      ))}
+                                    </div>
+                                  ) : (
+                                    <p className="text-xs text-gray-400 italic">Not scraped yet</p>
+                                  )}
+                                </div>
+
+                                {/* About */}
+                                {account.sender_about && (
+                                  <div className="md:col-span-2">
+                                    <p className="text-[10px] font-bold text-violet-500 uppercase tracking-wider mb-1">About</p>
+                                    <p className="text-xs text-gray-600 leading-relaxed line-clamp-4">{account.sender_about}</p>
+                                  </div>
+                                )}
+
+                                {/* Experience */}
+                                {account.sender_experience && (
+                                  <div className="md:col-span-2">
+                                    <p className="text-[10px] font-bold text-violet-500 uppercase tracking-wider mb-1">Experience</p>
+                                    <p className="text-xs text-gray-600 leading-relaxed line-clamp-3">{account.sender_experience}</p>
+                                  </div>
+                                )}
+
+                                {/* Recent Posts */}
+                                {account.sender_recent_posts && account.sender_recent_posts.length > 0 && (
+                                  <div className="md:col-span-2">
+                                    <p className="text-[10px] font-bold text-violet-500 uppercase tracking-wider mb-2">Recent Posts</p>
+                                    <div className="space-y-1.5">
+                                      {account.sender_recent_posts.map((post, i) => (
+                                        <p key={i} className="text-xs text-gray-600 bg-white border border-gray-100 rounded-lg px-3 py-2 line-clamp-2">
+                                          {post}
+                                        </p>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+
+                                {!hasSenderData && (
+                                  <div className="md:col-span-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
+                                    No profile data yet. Click <strong>Connect</strong> on this account to scrape the sender's LinkedIn profile automatically.
+                                  </div>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                        </React.Fragment>
                       )
                     })
                   )}
@@ -378,16 +480,6 @@ export function Accounts() {
         />
       )}
 
-      {connectingAccountId && (
-        <ConnectModal
-          accountId={connectingAccountId}
-          onClose={() => setConnectingAccountId(null)}
-          onSaved={() => {
-            setConnectingAccountId(null)
-            void queryClient.invalidateQueries({ queryKey: ['accounts'] })
-          }}
-        />
-      )}
     </div>
   )
 }
@@ -739,20 +831,26 @@ function SetSessionModal({
   onClose: () => void
   onSaved: () => void
 }) {
-  const [liAt, setLiAt] = useState('')
-  const [saving, setSaving] = useState(false)
   const [browserOpening, setBrowserOpening] = useState(false)
   const [browserMsg, setBrowserMsg] = useState('')
   const [error, setError] = useState('')
 
+  // Advanced / auto-reconnect section
+  const [showAdvanced, setShowAdvanced] = useState(false)
+  const [credEmail, setCredEmail] = useState('')
+  const [credPassword, setCredPassword] = useState('')
+  const [credTotp, setCredTotp] = useState('')
+  const [credSaving, setCredSaving] = useState(false)
+  const [credSaved, setCredSaved] = useState(false)
+
   async function handleBrowserLogin() {
     setBrowserOpening(true)
-    setBrowserMsg('Opening Chrome window on your machine… Log in to LinkedIn there.')
+    setBrowserMsg('Opening Chrome… Log in to LinkedIn. The browser will then open Sales Navigator automatically — keep the window open until it closes on its own.')
     setError('')
     try {
       const { loginBrowser } = await import('../api/accounts')
-      await loginBrowser(accountId)
-      setBrowserMsg('Session captured! Closing…')
+      const result = await loginBrowser(accountId)
+      setBrowserMsg(`✓ ${(result as { message?: string })?.message ?? 'Session captured!'}`)
       setTimeout(onSaved, 800)
     } catch (e) {
       const msg = (e as Error).message
@@ -766,82 +864,128 @@ function SetSessionModal({
     }
   }
 
-  async function handleSave() {
-    const value = liAt.trim()
-    if (!value) { setError('Paste your li_at cookie value.'); return }
-    setSaving(true)
-    setError('')
+  async function handleSaveCredentials() {
+    if (!credEmail.trim() || !credPassword.trim()) return
+    setCredSaving(true)
     try {
-      const cookies = JSON.stringify([{
-        name: 'li_at',
-        value,
-        domain: '.linkedin.com',
-        path: '/',
-        httpOnly: true,
-        secure: true,
-        sameSite: 'None',
-      }])
-      await updateAccount(accountId, { cookies })
-      onSaved()
+      const body: Record<string, string> = { linkedin_password: credPassword.trim() }
+      if (credTotp.trim()) body.totp_secret = credTotp.trim()
+      const res = await (await import('../lib/fetchJson')).apiFetch(`/api/accounts/${accountId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      if (!res.ok) throw new Error('Failed to save credentials')
+      setCredSaved(true)
     } catch (e) {
       setError((e as Error).message)
-      setSaving(false)
+    } finally {
+      setCredSaving(false)
     }
   }
 
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg p-6 space-y-4">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6 space-y-5">
+
+        {/* Header */}
         <div>
-          <h2 className="text-lg font-semibold text-gray-900">Set LinkedIn Session</h2>
+          <h2 className="text-lg font-semibold text-gray-900">Log in to LinkedIn</h2>
           <p className="mt-1 text-sm text-gray-500">
-            Choose a method to authenticate this account.
+            A Chrome window will open on your machine. Log in normally — your session is captured automatically.
           </p>
         </div>
 
-        {/* Option A — Open browser window (best: captures full session) */}
-        <div className="border border-blue-200 bg-blue-50 rounded-xl p-4 space-y-2">
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold text-blue-900">Option A — Open Browser Window</span>
-            <span className="text-[10px] font-bold px-2 py-0.5 bg-blue-600 text-white rounded-full uppercase tracking-wide">Recommended</span>
+        {/* Primary action */}
+        {browserMsg ? (
+          <div className={`rounded-xl px-4 py-3 text-sm font-medium ${browserMsg.startsWith('✓') ? 'bg-green-50 text-green-800' : 'bg-blue-50 text-blue-800'}`}>
+            {browserMsg}
           </div>
-          <p className="text-xs text-blue-700">
-            Opens a real Chrome window on your machine. Log in to LinkedIn normally — all cookies are captured automatically. Required for Sales Navigator scraping.
-          </p>
-          {browserMsg && <p className="text-xs text-blue-800 font-medium">{browserMsg}</p>}
+        ) : (
           <button
             onClick={() => void handleBrowserLogin()}
             disabled={browserOpening}
-            className="w-full py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-60 transition-colors"
+            className="w-full py-3 bg-blue-600 text-white text-sm font-semibold rounded-xl hover:bg-blue-700 disabled:opacity-60 transition-colors flex items-center justify-center gap-2"
           >
-            {browserOpening ? 'Waiting for login…' : 'Open Chrome Window'}
+            {browserOpening ? (
+              <>
+                <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
+                </svg>
+                Waiting for login…
+              </>
+            ) : (
+              <>
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25"/>
+                </svg>
+                Open Chrome &amp; Log In
+              </>
+            )}
           </button>
-        </div>
-
-        {/* Option B — Paste li_at manually */}
-        <div className="border border-gray-200 rounded-xl p-4 space-y-2">
-          <p className="text-sm font-semibold text-gray-700">Option B — Paste li_at Cookie</p>
-          <p className="text-xs text-gray-500">
-            F12 → Application → Cookies → <code className="bg-gray-100 px-1 rounded">https://www.linkedin.com</code> → find <code className="bg-gray-100 px-1 rounded">li_at</code> → copy Value.
-            <span className="ml-1 text-orange-600">Note: only li_at. Sales Navigator scraping needs Option A.</span>
-          </p>
-          <textarea
-            value={liAt}
-            onChange={e => setLiAt(e.target.value)}
-            placeholder="AQEDATxxxxxx..."
-            rows={2}
-            className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono resize-none"
-          />
-          <button onClick={() => void handleSave()} disabled={saving || !liAt.trim()}
-            className="w-full py-2 bg-gray-700 text-white text-sm font-medium rounded-lg hover:bg-gray-800 disabled:opacity-50 transition-colors">
-            {saving ? 'Saving…' : 'Save Cookie Only'}
-          </button>
-        </div>
+        )}
 
         {error && <p className="text-xs text-red-600">{error}</p>}
 
+        {/* Advanced: save credentials for auto-reconnect */}
+        <div className="border-t border-gray-100 pt-3">
+          <button
+            type="button"
+            onClick={() => setShowAdvanced(v => !v)}
+            className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-600 transition-colors"
+          >
+            <svg className={`h-3.5 w-3.5 transition-transform ${showAdvanced ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7"/>
+            </svg>
+            Save credentials for automatic session renewal
+          </button>
+
+          {showAdvanced && (
+            <div className="mt-3 space-y-2">
+              <p className="text-xs text-gray-500">
+                Optional. If stored, the system will re-log in automatically whenever the session expires — no manual action needed.
+              </p>
+              {credSaved ? (
+                <p className="text-xs text-green-700 font-medium">✓ Credentials saved — auto-reconnect enabled</p>
+              ) : (
+                <>
+                  <input
+                    type="email"
+                    value={credEmail}
+                    onChange={e => setCredEmail(e.target.value)}
+                    placeholder="LinkedIn email"
+                    className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  <input
+                    type="password"
+                    value={credPassword}
+                    onChange={e => setCredPassword(e.target.value)}
+                    placeholder="LinkedIn password"
+                    className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  <input
+                    type="text"
+                    value={credTotp}
+                    onChange={e => setCredTotp(e.target.value)}
+                    placeholder="TOTP secret (optional — for auto 2FA)"
+                    className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                  />
+                  <button
+                    onClick={() => void handleSaveCredentials()}
+                    disabled={credSaving || !credEmail.trim() || !credPassword.trim()}
+                    className="w-full py-2 bg-gray-800 text-white text-sm font-medium rounded-lg hover:bg-gray-900 disabled:opacity-50 transition-colors"
+                  >
+                    {credSaving ? 'Saving…' : 'Save Credentials'}
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+
         <button type="button" onClick={onClose}
-          className="w-full py-2 border border-gray-300 text-sm font-medium rounded-lg hover:bg-gray-50 transition-colors">
+          className="w-full py-2 border border-gray-200 text-sm text-gray-600 font-medium rounded-xl hover:bg-gray-50 transition-colors">
           Cancel
         </button>
       </div>

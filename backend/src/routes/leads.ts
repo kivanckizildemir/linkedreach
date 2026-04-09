@@ -2,7 +2,7 @@ import { Router } from 'express'
 import type { Request, Response } from 'express'
 import { supabase } from '../lib/supabase'
 import { requireAuth } from '../middleware/auth'
-import { qualifyLeadsQueue, salesNavScraperQueue } from '../lib/queue'
+import { qualifyLeadsQueue, salesNavScraperQueue, profileEnrichQueue } from '../lib/queue'
 import { scrapeLinkedInProfiles } from '../lib/brightdata'
 import type { IcpFlag, LeadSource } from '../types'
 
@@ -72,6 +72,7 @@ leadsRouter.post('/', async (req: Request, res: Response) => {
     connection_degree,
     source,
     raw_data,
+    list_id,
   } = req.body as {
     linkedin_url: string
     first_name: string
@@ -83,6 +84,7 @@ leadsRouter.post('/', async (req: Request, res: Response) => {
     connection_degree?: number
     source?: LeadSource
     raw_data?: Record<string, unknown>
+    list_id?: string
   }
 
   if (!linkedin_url || !first_name || !last_name) {
@@ -104,6 +106,7 @@ leadsRouter.post('/', async (req: Request, res: Response) => {
       connection_degree: connection_degree ?? null,
       source: source ?? 'manual',
       raw_data: raw_data ?? null,
+      ...(list_id ? { list_id } : {}),
     })
     .select()
     .single()
@@ -143,12 +146,13 @@ leadsRouter.post('/import', async (req: Request, res: Response) => {
     source: 'excel_import' as LeadSource,
   }))
 
-  // Deduplicate: skip leads whose linkedin_url already exists
+  // Deduplicate: skip leads whose linkedin_url already exists for this user
   const urls = rows.map(r => r.linkedin_url)
   const { data: existing } = await supabase
     .from('leads')
     .select('linkedin_url')
     .in('linkedin_url', urls)
+    .eq('user_id', req.user.id)
   const existingUrls = new Set((existing ?? []).map((e: { linkedin_url: string }) => e.linkedin_url))
   const newRows = rows.filter(r => !existingUrls.has(r.linkedin_url))
 
@@ -262,7 +266,7 @@ leadsRouter.post('/import-profiles', async (req: Request, res: Response) => {
 
     const importUrls = rows.map(r => r.linkedin_url)
     const { data: existingImport } = await supabase
-      .from('leads').select('linkedin_url').in('linkedin_url', importUrls)
+      .from('leads').select('linkedin_url').in('linkedin_url', importUrls).eq('user_id', req.user.id)
     const existingImportUrls = new Set((existingImport ?? []).map((e: { linkedin_url: string }) => e.linkedin_url))
     const newImportRows = rows.filter(r => !existingImportUrls.has(r.linkedin_url))
 
@@ -310,11 +314,12 @@ leadsRouter.get('/scrape-status/:jobId', async (req: Request, res: Response) => 
 })
 
 // POST /api/leads/qualify-all — queue leads for AI (re-)qualification
-// Body: { force?: boolean, ids?: string[] }
+// Body: { force?: boolean, ids?: string[], list_id?: string }
 //   force=true  → re-score even already-scored leads
 //   ids         → limit to these lead IDs (selected or campaign subset)
+//   list_id     → limit to leads in this list (on-demand trigger when list is opened)
 leadsRouter.post('/qualify-all', async (req: Request, res: Response) => {
-  const { force, ids } = req.body as { force?: boolean; ids?: string[] }
+  const { force, ids, list_id } = req.body as { force?: boolean; ids?: string[]; list_id?: string }
 
   let query = supabase
     .from('leads')
@@ -323,6 +328,10 @@ leadsRouter.post('/qualify-all', async (req: Request, res: Response) => {
 
   if (ids && ids.length > 0) {
     query = query.in('id', ids)
+  }
+
+  if (list_id) {
+    query = query.eq('list_id', list_id)
   }
 
   if (!force) {
@@ -345,7 +354,13 @@ leadsRouter.post('/qualify-all', async (req: Request, res: Response) => {
   const jobs = leads.map((lead: { id: string }) => ({
     name: 'qualify',
     data: { lead_id: lead.id, user_id: req.user.id },
-    opts: { attempts: 2, backoff: { type: 'exponential', delay: 5000 } },
+    opts: {
+      attempts: 2,
+      backoff: { type: 'exponential', delay: 5000 },
+      // Stable jobId deduplicates — BullMQ silently drops duplicates already
+      // in the queue, preventing repeated triggers from flooding the worker.
+      jobId: `qualify-${lead.id}`,
+    },
   }))
   await qualifyLeadsQueue.addBulk(jobs)
 
@@ -414,7 +429,7 @@ leadsRouter.patch('/:id', async (req: Request, res: Response) => {
 leadsRouter.post('/:id/personalise', async (req: Request, res: Response) => {
   const { data: lead, error } = await supabase
     .from('leads')
-    .select('id, first_name, last_name, title, company, industry, raw_data')
+    .select('id, first_name, last_name, title, company, industry, raw_data, about, experience_description, skills, recent_posts')
     .eq('id', req.params.id)
     .eq('user_id', req.user.id)
     .single()
@@ -431,6 +446,10 @@ leadsRouter.post('/:id/personalise', async (req: Request, res: Response) => {
       title: lead.title ?? null,
       company: lead.company ?? null,
       industry: lead.industry ?? null,
+      about: (lead as { about?: string | null }).about ?? null,
+      experience_description: (lead as { experience_description?: string | null }).experience_description ?? null,
+      skills: (lead as { skills?: string[] | null }).skills ?? undefined,
+      recent_posts: (lead as { recent_posts?: string[] | null }).recent_posts ?? undefined,
     })
 
     // Save opening line into raw_data
@@ -496,6 +515,94 @@ leadsRouter.post('/bulk-delete', async (req: Request, res: Response) => {
   }
 
   res.json({ deleted: count ?? 0 })
+})
+
+// POST /api/leads/enrich-profiles
+leadsRouter.post('/enrich-profiles', async (req: Request, res: Response) => {
+  try {
+    const { list_id, lead_ids, account_id } = req.body as {
+      list_id?: string
+      lead_ids?: string[]
+      account_id: string
+    }
+
+    if (!account_id) return res.status(400).json({ error: 'account_id is required' })
+
+    let query = supabase
+      .from('leads')
+      .select('id, linkedin_url, first_name, last_name')
+      .eq('user_id', req.user.id)
+      .not('linkedin_url', 'is', null)
+
+    if (lead_ids && lead_ids.length > 0) {
+      query = query.in('id', lead_ids)
+    } else if (list_id) {
+      query = query.eq('list_id', list_id)
+    }
+
+    const { data: leads, error } = await query
+
+    if (error) return res.status(500).json({ error: error.message })
+    if (!leads || leads.length === 0) return res.status(400).json({ error: 'No leads with LinkedIn URLs found' })
+
+    const job = await profileEnrichQueue.add('enrich', {
+      lead_ids: leads.map(l => l.id),
+      account_id,
+      user_id: req.user.id,
+    }, {
+      attempts: 2,
+      backoff: { type: 'exponential', delay: 5000 },
+    })
+
+    return res.json({ job_id: job.id, count: leads.length })
+  } catch (err) {
+    return res.status(500).json({ error: (err as Error).message })
+  }
+})
+
+// GET /api/leads/enrich-status/:jobId
+leadsRouter.get('/enrich-status/:jobId', async (req: Request, res: Response) => {
+  try {
+    const job = await profileEnrichQueue.getJob(String(req.params.jobId))
+    if (!job) return res.status(404).json({ error: 'Job not found' })
+
+    const state = await job.getState()
+    const progress = job.progress as number
+
+    return res.json({ state, progress, result: job.returnvalue })
+  } catch (err) {
+    return res.status(500).json({ error: (err as Error).message })
+  }
+})
+
+// DELETE /api/leads/enrich-job/:jobId — cancel a running/queued enrich job
+leadsRouter.delete('/enrich-job/:jobId', async (req: Request, res: Response) => {
+  try {
+    const job = await profileEnrichQueue.getJob(String(req.params.jobId))
+    if (!job) return res.status(404).json({ error: 'Job not found' })
+    await job.remove()
+    return res.json({ ok: true })
+  } catch (err) {
+    return res.status(500).json({ error: (err as Error).message })
+  }
+})
+
+// POST /api/leads/qualify-cancel — drain pending qualify jobs for this user's leads
+leadsRouter.post('/qualify-cancel', async (req: Request, res: Response) => {
+  try {
+    const { lead_ids } = req.body as { lead_ids?: string[] }
+    if (!lead_ids || lead_ids.length === 0) return res.json({ removed: 0 })
+
+    const waiting = await qualifyLeadsQueue.getWaiting()
+    const delayed = await qualifyLeadsQueue.getDelayed()
+    const toRemove = [...waiting, ...delayed].filter(j =>
+      j.data?.lead_id && lead_ids.includes(j.data.lead_id)
+    )
+    await Promise.all(toRemove.map(j => j.remove().catch(() => null)))
+    return res.json({ removed: toRemove.length })
+  } catch (err) {
+    return res.status(500).json({ error: (err as Error).message })
+  }
 })
 
 // DELETE /api/leads/:id

@@ -1,34 +1,37 @@
 import type { Browser, BrowserContext, Page } from 'playwright'
-import { chromium as chromiumExtra } from 'playwright'
+import { chromium as chromiumExtra } from 'playwright-extra'
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const StealthPlugin = require('puppeteer-extra-plugin-stealth')
+chromiumExtra.use(StealthPlugin())
 import { supabase } from '../lib/supabase'
 import { SELECTORS } from './selectors'
+import * as fs from 'fs/promises'
+import * as path from 'path'
+import * as os from 'os'
 
-// Proxy config — set DISABLE_PROXY=true to bypass all proxies (local dev).
-//
-// Static residential proxy (priority 1 when per-account proxy not set):
-//   PROXY_HOST     = e.g. gate.provider.com
-//   PROXY_PORT     = e.g. 10000
-//   PROXY_USERNAME = your username
-//   PROXY_PASSWORD = your password
-//
-// Legacy BrightData rotating proxy (lower priority, kept for backwards-compat):
-//   BRIGHTDATA_PROXY_URL = http://brd-customer-XXXX-zone-ZONE:PASS@brd.superproxy.io:22225
+// Set DISABLE_PROXY=true to run without any proxy (local dev only).
 const DISABLE_PROXY = process.env.DISABLE_PROXY === 'true'
 
-function buildStaticProxySettings(): { server: string; username?: string; password?: string } | null {
-  const host = process.env.PROXY_HOST
-  const port = process.env.PROXY_PORT ?? '10000'
-  const user = process.env.PROXY_USERNAME
-  const pass = process.env.PROXY_PASSWORD
-  if (!host || !user) return null
-  return {
-    server:   `http://${host}:${port}`,
-    username: user,
-    password: pass || undefined,
-  }
+// ── Persistent profile directory ──────────────────────────────────────────────
+// Each account gets its own browser profile on disk. This preserves the full
+// browser identity (IndexedDB, localStorage, fingerprint data, cookies) across
+// browser launches. LinkedIn's Sales Navigator ties li_a to the specific browser
+// instance — a persistent profile means the same identity on every launch, so
+// li_a stays valid indefinitely without needing to re-login.
+export function getProfileDir(accountId: string): string {
+  const base = process.env.LINKEDIN_PROFILES_DIR
+    ?? path.join(os.homedir(), '.linkedin-profiles')
+  return path.join(base, accountId)
 }
 
-const BD_PROXY_URL = DISABLE_PROXY ? '' : (process.env.BRIGHTDATA_PROXY_URL ?? '')
+export async function profileDirExists(accountId: string): Promise<boolean> {
+  try {
+    await fs.access(getProfileDir(accountId))
+    return true
+  } catch {
+    return false
+  }
+}
 
 export interface AccountRecord {
   id: string
@@ -94,15 +97,13 @@ export async function createSession(account: AccountRecord): Promise<{
   let context: BrowserContext
 
   // ── Proxy resolution ────────────────────────────────────────────────────────
-  // Priority: account-level DB proxy → env BRIGHTDATA_PROXY_URL → no proxy.
-  // When using the env-level BrightData proxy we append a sticky-session suffix
-  // derived from the account ID so every action on the same account always
-  // routes through the same residential IP — this is the single biggest factor
-  // in keeping LinkedIn sessions alive (avoids "new device" rotation).
+  // Proxy comes exclusively from the account's proxy_id (set via the Proxies UI).
+  // We append a sticky-session tag derived from the account ID so the proxy
+  // provider always routes this account through the same residential IP —
+  // LinkedIn binds the session cookie to the login IP, so rotation = instant logout.
   let proxySettings: { server: string; username?: string; password?: string } | undefined
 
   if (!DISABLE_PROXY && account.proxy_id) {
-    // 1. Per-account proxy stored in the DB
     const { data: proxy } = await supabase
       .from('proxies')
       .select('proxy_url')
@@ -113,29 +114,7 @@ export async function createSession(account: AccountRecord): Promise<{
       const url = new URL((proxy as ProxyRecord).proxy_url)
       proxySettings = {
         server:   `${url.protocol}//${url.host}`,
-        username: url.username || undefined,
-        password: url.password || undefined,
-      }
-    }
-  } else if (!DISABLE_PROXY) {
-    // 2. Static residential proxy (PROXY_HOST / PROXY_PORT / PROXY_USERNAME / PROXY_PASSWORD)
-    //    — IP is always the same, no sticky-session suffix needed.
-    const staticProxy = buildStaticProxySettings()
-    if (staticProxy) {
-      proxySettings = staticProxy
-    } else if (BD_PROXY_URL) {
-      // 3. Legacy BrightData rotating proxy with sticky-session suffix
-      const url = new URL(BD_PROXY_URL)
-      const host = url.hostname
-      const port = url.port === '33335' ? '22225' : url.port
-      const sessionTag = account.id.replace(/-/g, '').slice(0, 8)
-      const baseUser   = decodeURIComponent(url.username)
-      const stickyUser = baseUser.includes('-session-')
-        ? baseUser
-        : `${baseUser}-session-${sessionTag}`
-      proxySettings = {
-        server:   `http://${host}:${port}`,
-        username: stickyUser,
+        username: decodeURIComponent(url.username) || undefined,
         password: decodeURIComponent(url.password) || undefined,
       }
     }
@@ -143,51 +122,143 @@ export async function createSession(account: AccountRecord): Promise<{
 
   const headless = process.env.PLAYWRIGHT_HEADLESS !== 'false'
 
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
-  browser = await chromiumExtra.launch({
-    headless,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-blink-features=AutomationControlled',
-      '--ignore-certificate-errors',
-    ],
-  }) as Browser
+  if (proxySettings) {
+    console.log(`[session] Using proxy: ${proxySettings.server} (user: ${proxySettings.username ?? 'none'})`)
+  } else {
+    console.log('[session] WARNING: No proxy configured — Playwright will use the raw server IP')
+  }
 
-  // ── Restore session state ───────────────────────────────────────────────────
-  // If we have a full Playwright storage_state (cookies + localStorage origins)
-  // pass it directly to newContext() — this is the proper API for full session
-  // restoration and ensures localStorage-backed LinkedIn state is preserved.
-  // Falls back to manually adding cookies for legacy cookie-array records.
-  const { state: fullState, cookiesOnly } = account.cookies
-    ? parseSessionData(account.cookies)
-    : { state: null, cookiesOnly: null }
+  const launchArgs = [
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-dev-shm-usage',
+    '--disable-blink-features=AutomationControlled',
+    '--ignore-certificate-errors',
+  ]
 
-  context = await browser.newContext({
+  const contextOptions = {
     proxy: proxySettings,
-    // storageState restores BOTH cookies AND localStorage when available
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    storageState: (fullState ?? undefined) as any,
     ignoreHTTPSErrors: true,
     userAgent:
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
       '(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    viewport: { width: 1280, height: 800 },
+    viewport: { width: 1280, height: 800 } as { width: number; height: number },
     locale: 'en-US',
-    extraHTTPHeaders: {
-      'Accept-Language': 'en-US,en;q=0.9',
-    },
-  })
-
-  // Legacy cookie-array path (no localStorage — sessions will be less stable)
-  if (!fullState && cookiesOnly && cookiesOnly.length > 0) {
-    await context.addCookies(cookiesOnly as Parameters<BrowserContext['addCookies']>[0])
+    extraHTTPHeaders: { 'Accept-Language': 'en-US,en;q=0.9' },
   }
 
-  const page = await context.newPage()
+  // ── Pre-flight: warn if stored li_at is already expired ──────────────────
+  if (account.cookies) {
+    const { state: checkState, cookiesOnly: checkOnly } = parseSessionData(account.cookies)
+    const allCookies = checkState?.cookies ?? (checkOnly as Array<{ name: string; expires?: number }> | null) ?? []
+    const liAt = allCookies.find((c: { name: string }) => c.name === 'li_at') as { name: string; expires?: number } | undefined
+    if (!liAt) {
+      console.warn(`[session] No li_at cookie in DB for ${account.id} — session may be expired before launch`)
+    } else if (liAt.expires && liAt.expires > 0 && liAt.expires * 1000 < Date.now()) {
+      console.warn(`[session] li_at cookie for ${account.id} expired at ${new Date(liAt.expires * 1000).toISOString()} — expect SESSION_EXPIRED`)
+    }
+  } else {
+    console.warn(`[session] No cookies stored for ${account.id}`)
+  }
 
-  // Additional stealth patches (no-op on Bright Data's browser, harmless)
+  const profileDir = getProfileDir(account.id)
+  const hasProfile = await profileDirExists(account.id)
+
+  if (hasProfile) {
+    // ── Persistent context path ─────────────────────────────────────────────
+    // Clean up Chrome singleton locks left by any previous crashed/zombie process
+    // before launching. Without this, Chrome detects a stale lock and either
+    // refuses to start or runs in a degraded state that crashes mid-session.
+    for (const lock of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
+      try { (await import('fs')).unlinkSync(`${profileDir}/${lock}`) } catch { /* already gone */ }
+    }
+    // Reuse the exact same browser profile that was created at login.
+    // This preserves IndexedDB, localStorage, cookies and browser fingerprint
+    // data across launches, which is required for li_a (Sales Navigator) to
+    // remain valid — LinkedIn ties li_a to the specific browser identity.
+    console.log(`[session] Using persistent profile: ${profileDir}`)
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+      context = await (chromiumExtra as any).launchPersistentContext(profileDir, {
+        headless,
+        args: launchArgs,
+        ...contextOptions,
+      }) as BrowserContext
+    } catch (profileErr) {
+      // Profile is corrupted or locked — clean singleton locks and retry once,
+      // then fall back to DB-cookie path so work isn't fully blocked.
+      console.warn(`[session] launchPersistentContext failed for ${account.id} (${(profileErr as Error).message}) — cleaning locks and retrying`)
+      for (const lock of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
+        try { (await import('fs')).unlinkSync(`${profileDir}/${lock}`) } catch { /* already gone */ }
+      }
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+        context = await (chromiumExtra as any).launchPersistentContext(profileDir, {
+          headless,
+          args: launchArgs,
+          ...contextOptions,
+        }) as BrowserContext
+        console.log(`[session] Retry launch succeeded for ${account.id}`)
+      } catch (retryErr) {
+        console.error(`[session] Profile retry also failed for ${account.id} (${(retryErr as Error).message}) — falling back to DB-cookie launch`)
+        // Fall back: launch fresh browser with cookies from DB
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+        browser = await chromiumExtra.launch({ headless, proxy: proxySettings, args: launchArgs }) as Browser
+        const { state: fullState, cookiesOnly } = account.cookies ? parseSessionData(account.cookies) : { state: null, cookiesOnly: null }
+        context = await browser.newContext({ storageState: (fullState ?? undefined) as any, ...contextOptions })
+        if (!fullState && cookiesOnly && (cookiesOnly as object[]).length > 0) {
+          await context.addCookies(cookiesOnly as Parameters<BrowserContext['addCookies']>[0])
+        }
+        const page = context.pages()[0] ?? await context.newPage()
+        await page.addInitScript(() => {
+          Object.defineProperty(navigator, 'webdriver', { get: () => undefined })
+          Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] })
+          Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] })
+          // @ts-ignore
+          window.chrome = { runtime: {} }
+        })
+        return { browser, context, page }
+      }
+    }
+
+    // launchPersistentContext returns a BrowserContext directly (no separate Browser).
+    // We expose a close() via a Browser-shaped wrapper so all callers can use
+    // the existing closeSession(browser) pattern unchanged.
+    const contextClose = context.close.bind(context)
+    browser = { close: contextClose } as unknown as Browser
+  } else {
+    // ── Legacy path: restore session from DB cookies ────────────────────────
+    // Used when no profile dir exists (first-time or cloud deployment).
+    console.log(`[session] No profile dir found — restoring session from DB cookies`)
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+    browser = await chromiumExtra.launch({
+      headless,
+      proxy: proxySettings,
+      args: launchArgs,
+    }) as Browser
+
+    const { state: fullState, cookiesOnly } = account.cookies
+      ? parseSessionData(account.cookies)
+      : { state: null, cookiesOnly: null }
+
+    if (!fullState && !cookiesOnly) {
+      console.warn(`[session] No valid cookies to restore for ${account.id} — launching with empty session`)
+    }
+
+    context = await browser.newContext({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      storageState: (fullState ?? undefined) as any,
+      ...contextOptions,
+    })
+
+    if (!fullState && cookiesOnly && cookiesOnly.length > 0) {
+      await context.addCookies(cookiesOnly as Parameters<BrowserContext['addCookies']>[0])
+    }
+  }
+
+  const page = context.pages()[0] ?? await context.newPage()
+
+  // Stealth patches
   await page.addInitScript(() => {
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined })
     Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] })
@@ -208,13 +279,28 @@ export async function closeSession(browser: Browser): Promise<void> {
  * back to the DB after a session.  This is what you pass back in on the next
  * createSession() call — storing everything (not just cookies) is what keeps
  * LinkedIn sessions alive across requests.
+ * Returns true if the save succeeded.
  */
-export async function persistCookies(context: BrowserContext, accountId: string): Promise<void> {
-  const state = await context.storageState()
-  await supabase
-    .from('linkedin_accounts')
-    .update({ cookies: JSON.stringify(state) })
-    .eq('id', accountId)
+export async function persistCookies(context: BrowserContext, accountId: string): Promise<boolean> {
+  try {
+    const state = await context.storageState()
+    const liAt = state.cookies.find(c => c.name === 'li_at')
+    if (!liAt) {
+      console.warn(`[session] persistCookies: no li_at cookie found for ${accountId} — session may already be expired`)
+    }
+    const { error } = await supabase
+      .from('linkedin_accounts')
+      .update({ cookies: JSON.stringify(state) })
+      .eq('id', accountId)
+    if (error) {
+      console.error(`[session] persistCookies: failed to save cookies for ${accountId}: ${error.message}`)
+      return false
+    }
+    return true
+  } catch (err) {
+    console.error(`[session] persistCookies: exception for ${accountId}: ${(err as Error).message}`)
+    return false
+  }
 }
 
 /**
@@ -224,16 +310,19 @@ export async function persistCookies(context: BrowserContext, accountId: string)
 export async function detectAndHandleChallenge(page: Page, accountId: string): Promise<void> {
   const url = page.url()
   const isCaptcha  = url.includes('/checkpoint') || url.includes('/challenge')
+                  || url.includes('/authwall')
+  const isVerify   = url.includes('/verify') || url.includes('/verification')
+                  || url.includes('/security-verification')
   const isLogin    = url.includes('/login') || url.includes('/uas/login') || url.includes('/sales/login')
-  const hasPinForm = await page.$(SELECTORS.security.pinChallenge).then(el => !!el)
+  const hasPinForm = await page.$(SELECTORS.security.pinChallenge).then(el => !!el).catch(() => false)
 
-  if (isCaptcha || hasPinForm) {
+  if (isCaptcha || isVerify || hasPinForm) {
     await supabase
       .from('linkedin_accounts')
       .update({ status: 'paused' })
       .eq('id', accountId)
 
-    throw new Error(`SECURITY_CHALLENGE: Account ${accountId} paused — manual intervention required`)
+    throw new Error(`SECURITY_CHALLENGE: Account ${accountId} paused — manual intervention required (URL: ${url.substring(0, 80)})`)
   }
 
   if (isLogin) {
@@ -255,7 +344,7 @@ export async function safeNavigate(page: Page, url: string, accountId: string): 
     if (msg.includes('ERR_TUNNEL_CONNECTION_FAILED') || msg.includes('ERR_PROXY_CONNECTION_FAILED')) {
       throw new Error(
         'PROXY_ERROR: Could not connect through the proxy. ' +
-        'Check that your Bright Data proxy credentials are correct in the BRIGHTDATA_PROXY_URL environment variable, ' +
+        'Check that your proxy credentials are correct in the Proxies settings, ' +
         'or set DISABLE_PROXY=true to run without a proxy (not recommended in production).'
       )
     }

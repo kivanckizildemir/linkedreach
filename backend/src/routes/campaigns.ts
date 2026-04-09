@@ -2,6 +2,8 @@ import { Router } from 'express'
 import type { Request, Response } from 'express'
 import { supabase } from '../lib/supabase'
 import { requireAuth } from '../middleware/auth'
+import { scoreEngagement } from '../ai/engagementScore'
+import { extractAudienceFromProducts } from '../ai/extractAudience'
 import type { CampaignStatus } from '../types'
 
 export const campaignsRouter = Router()
@@ -22,6 +24,25 @@ campaignsRouter.get('/', async (req: Request, res: Response) => {
   }
 
   res.json({ data })
+})
+
+// POST /api/campaigns/extract-audience — AI-extract target audience from products
+campaignsRouter.post('/extract-audience', async (req: Request, res: Response) => {
+  const { products } = req.body as {
+    products: Array<{ name: string; one_liner?: string; description?: string; target_use_case?: string }>
+  }
+
+  if (!Array.isArray(products) || products.length === 0) {
+    res.status(400).json({ error: 'products array is required' })
+    return
+  }
+
+  try {
+    const suggestion = await extractAudienceFromProducts(products)
+    res.json({ data: suggestion })
+  } catch (e) {
+    res.status(500).json({ error: (e as Error).message })
+  }
 })
 
 // GET /api/campaigns/:id — includes sequences
@@ -114,6 +135,7 @@ campaignsRouter.patch('/:id', async (req: Request, res: Response) => {
     'account_id',
     'min_icp_score',
     'connection_note',
+    'target_audience',
     'product_id',
   ] as const
   type AllowedKey = (typeof allowed)[number]
@@ -209,6 +231,8 @@ campaignsRouter.get('/:id/leads', async (req: Request, res: Response) => {
       last_action_at,
       reply_classification,
       account_id,
+      campaign_fit_score,
+      campaign_fit_reasoning,
       created_at,
       lead:leads (
         id, first_name, last_name, title, company, industry, location,
@@ -314,4 +338,48 @@ campaignsRouter.delete('/:id/leads/:clId', async (req: Request, res: Response) =
   }
 
   res.status(204).send()
+})
+
+// POST /api/campaigns/:id/score-engagement — recalculate engagement scores for all (or selected) leads
+campaignsRouter.post('/:id/score-engagement', async (req: Request, res: Response) => {
+  // Verify campaign ownership
+  const { data: campaign, error: campErr } = await supabase
+    .from('campaigns')
+    .select('id, user_id')
+    .eq('id', req.params.id)
+    .eq('user_id', req.user.id)
+    .single()
+
+  if (campErr || !campaign) {
+    res.status(404).json({ error: 'Campaign not found' })
+    return
+  }
+
+  // Fetch campaign leads (optionally filtered by specific IDs)
+  const campaign_lead_ids = (req.body as { campaign_lead_ids?: string[] } | undefined)?.campaign_lead_ids
+  let query = supabase
+    .from('campaign_leads')
+    .select('id')
+    .eq('campaign_id', req.params.id)
+  if (Array.isArray(campaign_lead_ids) && campaign_lead_ids.length > 0) {
+    query = query.in('id', campaign_lead_ids)
+  }
+  const { data: clRows, error: clErr } = await query
+
+  if (clErr || !clRows) {
+    res.status(500).json({ error: clErr?.message ?? 'Failed to fetch campaign leads' })
+    return
+  }
+
+  let scored = 0
+  for (const cl of clRows as Array<{ id: string }>) {
+    try {
+      await scoreEngagement(cl.id)
+      scored++
+    } catch (e) {
+      console.warn(`[score-engagement] Failed for campaign_lead ${cl.id}:`, (e as Error).message)
+    }
+  }
+
+  res.json({ scored, total: clRows.length })
 })

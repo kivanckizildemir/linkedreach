@@ -7,7 +7,13 @@
  * boot won't crash the server or fail the healthcheck.
  */
 import dotenv from 'dotenv'
-dotenv.config()
+
+// dotenv.config() loads vars, but dotenvx (if globally installed) may withhold
+// API keys from process.env. Explicitly populate any missing vars from the parsed result.
+const parsed = dotenv.config().parsed ?? {}
+for (const [key, value] of Object.entries(parsed)) {
+  if (!process.env[key]) process.env[key] = value
+}
 
 // Start HTTP server first — healthcheck must pass before workers load
 import './index'

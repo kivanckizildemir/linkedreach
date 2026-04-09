@@ -25,6 +25,26 @@ export const qualifyWorker = new Worker<QualifyJob>(
       throw new Error(`Lead ${lead_id} not found`)
     }
 
+    // Resolve list name or campaign name for logging
+    let contextLabel = '(no list)'
+    if (lead.list_id) {
+      const { data: list } = await supabase
+        .from('lead_lists')
+        .select('name')
+        .eq('id', lead.list_id)
+        .single()
+      contextLabel = list?.name ? `list="${list.name}"` : `list=${lead.list_id}`
+    } else if (lead.campaign_id) {
+      const { data: campaign } = await supabase
+        .from('campaigns')
+        .select('name')
+        .eq('id', lead.campaign_id)
+        .single()
+      contextLabel = campaign?.name ? `campaign="${campaign.name}"` : `campaign=${lead.campaign_id}`
+    }
+
+    const leadName = `${lead.first_name ?? ''} ${lead.last_name ?? ''}`.trim() || lead_id
+
     // Use user-level ICP config from settings, fallback to first active campaign's config
     const [settingsRes, campaignsRes] = await Promise.all([
       supabase.from('user_settings').select('icp_config').eq('user_id', user_id).maybeSingle(),
@@ -72,12 +92,18 @@ export const qualifyWorker = new Worker<QualifyJob>(
       })
       .eq('id', lead_id)
 
-    console.log(`[qualify] Lead ${lead_id}: score=${result.score} flag=${result.flag}`)
+    console.log(`[qualify] "${leadName}" [${contextLabel}]: score=${result.score} flag=${result.flag}`)
     return result
   },
   {
     connection,
-    concurrency: 3,
+    // Keep concurrency low — Claude API allows 50 req/min; at ~2s per call,
+    // concurrency 2 ≈ 60 req/min. The limiter below caps us safely at 40/min.
+    concurrency: 2,
+    limiter: {
+      max: 40,
+      duration: 60_000,
+    },
   }
 )
 

@@ -1,6 +1,10 @@
 import Anthropic from '@anthropic-ai/sdk'
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+let _client: Anthropic | null = null
+function getClient(): Anthropic {
+  if (!_client) _client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+  return _client
+}
 
 export interface SuggestResult {
   suggestions: string[]
@@ -40,7 +44,7 @@ Respond ONLY with valid JSON in this exact format:
   ]
 }`
 
-  const message = await client.messages.create({
+  const message = await getClient().messages.create({
     model: 'claude-sonnet-4-20250514',
     max_tokens: 512,
     messages: [{ role: 'user', content: prompt }],

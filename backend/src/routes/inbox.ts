@@ -8,6 +8,7 @@ import { sendMessage } from '../linkedin/actions'
 import { suggestReplies } from '../ai/suggest'
 import { handleUnsubscribe } from '../ai/unsubscribe'
 import { classifyReply } from '../ai/classify'
+import { scoreEngagement } from '../ai/engagementScore'
 
 export const inboxRouter = Router()
 
@@ -259,6 +260,9 @@ inboxRouter.post('/:campaignLeadId/receive', async (req: Request, res: Response)
         .eq('id', req.params.campaignLeadId)
     }
   }).catch(console.error)
+
+  // Recalculate engagement score (fire-and-forget)
+  scoreEngagement(String(req.params.campaignLeadId)).catch(console.error)
 
   res.status(201).json({ data: msg })
 })
