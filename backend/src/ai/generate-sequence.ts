@@ -35,7 +35,7 @@ Use these in message_template: {{firstName}}, {{lastName}}, {{company}}, {{jobTi
 - view_profile should almost always be the first step
 - connect must come before message
 - Every branch (main, if_yes, if_no) must terminate with an end step
-- wait_days accepts decimals for hours (e.g. 0.5 = 12 hours)
+- wait_days must be a whole integer number of days (minimum 1) — no decimals
 - For now, keep sequences linear (no fork steps) unless the user explicitly asks for branching
 
 ## LinkedIn best practices you must follow

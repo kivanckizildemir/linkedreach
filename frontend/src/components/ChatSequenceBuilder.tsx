@@ -108,7 +108,7 @@ export function ChatSequenceBuilder({ campaignId, sequenceId, onClose, onApplied
           step_order:         step.step_order,
           message_template:   step.message_template,
           subject:            step.subject,
-          wait_days:          step.wait_days,
+          wait_days:          step.wait_days != null ? Math.max(1, Math.round(step.wait_days)) : null,
           ai_generation_mode: step.ai_generation_mode ?? false,
           condition:          step.condition ?? null,
           parent_step_id:     step.parent_step_id ?? null,
