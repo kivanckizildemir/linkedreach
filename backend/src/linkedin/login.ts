@@ -278,13 +278,16 @@ async function resolveProxy(accountId: string): Promise<
       .single()
     if (proxy) {
       const raw = (proxy as { proxy_url: string }).proxy_url
-      const normalized = /^https?:\/\//i.test(raw) ? raw : `http://${raw}`
+      // Support http://, https://, socks4://, socks5:// — only prepend http:// for bare host:port strings
+      const normalized = /^(https?|socks[45]):\/\//i.test(raw) ? raw : `http://${raw}`
       const url = new URL(normalized)
-      return {
+      const resolved = {
         server:   `${url.protocol}//${url.host}`,
         username: decodeURIComponent(url.username) || undefined,
         password: decodeURIComponent(url.password) || undefined,
       }
+      console.log(`[login] resolveProxy: using DB proxy for account ${accountId} — server=${resolved.server} user=${resolved.username ?? '(none)'}`)
+      return resolved
     }
   }
 
@@ -301,13 +304,16 @@ async function resolveProxy(accountId: string): Promise<
     // BrightData: port 33335 is SSL-only and Chromium doesn't support
     // SSL proxy servers. Always connect via the plain HTTP port 22225.
     const proxyPort = host.includes('superproxy.io') ? '22225' : port
-    return {
+    const envResolved = {
       server:   `http://${host}:${proxyPort}`,
       username,
       password: decodeURIComponent(url.password) || undefined,
     }
+    console.log(`[login] resolveProxy: using env-var proxy for account ${accountId} — server=${envResolved.server} user=${envResolved.username ?? '(none)'}`)
+    return envResolved
   }
 
+  console.log(`[login] resolveProxy: NO proxy configured for account ${accountId} — set proxy in Accounts & Proxies or via PROXY_HOST env var`)
   return undefined
 }
 
@@ -450,7 +456,8 @@ async function runLogin(key: string, email: string, password: string): Promise<v
           if (isProxyError) {
             throw new Error(
               `Proxy cannot reach LinkedIn after 3 attempts (${msg.substring(0, 200)}). ` +
-              `Check that PROXY_HOST, PROXY_PORT, PROXY_USERNAME, PROXY_PASSWORD are set correctly in Railway environment variables.`
+              `Check that a proxy is assigned to this account under Accounts & Proxies and the credentials are valid. ` +
+              `If using env-var proxy, verify PROXY_HOST / PROXY_USERNAME / PROXY_PASSWORD in Railway.`
             )
           }
           throw gotoErr

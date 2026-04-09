@@ -24,12 +24,18 @@ function maskUrl(raw: string): string {
  * Uses the same HttpsProxyAgent approach as the rest of the app.
  */
 async function testProxyUrl(rawUrl: string): Promise<{ ok: boolean; result: string }> {
-  // Auto-prepend http:// if no scheme given
-  const proxyUrl = /^https?:\/\//i.test(rawUrl) ? rawUrl : `http://${rawUrl}`
+  // Auto-prepend http:// if no scheme given; preserve socks4:// and socks5:// as-is
+  const proxyUrl = /^(https?|socks[45]):\/\//i.test(rawUrl) ? rawUrl : `http://${rawUrl}`
   try {
     new URL(proxyUrl)
   } catch (e) {
     return { ok: false, result: `INVALID_URL: ${(e as Error).message}` }
+  }
+
+  // undici's ProxyAgent supports HTTP/HTTPS CONNECT only, not SOCKS.
+  // For SOCKS proxies we skip the ipify test and report success-pending-verification.
+  if (/^socks[45]:\/\//i.test(proxyUrl)) {
+    return { ok: true, result: 'SOCKS proxy stored — connection will be verified during LinkedIn login' }
   }
 
   const agent = new ProxyAgent(proxyUrl)
@@ -73,9 +79,10 @@ proxiesRouter.post('/', async (req: Request, res: Response) => {
 
   if (!proxy_url) { res.status(400).json({ error: 'proxy_url is required' }); return }
 
-  const normalizedUrl = /^https?:\/\//i.test(proxy_url) ? proxy_url : `http://${proxy_url}`
+  // Preserve socks4:// and socks5:// schemes; only prepend http:// for bare host:port strings
+  const normalizedUrl = /^(https?|socks[45]):\/\//i.test(proxy_url) ? proxy_url : `http://${proxy_url}`
   try { new URL(normalizedUrl) } catch {
-    res.status(400).json({ error: 'Invalid proxy URL. Format: user:pass@host:port or http://user:pass@host:port' })
+    res.status(400).json({ error: 'Invalid proxy URL. Format: user:pass@host:port, http://user:pass@host:port, or socks5://user:pass@host:port' })
     return
   }
 
