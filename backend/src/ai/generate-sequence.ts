@@ -62,9 +62,16 @@ The JSON schema for each step:
   "parent_step_id": null
 }
 
-For react_post steps, condition must be: { "reaction": "like" } (or celebrate/love/insightful/curious)
-For wait steps, condition can include: { "wait_unit": "days" }
-For fork branches: steps on "if_yes" or "if_no" branches MUST set parent_step_id to the step_order INTEGER of their fork step (e.g. if fork is step_order 4, branch steps use parent_step_id: 4). The platform resolves this to the real DB UUID on apply.
+Condition field rules (MUST follow exactly):
+- react_post → condition: { "reaction": "like" }  (or celebrate / love / insightful / curious)
+- wait       → condition: { "wait_unit": "days" }
+- fork       → condition: { "type": "replied" }  (or "connected") — this is what the canvas reads
+- all others → condition: null
+
+Fork branch wiring:
+- Steps on "if_yes" or "if_no" branches MUST set parent_step_id to the step_order INTEGER of their fork step
+  (e.g. fork is step_order 4 → branch steps use parent_step_id: 4). The platform resolves this to the real UUID.
+- Every branch (main, if_yes, if_no) MUST end with an "end" step — do not omit them.
 
 Only emit the \`\`\`sequence-json block when proposing a complete buildable sequence. For clarifying questions, feedback, or partial edits, just reply in plain text.
 

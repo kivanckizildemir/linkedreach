@@ -15,6 +15,28 @@ import {
 } from '../api/campaigns'
 import { clearSteps, createStep, type StepType, type Branch } from '../api/sequences'
 
+// ── Condition normaliser ──────────────────────────────────────────────────────
+// Ensures conditions are in the exact format the canvas expects regardless of
+// what the AI returned (it sometimes varies the field names).
+function normaliseCondition(
+  type: string,
+  condition: Record<string, unknown> | null | undefined,
+): Record<string, unknown> | null {
+  if (type === 'fork') {
+    // Canvas reads condition.type → { type: "replied" | "connected" }
+    const raw = condition?.type ?? condition?.fork_condition ?? condition?.condition ?? 'replied'
+    return { type: String(raw) }
+  }
+  if (type === 'react_post') {
+    const reaction = condition?.reaction ?? 'like'
+    return { reaction: String(reaction) }
+  }
+  if (type === 'wait') {
+    return { wait_unit: 'days', ...(condition ?? {}) }
+  }
+  return condition ?? null
+}
+
 // ── Step type metadata (matches SequenceBuilder) ─────────────────────────────
 const STEP_META: Record<string, { icon: string; label: string; color: string }> = {
   view_profile: { icon: '👁️',  label: 'View Profile',   color: '#3B82F6' },
@@ -134,7 +156,7 @@ export function ChatSequenceBuilder({ campaignId, sequenceId, onClose, onApplied
           subject:            step.subject,
           wait_days:          step.wait_days != null ? Math.max(1, Math.round(step.wait_days)) : null,
           ai_generation_mode: step.ai_generation_mode ?? false,
-          condition:          step.condition ?? null,
+          condition:          normaliseCondition(step.type, step.condition),
           parent_step_id:     resolvedParentId,
         })
 
@@ -151,10 +173,15 @@ export function ChatSequenceBuilder({ campaignId, sequenceId, onClose, onApplied
       }])
       onApplied()
     },
-    onError: (err: Error) => {
+    onError: async (err: Error) => {
+      // Clean up any partially-inserted steps so the sequence isn't left in a broken state
+      if (sequenceId) {
+        try { await clearSteps(sequenceId) } catch { /* best-effort */ }
+      }
+      void queryClient.invalidateQueries({ queryKey: ['sequences', campaignId] })
       setMessages(prev => [...prev, {
         role: 'assistant',
-        content: `❌ Failed to apply: ${err.message}`,
+        content: `❌ Failed to apply: ${err.message}. The sequence has been reset — try again or adjust the prompt.`,
         isError: true,
       }])
     },

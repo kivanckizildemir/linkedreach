@@ -1298,10 +1298,14 @@ export function FlowCanvas({ sequence, campaignId }: { sequence: Sequence; campa
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([])
   const [steps, setSteps] = useState<SequenceStep[]>(sequence.sequence_steps)
 
-  // Sync steps whenever the sequence prop is updated externally (e.g. after AI apply)
+  // Sync steps when the set of step IDs changes (e.g. after AI apply adds/removes steps).
+  // Using a sorted ID fingerprint avoids overwriting in-flight local edits that only
+  // change step fields (text, wait_days, etc.) without adding or removing steps.
+  const stepIdFingerprint = sequence.sequence_steps.map(s => s.id).sort().join(',')
   useEffect(() => {
     setSteps(sequence.sequence_steps ?? [])
-  }, [sequence])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stepIdFingerprint])
 
   const [editingStep, setEditingStep] = useState<SequenceStep | null>(null)
   const [testingStep, setTestingStep] = useState<SequenceStep | null>(null)

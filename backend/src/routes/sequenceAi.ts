@@ -326,7 +326,7 @@ async function createStepsFromTree(
     const conditionPayload: Record<string, unknown> = {}
     if (stepType === 'wait')    conditionPayload.wait_days = def.wait_days ?? 3
     if (stepType === 'connect') conditionPayload.include_note = def.has_note ?? false
-    if (stepType === 'fork')    conditionPayload.fork_condition = def.condition ?? 'connected'
+    if (stepType === 'fork')    conditionPayload.type = def.condition ?? 'connected'
 
     // In AI automated mode: store guidance params in condition field for message steps
     if (isMessageStep && defaultAiMode) {
