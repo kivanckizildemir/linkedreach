@@ -113,25 +113,34 @@ export async function chatGenerateSequence(
 
   const response = await client.messages.create({
     model:      'claude-sonnet-4-20250514',
-    max_tokens: 2048,
+    max_tokens: 8192,
     system:     SYSTEM_PROMPT,
     messages:   apiMessages,
   })
 
   const raw = response.content[0].type === 'text' ? response.content[0].text : ''
 
-  // Extract the fenced sequence-json block if present
-  const jsonMatch = raw.match(/```sequence-json\n([\s\S]*?)\n```/)
+  // Extract the fenced sequence-json block — handle both closed and truncated fences
+  const jsonMatch = raw.match(/```sequence-json\n([\s\S]*?)(?:\n```|$)/)
   let steps: GeneratedStep[] | null = null
+  let parseError: string | null = null
   if (jsonMatch) {
     try {
       const parsed = JSON.parse(jsonMatch[1]) as unknown
       if (Array.isArray(parsed)) steps = parsed as GeneratedStep[]
-    } catch { /* malformed JSON — return null */ }
+    } catch {
+      parseError = 'The sequence JSON was too long and got cut off. Try asking for a shorter sequence (10–12 steps max).'
+    }
   }
 
-  // Strip the code block from the conversational reply
-  const reply = raw.replace(/```sequence-json\n[\s\S]*?\n```/g, '').replace(/\n{3,}/g, '\n\n').trim()
+  // Always strip the code block from the conversational reply (even if malformed)
+  const reply = (
+    raw
+      .replace(/```sequence-json[\s\S]*?(?:\n```|$)/g, '')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim() +
+    (parseError ? `\n\n⚠️ ${parseError}` : '')
+  )
 
   return { reply, steps }
 }
