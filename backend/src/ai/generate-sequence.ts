@@ -64,6 +64,7 @@ The JSON schema for each step:
 
 For react_post steps, condition must be: { "reaction": "like" } (or celebrate/love/insightful/curious)
 For wait steps, condition can include: { "wait_unit": "days" }
+For fork branches: steps on "if_yes" or "if_no" branches MUST set parent_step_id to the step_order INTEGER of their fork step (e.g. if fork is step_order 4, branch steps use parent_step_id: 4). The platform resolves this to the real DB UUID on apply.
 
 Only emit the \`\`\`sequence-json block when proposing a complete buildable sequence. For clarifying questions, feedback, or partial edits, just reply in plain text.
 

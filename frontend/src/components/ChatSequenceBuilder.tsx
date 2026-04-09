@@ -101,8 +101,32 @@ export function ChatSequenceBuilder({ campaignId, sequenceId, onClose, onApplied
     mutationFn: async (steps: GeneratedStep[]) => {
       if (!sequenceId) throw new Error('No sequence found. Create a sequence first.')
       await clearSteps(sequenceId)
+
+      // Map step_order → real DB UUID so branch steps can reference their parent fork
+      const idByOrder = new Map<number, string>()
+      // Also track fork UUIDs by step_order for auto-wiring if_yes/if_no steps
+      const forkIdByOrder = new Map<number, string>()
+
       for (const step of steps) {
-        await createStep(sequenceId, {
+        // Resolve parent_step_id:
+        // 1. AI may pass a step_order integer as parent_step_id — resolve to DB UUID
+        // 2. branch steps (if_yes / if_no) with no parent → find the nearest fork above them
+        let resolvedParentId: string | null = null
+
+        if (typeof step.parent_step_id === 'number') {
+          resolvedParentId = idByOrder.get(step.parent_step_id as number) ?? null
+        } else if (step.parent_step_id) {
+          resolvedParentId = step.parent_step_id
+        } else if (step.branch === 'if_yes' || step.branch === 'if_no') {
+          // Auto-wire: find the highest fork step_order below this step's order
+          let bestForkOrder = -1
+          for (const [order] of forkIdByOrder) {
+            if (order < step.step_order && order > bestForkOrder) bestForkOrder = order
+          }
+          if (bestForkOrder >= 0) resolvedParentId = forkIdByOrder.get(bestForkOrder) ?? null
+        }
+
+        const created = await createStep(sequenceId, {
           type:               step.type as StepType,
           branch:             (step.branch ?? 'main') as Branch,
           step_order:         step.step_order,
@@ -111,8 +135,11 @@ export function ChatSequenceBuilder({ campaignId, sequenceId, onClose, onApplied
           wait_days:          step.wait_days != null ? Math.max(1, Math.round(step.wait_days)) : null,
           ai_generation_mode: step.ai_generation_mode ?? false,
           condition:          step.condition ?? null,
-          parent_step_id:     step.parent_step_id ?? null,
+          parent_step_id:     resolvedParentId,
         })
+
+        idByOrder.set(step.step_order, created.id)
+        if (step.type === 'fork') forkIdByOrder.set(step.step_order, created.id)
       }
     },
     onSuccess: () => {
