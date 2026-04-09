@@ -406,25 +406,110 @@ async function runLogin(key: string, email: string, password: string): Promise<v
           '--disable-blink-features=AutomationControlled',
           '--ignore-certificate-errors',
           '--ignore-certificate-errors-spki-list',
+          // Helps in constrained cloud environments
+          '--disable-gpu',
+          '--disable-software-rasterizer',
+          '--disable-background-networking',
+          '--disable-extensions',
+          '--disable-sync',
+          '--no-first-run',
+          '--no-default-browser-check',
+          '--password-store=basic',
+          '--use-mock-keychain',
         ],
       }) as Browser
 
+      // Keep UA in sync with sec-ch-ua below — both must reflect the same Chrome build
+      const CHROME_VERSION = '131'
+      const USER_AGENT =
+        `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ` +
+        `(KHTML, like Gecko) Chrome/${CHROME_VERSION}.0.0.0 Safari/537.36`
+
       context = await browser.newContext({
         proxy:             proxy ?? undefined,
-        userAgent:
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
-          '(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        userAgent:         USER_AGENT,
         viewport:          { width: 1280, height: 800 },
         locale:            'en-US',
         ignoreHTTPSErrors: true,
+        // Client Hints — real Chrome always sends these; missing = bot signal
+        extraHTTPHeaders: {
+          'accept-language':     'en-US,en;q=0.9',
+          'sec-ch-ua':           `"Google Chrome";v="${CHROME_VERSION}", "Chromium";v="${CHROME_VERSION}", "Not_A Brand";v="24"`,
+          'sec-ch-ua-mobile':    '?0',
+          'sec-ch-ua-platform':  '"Windows"',
+        },
       })
 
+      // Comprehensive stealth patches — run before any page script executes
       await context.addInitScript(() => {
-        Object.defineProperty(navigator, 'webdriver', { get: () => undefined })
-        Object.defineProperty(navigator, 'plugins',   { get: () => [1, 2, 3, 4, 5] })
+        // 1. Remove webdriver flag (primary Playwright fingerprint)
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined, configurable: true })
+
+        // 2. Realistic navigator properties
+        Object.defineProperty(navigator, 'vendor',   { get: () => 'Google Inc.' })
+        Object.defineProperty(navigator, 'platform', { get: () => 'Win32' })
         Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] })
-        // @ts-ignore
-        window.chrome = { runtime: {} }
+        Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 })
+        Object.defineProperty(navigator, 'deviceMemory',        { get: () => 8 })
+
+        // 3. Realistic plugin list (empty plugins list = headless signal)
+        const makePlugin = (name: string, filename: string, desc: string, mimeTypes: string[]) => {
+          const plugin = { name, filename, description: desc, length: mimeTypes.length } as unknown as Plugin
+          mimeTypes.forEach((m, i) => {
+            const mt = { type: m, suffixes: '', description: '', enabledPlugin: plugin } as unknown as MimeType
+            ;(plugin as unknown as Record<string, unknown>)[i] = mt
+          })
+          return plugin
+        }
+        const plugins = [
+          makePlugin('PDF Viewer', 'internal-pdf-viewer', 'Portable Document Format', ['application/pdf', 'text/pdf']),
+          makePlugin('Chrome PDF Viewer', 'internal-pdf-viewer', '', ['application/pdf']),
+          makePlugin('Chromium PDF Viewer', 'internal-pdf-viewer', '', ['application/pdf']),
+          makePlugin('Microsoft Edge PDF Viewer', 'internal-pdf-viewer', '', ['application/pdf']),
+          makePlugin('WebKit built-in PDF', 'internal-pdf-viewer', '', ['application/pdf']),
+        ]
+        Object.defineProperty(navigator, 'plugins', {
+          get: () => Object.assign(plugins, { item: (i: number) => plugins[i], namedItem: (n: string) => plugins.find(p => p.name === n) ?? null, refresh: () => {} })
+        })
+        Object.defineProperty(navigator, 'mimeTypes', {
+          get: () => {
+            const mimes = [{ type: 'application/pdf', suffixes: 'pdf', description: '', enabledPlugin: plugins[0] }]
+            return Object.assign(mimes, { item: (i: number) => mimes[i], namedItem: (n: string) => mimes.find(m => m.type === n) ?? null })
+          }
+        })
+
+        // 4. Realistic chrome object
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ;(window as any).chrome = {
+          app: { isInstalled: false, InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' }, RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' } },
+          runtime: {
+            PlatformOs: { MAC: 'mac', WIN: 'win', ANDROID: 'android', CROS: 'cros', LINUX: 'linux', OPENBSD: 'openbsd' },
+            PlatformArch: { ARM: 'arm', X86_32: 'x86-32', X86_64: 'x86-64', MIPS: 'mips', MIPS64: 'mips64' },
+            RequestUpdateCheckStatus: { THROTTLED: 'throttled', NO_UPDATE: 'no_update', UPDATE_AVAILABLE: 'update_available' },
+            OnInstalledReason: { INSTALL: 'install', UPDATE: 'update', CHROME_UPDATE: 'chrome_update', SHARED_MODULE_UPDATE: 'shared_module_update' },
+            OnRestartRequiredReason: { APP_UPDATE: 'app_update', OS_UPDATE: 'os_update', PERIODIC: 'periodic' },
+          },
+          loadTimes: () => ({ requestTime: Date.now() / 1000, startLoadTime: Date.now() / 1000, commitLoadTime: Date.now() / 1000, finishDocumentLoadTime: 0, finishLoadTime: 0, firstPaintTime: 0, firstPaintAfterLoadTime: 0, navigationType: 'Other', wasFetchedViaSpdy: false, wasNpnNegotiated: false, npnNegotiatedProtocol: 'unknown', wasAlternateProtocolAvailable: false, connectionInfo: 'http/1.1' }),
+          csi: () => ({ startE: Date.now(), onloadT: Date.now(), pageT: Date.now() - performance.timing?.navigationStart, tran: 15 }),
+        }
+
+        // 5. Permissions — headless returns wrong values for some checks
+        const origQuery = navigator.permissions?.query?.bind(navigator.permissions)
+        if (origQuery) {
+          Object.defineProperty(navigator.permissions, 'query', {
+            value: (params: PermissionDescriptor) =>
+              params.name === 'notifications'
+                ? Promise.resolve({ state: 'prompt', onchange: null } as PermissionStatus)
+                : origQuery(params)
+          })
+        }
+
+        // 6. Screen / display properties
+        Object.defineProperty(screen, 'colorDepth', { get: () => 24 })
+        Object.defineProperty(screen, 'pixelDepth',  { get: () => 24 })
+        Object.defineProperty(window, 'devicePixelRatio', { get: () => 1 })
+        Object.defineProperty(window, 'outerWidth',  { get: () => 1280 })
+        Object.defineProperty(window, 'outerHeight', { get: () => 800 })
       })
     }
 
@@ -474,20 +559,35 @@ async function runLogin(key: string, email: string, password: string): Promise<v
         }
       }
     }
-    await DELAY(2000 + Math.random() * 500)
+    // After domcontentloaded, wait for networkidle so LinkedIn's React SPA finishes rendering.
+    // domcontentloaded fires on the bare HTML shell; the actual form is injected by JavaScript.
+    await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {})
+    await DELAY(1500 + Math.random() * 500)
+
+    // If the page body is empty after networkidle, LinkedIn served a blank gate page —
+    // rotate to the alternate login URL and wait again before giving up.
+    const afterGotoUrl  = page.url()
+    const afterGotoHtml = await page.evaluate(() => document.documentElement.outerHTML).catch(() => '')
+    const afterGotoText = await page.evaluate(() => (document.body?.innerText ?? '').substring(0, 500)).catch(() => '')
+    const isBlank = afterGotoText.trim().length < 20 && !afterGotoHtml.includes('<form')
+    if (isBlank) {
+      console.log(`[LOGIN DEBUG] Blank/empty page received from ${page.url()} — rotating to /uas/login`)
+      await page.goto('https://www.linkedin.com/uas/login', { waitUntil: 'domcontentloaded', timeout: 30_000 })
+      await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {})
+      await DELAY(2000)
+    }
 
     // If we got a 404 or "page not found" from LinkedIn (bot-detection or regional issue),
     // try the global login URL with explicit locale as fallback.
-    const afterGotoUrl = page.url()
-    const afterGotoText = await page.evaluate(() => (document.body?.innerText ?? '').substring(0, 500)).catch(() => '')
     const is404 = afterGotoText.toLowerCase().includes('page not found') ||
       afterGotoText.toLowerCase().includes('this page doesn') ||
       afterGotoText.toLowerCase().includes("uh oh") ||
       afterGotoText.toLowerCase().includes('not found') ||
       afterGotoUrl.startsWith('chrome-error://')
-    if (is404) {
+    if (is404 && !isBlank) {
       console.log('[LOGIN DEBUG] LinkedIn returned 404/not-found — retrying with global login URL')
       await page.goto('https://www.linkedin.com/uas/login', { waitUntil: 'domcontentloaded', timeout: 30_000 })
+      await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {})
       await DELAY(2000)
     }
 
@@ -631,12 +731,21 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       let allInputs = ''
       try { visible = await page.evaluate(() => (document.body?.innerText ?? '').substring(0, 300).replace(/\s+/g, ' ')) } catch { /* ok */ }
       try { allInputs = await page.evaluate(() => Array.from(document.querySelectorAll('input')).map((el: Element) => { const i = el as HTMLInputElement; return `${i.tagName}[id=${i.id}][name=${i.name}][type=${i.type}]` }).join(', ')) } catch { /* ok */ }
-      // Detect Chrome's native network-error page (BrightData IP blocked or unreachable)
+      // Detect Chrome's native network-error page (IP blocked or proxy unreachable)
       const isChromeErrorPage = url.startsWith('chrome-error://') || url.includes('chromewebdata')
       if (isChromeErrorPage) {
         throw new Error(
-          'BrightData could not load linkedin.com — the residential IP was blocked or failed to route. ' +
-          'A new session with a fresh IP will be assigned on retry. Please try connecting again in 30–60 seconds.'
+          'Could not load linkedin.com — the proxy IP was blocked or failed to route. ' +
+          'Please try connecting again in 30–60 seconds.'
+        )
+      }
+      // Detect blank-gate page (LinkedIn detected the headless browser)
+      const isEmptyPage = (visible?.trim().length ?? 0) < 20 && !allInputs
+      if (isEmptyPage) {
+        throw new Error(
+          'LinkedIn returned a blank page — it may have detected the automated browser. ' +
+          'Try again in 30–60 seconds. If this keeps happening, ensure your proxy IP is a clean residential IP ' +
+          'that has not been flagged by LinkedIn.'
         )
       }
       throw new Error(`Login form inputs not found. URL: ${url} | Title: ${title} | Inputs: ${allInputs} | Text: ${visible}`)
