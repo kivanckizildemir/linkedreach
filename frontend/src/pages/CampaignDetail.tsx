@@ -17,6 +17,7 @@ import { fetchLeadLists, fetchListLeads } from '../api/leadLists'
 import { apiFetch } from '../lib/fetchJson'
 import { fetchSequences, createSequence } from '../api/sequences'
 import { FlowCanvas } from './SequenceBuilder'
+import { ChatSequenceBuilder } from '../components/ChatSequenceBuilder'
 
 interface Lead {
   id: string
@@ -62,6 +63,7 @@ export function CampaignDetail() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [tab, setTab] = useState<'dashboard' | 'leads' | 'settings' | 'sequence'>('dashboard')
+  const [chatOpen, setChatOpen] = useState(false)
   const [search, setSearch] = useState('')
   const [showAddLeads, setShowAddLeads] = useState(false)
   const [selectedListToAdd, setSelectedListToAdd] = useState('')
@@ -305,7 +307,7 @@ export function CampaignDetail() {
     </div>
 
     {/* Tab bar — always visible, outside the padded section so it can sit flush */}
-    <div className="px-8 flex gap-1 border-b border-gray-200 shrink-0">
+    <div className="px-8 flex items-center gap-1 border-b border-gray-200 shrink-0">
       {(
         [
           { key: 'dashboard' as const, label: 'Dashboard' },
@@ -327,6 +329,22 @@ export function CampaignDetail() {
           {t.label}
         </button>
       ))}
+
+      {/* Build with AI button — only on Sequence tab */}
+      {tab === 'sequence' && (
+        <button
+          onClick={() => setChatOpen(o => !o)}
+          className={[
+            'ml-auto mb-1 self-center flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-sm font-semibold transition-all border',
+            chatOpen
+              ? 'bg-blue-600 text-white border-blue-600 shadow-md'
+              : 'bg-white text-blue-600 border-blue-200 hover:bg-blue-50',
+          ].join(' ')}
+        >
+          <span>✨</span>
+          <span>Build with AI</span>
+        </button>
+      )}
     </div>
 
     {/* Sequence tab — full-bleed canvas, no extra padding */}
@@ -338,18 +356,39 @@ export function CampaignDetail() {
               <p className="text-gray-900 font-semibold text-base">No sequence yet</p>
               <p className="mt-1 text-sm text-gray-500">Create a sequence to start building your outreach flow.</p>
             </div>
-            <button
-              onClick={() => createSeqMutation.mutate()}
-              disabled={createSeqMutation.isPending}
-              className="px-5 py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-xl hover:bg-blue-700 disabled:opacity-60 transition-colors shadow-md"
-            >
-              {createSeqMutation.isPending ? 'Creating…' : 'Create Sequence'}
-            </button>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => createSeqMutation.mutate()}
+                disabled={createSeqMutation.isPending}
+                className="px-5 py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-xl hover:bg-blue-700 disabled:opacity-60 transition-colors shadow-md"
+              >
+                {createSeqMutation.isPending ? 'Creating…' : 'Create Sequence'}
+              </button>
+              <button
+                onClick={async () => { await createSeqMutation.mutateAsync(); setChatOpen(true) }}
+                disabled={createSeqMutation.isPending}
+                className="px-5 py-2.5 bg-white border border-blue-200 text-blue-600 text-sm font-semibold rounded-xl hover:bg-blue-50 disabled:opacity-60 transition-colors shadow-sm flex items-center gap-1.5"
+              >
+                ✨ Build with AI
+              </button>
+            </div>
           </div>
         ) : (
           <ReactFlowProvider>
             <FlowCanvas sequence={sequence} campaignId={id!} />
           </ReactFlowProvider>
+        )}
+
+        {/* AI Chat panel — slides in from the right over the canvas */}
+        {chatOpen && (
+          <ChatSequenceBuilder
+            campaignId={id!}
+            sequenceId={sequence?.id ?? null}
+            onClose={() => setChatOpen(false)}
+            onApplied={() => {
+              void queryClient.invalidateQueries({ queryKey: ['sequences', id] })
+            }}
+          />
         )}
       </div>
     )}
