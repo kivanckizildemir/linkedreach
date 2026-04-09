@@ -225,9 +225,19 @@ async function resolveBrowserEndpoint(accountId: string): Promise<string | null>
   try {
     const { data: account } = await supabase
       .from('linkedin_accounts')
-      .select('proxy_country')
+      .select('proxy_id, proxy_country')
       .eq('id', accountId)
       .single()
+
+    // If the account has a per-account proxy configured in the DB, skip BrightData Scraping Browser
+    // and fall through to Strategy 2 (local Chromium + per-account proxy).
+    // Reason: BrightData blocks ALL password input methods (keyboard.type AND page.evaluate)
+    // which makes it unusable for the credentials login flow. Local Chromium + the account's own
+    // residential proxy is the correct path when a proxy is already assigned.
+    if ((account as { proxy_id?: string | null } | null)?.proxy_id) {
+      console.log(`[LOGIN DEBUG] Account ${accountId} has a per-account proxy — skipping BrightData Scraping Browser, using local Chromium + proxy instead`)
+      return null
+    }
 
     const country = (account as { proxy_country?: string } | null)?.proxy_country
     const url = new URL(browserUrl)
