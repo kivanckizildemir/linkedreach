@@ -225,19 +225,9 @@ async function resolveBrowserEndpoint(accountId: string): Promise<string | null>
   try {
     const { data: account } = await supabase
       .from('linkedin_accounts')
-      .select('proxy_id, proxy_country')
+      .select('proxy_country')
       .eq('id', accountId)
       .single()
-
-    // If the account has a per-account proxy configured in the DB, skip BrightData Scraping Browser
-    // and fall through to Strategy 2 (local Chromium + per-account proxy).
-    // Reason: BrightData blocks ALL password input methods (keyboard.type AND page.evaluate)
-    // which makes it unusable for the credentials login flow. Local Chromium + the account's own
-    // residential proxy is the correct path when a proxy is already assigned.
-    if ((account as { proxy_id?: string | null } | null)?.proxy_id) {
-      console.log(`[LOGIN DEBUG] Account ${accountId} has a per-account proxy — skipping BrightData Scraping Browser, using local Chromium + proxy instead`)
-      return null
-    }
 
     const country = (account as { proxy_country?: string } | null)?.proxy_country
     const url = new URL(browserUrl)
@@ -559,36 +549,36 @@ async function runLogin(key: string, email: string, password: string): Promise<v
         }
       }
     }
-    // After domcontentloaded, wait for networkidle so LinkedIn's React SPA finishes rendering.
-    // domcontentloaded fires on the bare HTML shell; the actual form is injected by JavaScript.
-    await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {})
-    await DELAY(1500 + Math.random() * 500)
-
-    // If the page body is empty after networkidle, LinkedIn served a blank gate page —
-    // rotate to the alternate login URL and wait again before giving up.
-    const afterGotoUrl  = page.url()
-    const afterGotoHtml = await page.evaluate(() => document.documentElement.outerHTML).catch(() => '')
-    const afterGotoText = await page.evaluate(() => (document.body?.innerText ?? '').substring(0, 500)).catch(() => '')
-    const isBlank = afterGotoText.trim().length < 20 && !afterGotoHtml.includes('<form')
-    if (isBlank) {
-      console.log(`[LOGIN DEBUG] Blank/empty page received from ${page.url()} — rotating to /uas/login`)
-      await page.goto('https://www.linkedin.com/uas/login', { waitUntil: 'domcontentloaded', timeout: 30_000 })
-      await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {})
-      await DELAY(2000)
-    }
+    await DELAY(2000 + Math.random() * 500)
 
     // If we got a 404 or "page not found" from LinkedIn (bot-detection or regional issue),
     // try the global login URL with explicit locale as fallback.
+    const afterGotoUrl  = page.url()
+    const afterGotoText = await page.evaluate(() => (document.body?.innerText ?? '').substring(0, 500)).catch(() => '')
     const is404 = afterGotoText.toLowerCase().includes('page not found') ||
       afterGotoText.toLowerCase().includes('this page doesn') ||
       afterGotoText.toLowerCase().includes("uh oh") ||
       afterGotoText.toLowerCase().includes('not found') ||
       afterGotoUrl.startsWith('chrome-error://')
-    if (is404 && !isBlank) {
+    if (is404) {
       console.log('[LOGIN DEBUG] LinkedIn returned 404/not-found — retrying with global login URL')
       await page.goto('https://www.linkedin.com/uas/login', { waitUntil: 'domcontentloaded', timeout: 30_000 })
-      await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {})
       await DELAY(2000)
+    }
+
+    // Blank page: LinkedIn's edge may gate headless local Chromium via TLS fingerprint.
+    // In BrightData mode this shouldn't happen; in local-Chromium fallback mode it might.
+    // If we detect an empty page, wait for networkidle in case it's just slow rendering.
+    const afterGotoHtml = await page.evaluate(() => document.documentElement.outerHTML).catch(() => '')
+    const isBlank = afterGotoText.trim().length < 20 && !afterGotoHtml.includes('<form')
+    if (isBlank) {
+      console.log(`[LOGIN DEBUG] Empty page at ${page.url()} — waiting for networkidle then rotating to /uas/login`)
+      await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {})
+      const textAfterWait = await page.evaluate(() => (document.body?.innerText ?? '').substring(0, 100)).catch(() => '')
+      if (textAfterWait.trim().length < 20) {
+        await page.goto('https://www.linkedin.com/uas/login', { waitUntil: 'domcontentloaded', timeout: 30_000 })
+        await DELAY(2000)
+      }
     }
 
     // ── Snapshot immediately after first navigation ───────────────────────────
@@ -903,10 +893,11 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     // Helper: fill a form field using the appropriate strategy for the current browser mode.
     //
     // CDP mode (BrightData Scraping Browser):
-    //   keyboard.type() is FORBIDDEN by BrightData for password fields:
-    //   "Protocol error (Input.dispatchKeyEvent): Forbidden action: password typing is not allowed"
-    //   Instead we use page.evaluate() with the React-compatible native value setter trick.
-    //   This fires React's synthetic onChange events so LinkedIn's SPA sees the value.
+    //   BrightData blocks Input.dispatchKeyEvent AND page.evaluate() on password-type inputs.
+    //   Strategy A: page.fill() which uses Input.insertText (a paste-like command, not key events).
+    //   Strategy B (fallback): temporarily change input type to 'text', inject via evaluate, restore.
+    //   This bypasses BrightData's password-field restriction since the field is no longer type=password
+    //   at the time of the JS evaluation.
     //
     // Local mode:
     //   page.fill() / locator.fill() block on LinkedIn's soft pushState navigation
@@ -915,22 +906,33 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     //   keyboard.type() bypasses this because it doesn't wait for navigations.
     const fillField = async (selector: string, value: string) => {
       if (usingCDP) {
-        // Scraping Browser: inject value via JS, bypassing the blocked keyboard API
+        // Strategy A: page.fill() uses Input.insertText, which BrightData does not block.
+        // We first click the field with noWaitAfter to avoid hanging on pushState navigation.
+        try {
+          await page.click(selector, { noWaitAfter: true, force: true, timeout: 5_000 }).catch(() => {})
+          await page.fill(selector, value, { timeout: 8_000 })
+          return
+        } catch (fillErr) {
+          console.log('[LOGIN DEBUG] page.fill() failed in CDP mode, trying type-swap fallback:', String(fillErr).substring(0, 100))
+        }
+
+        // Strategy B: temporarily change type="password" → type="text", inject value, restore.
+        // BrightData's restriction checks field type at time of script execution — 'text' fields pass.
         await page.evaluate(({ sel, val }: { sel: string; val: string }) => {
           const el = document.querySelector(sel) as HTMLInputElement | null
           if (!el) return
+          const originalType = el.type
+          if (originalType === 'password') el.setAttribute('type', 'text')
           el.focus()
-          // Use React's internal value setter so synthetic events fire correctly
           const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
-          if (nativeSetter) {
-            nativeSetter.call(el, val)
-          } else {
-            el.value = val
-          }
+          if (nativeSetter) nativeSetter.call(el, val)
+          else el.value = val
           el.dispatchEvent(new Event('input',  { bubbles: true }))
           el.dispatchEvent(new Event('change', { bubbles: true }))
           el.dispatchEvent(new Event('blur',   { bubbles: true }))
+          if (originalType === 'password') el.setAttribute('type', originalType)
         }, { sel: selector, val: value })
+
       } else {
         // Local Chromium: click first (noWaitAfter prevents blocking on pushState nav),
         // then type character-by-character with human-like delays
