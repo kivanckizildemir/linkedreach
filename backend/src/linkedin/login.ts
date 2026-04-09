@@ -422,11 +422,41 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     // as a security measure. We use page.evaluate() with the native value setter instead.
     const usingCDP = !!browserEndpoint
 
-    // Navigate to LinkedIn login.
-    // Strategy: go to the plain /login first, then force English if needed.
-    // DO NOT add ?_l=en_US on the first load — on some BrightData residential IPs
-    // LinkedIn returns 404 for /login?_l=en_US (regional subdomains don't accept it).
-    await page.goto('https://www.linkedin.com/login', { waitUntil: 'domcontentloaded', timeout: 45_000 })
+    // Navigate to LinkedIn login — retry up to 3× on proxy 502/no_peer errors.
+    // Static residential proxies occasionally return 502 when the tunnel peer is
+    // temporarily unavailable; a fresh attempt usually succeeds within seconds.
+    const LOGIN_URLS = [
+      'https://www.linkedin.com/login',
+      'https://www.linkedin.com/uas/login',
+    ]
+    let gotoSucceeded = false
+    for (let attempt = 1; attempt <= 3 && !gotoSucceeded; attempt++) {
+      for (const loginUrl of LOGIN_URLS) {
+        try {
+          await page.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: 45_000 })
+          gotoSucceeded = true
+          break
+        } catch (gotoErr) {
+          const msg = String(gotoErr)
+          const isProxyError = msg.includes('502') || msg.includes('no_peer') || msg.includes('no_peers') ||
+            msg.includes('ERR_TUNNEL_CONNECTION_FAILED') || msg.includes('ERR_PROXY_CONNECTION_FAILED') ||
+            msg.includes('net::ERR_')
+          if (isProxyError && (attempt < 3 || loginUrl !== LOGIN_URLS[LOGIN_URLS.length - 1])) {
+            console.log(`[LOGIN DEBUG] Proxy error on attempt ${attempt} (${loginUrl}): ${msg.substring(0, 120)} — retrying in ${attempt * 4}s`)
+            await DELAY(attempt * 4_000)
+            continue
+          }
+          // Non-proxy error or final attempt — bubble up with clear message
+          if (isProxyError) {
+            throw new Error(
+              `Proxy cannot reach LinkedIn after 3 attempts (${msg.substring(0, 200)}). ` +
+              `Check that PROXY_HOST, PROXY_PORT, PROXY_USERNAME, PROXY_PASSWORD are set correctly in Railway environment variables.`
+            )
+          }
+          throw gotoErr
+        }
+      }
+    }
     await DELAY(2000 + Math.random() * 500)
 
     // If we got a 404 or "page not found" from LinkedIn (bot-detection or regional issue),
