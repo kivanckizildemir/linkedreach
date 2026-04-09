@@ -184,6 +184,7 @@ export async function chatSequence(
 ): Promise<SequenceChatResult> {
   const res = await apiFetch(`/api/campaigns/${campaignId}/chat-sequence`, {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ messages, sequenceId }),
   })
   if (!res.ok) throw new Error(await parseErrorResponse(res))
