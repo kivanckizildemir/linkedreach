@@ -24,8 +24,24 @@ const speakeasy = require('speakeasy') as {
   totp: (opts: { secret: string; encoding: string }) => string
 }
 import { supabase } from '../lib/supabase'
+import { solveRecaptchaV2 } from '../lib/captchaSolver'
 
 import { chromium } from 'playwright'
+
+// ── Approach 1: playwright-extra + stealth plugin ─────────────────────────────
+// playwright-extra wraps Playwright with plugin support.
+// puppeteer-extra-plugin-stealth patches 24+ JS bot-detection vectors:
+//   WebGL vendor/renderer (headless uses SwiftShader, a dead giveaway),
+//   navigator.permissions, navigator.plugins, hairline feature, language
+//   consistency, chrome.runtime, csp, sourceurl, etc.
+// This runs BEFORE any page JavaScript executes so LinkedIn's detection
+// code sees a real browser environment.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { chromium: chromiumExtra } = require('playwright-extra') as typeof import('playwright')
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const StealthPlugin = require('puppeteer-extra-plugin-stealth')
+// Only register the plugin once (module-level side-effect)
+;(chromiumExtra as unknown as { use?: (p: unknown) => void }).use?.(StealthPlugin())
 
 type SessionStatus = 'starting' | 'pending_push' | 'needs_verification' | 'success' | 'error'
 
@@ -381,29 +397,43 @@ async function runLogin(key: string, email: string, password: string): Promise<v
         : await browser.newContext({ locale: 'en-US', viewport: { width: 1280, height: 800 } })
 
     } else {
-      // ── Strategy 2: Local Chromium launch with proxy (dev / fallback) ─────
+      // ── Strategy 2: playwright-extra + stealth + proxy ───────────────────
+      // Uses chromiumExtra (playwright-extra) instead of raw chromium so the
+      // stealth plugin runs its patches before any page script executes.
       const proxy = await resolveProxy(session.accountId)
       console.log('[login] resolvedProxy:', proxy ? `server=${proxy.server} user=${proxy.username}` : 'none')
 
       // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
-      browser = await chromium.launch({
+      browser = await (chromiumExtra as unknown as typeof chromium).launch({
         headless: true,
         ...(proxy ? { proxy } : {}),
         args: [
           '--no-sandbox',
           '--disable-setuid-sandbox',
           '--disable-dev-shm-usage',
+          // ── Approach 3: Reduce CDP / automation signal surface ───────────────
+          // AutomationControlled is the primary JS-visible flag
           '--disable-blink-features=AutomationControlled',
+          // Remove "Chrome is being controlled by automated test software" banner
+          '--exclude-switches=enable-automation',
+          '--disable-infobars',
+          // Disable features that leak automation context
+          '--disable-features=AutomationControlled,IsolateOrigins,site-per-process',
+          // Prevent sites detecting the remote-debugging-port (CDP is present but unlisted)
+          '--remote-debugging-port=0',
+          // Consistent with a real Windows Chrome: disable the first-run dialog
+          '--no-first-run',
+          '--no-default-browser-check',
+          // Disable telemetry / optimization hints (reduces fingerprint noise)
+          '--disable-features=OptimizationGuideModelDownloading,OptimizationHintsFetching,OptimizationTargetPrediction,OptimizationHints',
+          // Cloud/Railway environment helpers
           '--ignore-certificate-errors',
           '--ignore-certificate-errors-spki-list',
-          // Helps in constrained cloud environments
           '--disable-gpu',
           '--disable-software-rasterizer',
           '--disable-background-networking',
           '--disable-extensions',
           '--disable-sync',
-          '--no-first-run',
-          '--no-default-browser-check',
           '--password-store=basic',
           '--use-mock-keychain',
         ],
@@ -692,8 +722,56 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       'input[type="text"]',
     ]
 
-    // First, wait for any input to appear (the form to be hydrated)
-    await page.waitForSelector('input', { timeout: 20_000 }).catch(() => {})
+    // ── Approach 4: CAPTCHA detection on initial login page ──────────────────
+    // LinkedIn occasionally shows a reCAPTCHA V2 challenge on the /login page
+    // itself (before the username/password form appears) for flagged IPs.
+    // Detect the site key, solve via 2captcha, inject the response token.
+    await page.waitForSelector('input, iframe[src*="recaptcha"], .g-recaptcha', { timeout: 20_000 }).catch(() => {})
+
+    const initialCaptchaSiteKey = await page.evaluate(() => {
+      // LinkedIn puts captchaSiteKey in a hidden input or a data-sitekey attribute
+      const hiddenInput = document.querySelector('input[name="captchaSiteKey"]') as HTMLInputElement | null
+      if (hiddenInput?.value) return hiddenInput.value
+      const gDiv = document.querySelector('.g-recaptcha') as HTMLElement | null
+      if (gDiv?.dataset.sitekey) return gDiv.dataset.sitekey
+      const iframeSrc = (document.querySelector('iframe[src*="recaptcha"]') as HTMLIFrameElement | null)?.src ?? ''
+      const m = iframeSrc.match(/[?&]k=([^&]+)/)
+      return m ? m[1] : ''
+    }).catch(() => '') as string
+
+    if (initialCaptchaSiteKey) {
+      console.log(`[LOGIN DEBUG] reCAPTCHA V2 on login page — solving via 2captcha (key=${initialCaptchaSiteKey.substring(0, 12)}…)`)
+      const captchaToken = await solveRecaptchaV2(initialCaptchaSiteKey, page.url())
+      if (captchaToken) {
+        await page.evaluate((token: string) => {
+          // Inject into hidden textarea that LinkedIn reads
+          const ta = document.querySelector('textarea[name="g-recaptcha-response"], #g-recaptcha-response') as HTMLTextAreaElement | null
+          if (ta) { ta.style.display = 'block'; ta.value = token }
+          // Also inject via captchaUserResponseToken hidden input if present
+          const inp = document.querySelector('input[name="captchaUserResponseToken"]') as HTMLInputElement | null
+          if (inp) inp.value = token
+          // Fire the grecaptcha callback if LinkedIn registered one
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const cfg = (window as any).___grecaptcha_cfg?.clients
+          if (cfg) {
+            for (const key of Object.keys(cfg)) {
+              const cb = cfg[key]?.aa?.l?.callback ?? cfg[key]?.l?.callback
+              if (typeof cb === 'function') try { cb(token) } catch { /* ok */ }
+            }
+          }
+          // Submit the form
+          const form = document.querySelector('form') as HTMLFormElement | null
+          if (form) form.submit()
+        }, captchaToken)
+        await DELAY(4000)
+        console.log(`[LOGIN DEBUG] CAPTCHA submitted — page now at ${page.url()}`)
+      } else {
+        console.warn('[LOGIN DEBUG] 2captcha solve failed for initial CAPTCHA — proceeding anyway')
+      }
+    }
+
+    // First, wait for any login form input to appear (the form to be hydrated)
+    await page.waitForSelector('input', { timeout: 15_000 }).catch(() => {})
 
     let emailSelector = 'input[type="text"]'
     let foundEmailInput = false
@@ -943,11 +1021,40 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       }
     }
 
+    // ── Approach 5: Human-like mouse movement before form interaction ─────────
+    // Real users move their mouse to elements before clicking them.
+    // LinkedIn's bot detection scores mouse trajectory — teleporting to a field
+    // (immediate CDP click) is a strong automation signal.
+    // We simulate a natural Bézier-curve mouse path to the email field first.
+    if (!usingCDP) {
+      try {
+        const emailBox = await page.locator(emailSelector).boundingBox().catch(() => null)
+        if (emailBox) {
+          // Start from a random position near the top of the viewport
+          const startX = 200 + Math.random() * 400
+          const startY = 80 + Math.random() * 60
+          const endX   = emailBox.x + emailBox.width / 2 + (Math.random() - 0.5) * 8
+          const endY   = emailBox.y + emailBox.height / 2 + (Math.random() - 0.5) * 4
+          // Move in ~20 steps with slight randomness to look like human hand
+          const steps  = 18 + Math.floor(Math.random() * 8)
+          await page.mouse.move(startX, startY)
+          for (let i = 1; i <= steps; i++) {
+            const t  = i / steps
+            const jx = (Math.random() - 0.5) * 3
+            const jy = (Math.random() - 0.5) * 2
+            await page.mouse.move(startX + (endX - startX) * t + jx, startY + (endY - startY) * t + jy)
+            await DELAY(12 + Math.random() * 20)
+          }
+          await DELAY(120 + Math.random() * 200)
+        }
+      } catch { /* ok — mouse movement is best-effort */ }
+    }
+
     await fillField(emailSelector, email)
-    await DELAY(400 + Math.random() * 400)
+    await DELAY(400 + Math.random() * 500)
 
     await fillField(passSelector, password)
-    await DELAY(400 + Math.random() * 400)
+    await DELAY(300 + Math.random() * 400)
 
     await captureSnap('pre-submit')
 
@@ -1093,15 +1200,67 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       // It appears when Railway's IP or the proxy IP is flagged as suspicious.
       const isSecurityCheck = (textLower.includes('security check') || textLower.includes('quick security') || textLower.includes('suspicious activity'))
         && !hasPinInputNow
+
+      // ── Approach 2: 2captcha at checkpoint / security-check page ─────────────
+      // When LinkedIn shows a reCAPTCHA V2 challenge after credentials are submitted,
+      // auto-solve it via 2captcha before giving up.
+      const checkpointCaptchaSiteKey = await page.evaluate(() => {
+        const h = document.querySelector('input[name="captchaSiteKey"]') as HTMLInputElement | null
+        if (h?.value) return h.value
+        const g = document.querySelector('.g-recaptcha') as HTMLElement | null
+        if (g?.dataset.sitekey) return g.dataset.sitekey
+        const src = (document.querySelector('iframe[src*="recaptcha"]') as HTMLIFrameElement | null)?.src ?? ''
+        const m = src.match(/[?&]k=([^&]+)/)
+        return m ? m[1] : ''
+      }).catch(() => '') as string
+
+      if (checkpointCaptchaSiteKey) {
+        console.log(`[LOGIN DEBUG] reCAPTCHA V2 at checkpoint — solving via 2captcha (key=${checkpointCaptchaSiteKey.substring(0, 12)}…)`)
+        const captchaToken = await solveRecaptchaV2(checkpointCaptchaSiteKey, page.url())
+        if (captchaToken) {
+          await page.evaluate((token: string) => {
+            const ta = document.querySelector('textarea[name="g-recaptcha-response"], #g-recaptcha-response') as HTMLTextAreaElement | null
+            if (ta) { ta.style.display = 'block'; ta.value = token }
+            const inp = document.querySelector('input[name="captchaUserResponseToken"]') as HTMLInputElement | null
+            if (inp) inp.value = token
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const cfg = (window as any).___grecaptcha_cfg?.clients
+            if (cfg) {
+              for (const key of Object.keys(cfg)) {
+                const cb = cfg[key]?.aa?.l?.callback ?? cfg[key]?.l?.callback
+                if (typeof cb === 'function') try { cb(token) } catch { /* ok */ }
+              }
+            }
+            const form = document.querySelector('form') as HTMLFormElement | null
+            if (form) form.submit()
+          }, captchaToken)
+          await DELAY(5000)
+          postNavUrl  = page.url()
+          postNavText = await page.evaluate(() => (document.body?.innerText ?? '').substring(0, 500)).catch(() => '') as string
+          console.log(`[LOGIN DEBUG] CAPTCHA checkpoint solved — now at ${postNavUrl}`)
+          // If we're now past the checkpoint, continue the normal success path
+          const postCaptchaCookies = await context.cookies()
+          if (postCaptchaCookies.find(c => c.name === 'li_at')) {
+            await saveCookies(context, session.accountId)
+            session.status = 'success'
+            await browser.close()
+            return
+          }
+        }
+      }
+
       if (isSecurityCheck) {
-        console.log('[LOGIN DEBUG] LinkedIn security check detected — requires manual resolution')
+        console.log('[LOGIN DEBUG] LinkedIn security check detected — attempting 2captcha solve if available')
         await supabase.from('linkedin_accounts').update({
           debug_log: { label: 'security_check', postNavUrl, postNavText: postNavText.substring(0, 400), capturedAt: new Date().toISOString() }
         }).eq('id', session.accountId)
-        session.status = 'error'
-        session.error  = 'LinkedIn is asking for a security check that requires human interaction. Please use the "Set Session Cookie" method: log in to LinkedIn in your browser, copy the li_at cookie, and paste it here instead.'
-        await browser.close()
-        return
+        // Only fail if we couldn't solve it automatically above
+        if (!checkpointCaptchaSiteKey) {
+          session.status = 'error'
+          session.error  = 'LinkedIn showed a security check. No CAPTCHA site key found to auto-solve — try again or add a TOTP secret for this account.'
+          await browser.close()
+          return
+        }
       }
 
       const isEmailChallenge = textLower.includes('email') || textLower.includes('sent a code') || textLower.includes('check your inbox')
