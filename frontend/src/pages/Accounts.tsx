@@ -951,8 +951,7 @@ export function ConnectModal({
     } else if (s.status === 'not_found') {
       stopPolling(); setError('Session expired. Please try again.'); setStep('error')
     } else if (s.status === 'pending_push') {
-      // For browser sessions, 'pending_push' means browser is open — keep the browser view
-      if (method !== 'browser') setHint(s.hint)
+      if (method !== 'browser') { setHint(s.hint); setStep('push') }
     }
   }
 
