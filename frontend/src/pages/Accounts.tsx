@@ -846,14 +846,15 @@ export function ConnectModal({
   onClose: () => void
   onSaved: () => void
 }) {
-  const [method, setMethod]       = useState<ConnectMethod>('credentials')
+  const [method, setMethod]       = useState<ConnectMethod>(IS_REMOTE_BACKEND ? 'credentials' : 'select')
   const [step, setStep]           = useState<ConnectStep>('form')
   const [cookieStep, setCookieStep] = useState<CookieStep>('open')
 
   // credentials form
   const [email, setEmail]         = useState('')
   const [password, setPassword]   = useState('')
-  const [totpSecret] = useState('')
+  const [totpSecret, setTotpSecret] = useState('')
+  const [showTotp, setShowTotp]   = useState(false)
 
   // verify step
   const [code, setCode]           = useState('')
@@ -967,10 +968,12 @@ export function ConnectModal({
     e.preventDefault()
     setStep('connecting'); setError('')
     try {
-      const secret = method === 'infinite' ? totpSecret || undefined : undefined
+      const secret = totpSecret.trim() || undefined
       const result = await connectAccount(accountId, email, password, secret)
       setSessionKey(result.session_key)
-      setStep('push'); setHint('Signing in to LinkedIn…')
+      // Stay on 'connecting' — polling will advance to 'push' or 'verify' when
+      // LinkedIn actually requests verification. Don't show "Check your phone"
+      // before the backend has even loaded the browser.
       startPolling(result.session_key)
     } catch (err) {
       setError((err as Error).message); setStep('error')
@@ -1163,14 +1166,9 @@ export function ConnectModal({
             </div>
           )}
 
-          {/* ── Credentials form (Infinite + Credentials methods) ── */}
+          {/* ── Credentials form ── */}
           {(method === 'infinite' || method === 'credentials') && step === 'form' && (
             <form onSubmit={handleSignIn} className="space-y-4">
-              {method === 'infinite' && (
-                <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 text-xs text-blue-800">
-                  With your 2FA secret saved, we generate verification codes automatically — your session reconnects silently on expiry.
-                </div>
-              )}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1.5">LinkedIn email</label>
                 <input required type="email" autoFocus value={email} onChange={e => setEmail(e.target.value)}
@@ -1183,6 +1181,26 @@ export function ConnectModal({
                   placeholder="••••••••"
                   className="w-full px-3.5 py-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
               </div>
+
+              {/* Optional TOTP for auto-reconnect (Infinite Login) */}
+              <div>
+                <button type="button" onClick={() => setShowTotp(v => !v)}
+                  className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-600 transition-colors">
+                  <svg className={`h-3 w-3 transition-transform ${showTotp ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7"/>
+                  </svg>
+                  Save 2FA secret for auto-reconnect (optional)
+                </button>
+                {showTotp && (
+                  <div className="mt-2 space-y-2">
+                    <p className="text-xs text-gray-500">If you have a TOTP 2FA secret, we'll generate codes automatically — your session reconnects silently when it expires.</p>
+                    <input type="text" value={totpSecret} onChange={e => setTotpSecret(e.target.value)}
+                      placeholder="Base32 secret (e.g. JBSWY3DPEHPK3PXP)"
+                      className="w-full px-3.5 py-2.5 border border-gray-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                  </div>
+                )}
+              </div>
+
               {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg p-3">{error}</p>}
               <div className="flex gap-3 pt-1">
                 <button type="button" onClick={onClose}
@@ -1191,7 +1209,7 @@ export function ConnectModal({
                 </button>
                 <button type="submit"
                   className="flex-1 py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-blue-700 transition-colors">
-                  Connect
+                  Sign in
                 </button>
               </div>
             </form>
@@ -1199,12 +1217,15 @@ export function ConnectModal({
 
           {/* ── Connecting spinner ── */}
           {(method === 'infinite' || method === 'credentials') && step === 'connecting' && (
-            <div className="py-8 flex flex-col items-center gap-3">
+            <div className="py-8 flex flex-col items-center gap-4">
               <svg className="w-8 h-8 animate-spin text-blue-500" fill="none" viewBox="0 0 24 24">
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
               </svg>
-              <p className="text-sm text-gray-600">Signing in to LinkedIn…</p>
+              <div className="text-center">
+                <p className="text-sm font-medium text-gray-700">Signing in to LinkedIn…</p>
+                <p className="text-xs text-gray-400 mt-1">This usually takes 15–30 seconds</p>
+              </div>
             </div>
           )}
 
