@@ -436,11 +436,12 @@ async function runSequenceStep(campaignLeadId: string): Promise<void> {
       // Trigger background reconnect and defer this step so reconnect can finish first
       invalidateBrowserSession(account.id)
       console.warn(`[runner] Session expired for ${account.id} — pausing account, deferring step 3min for reconnect`)
-      await supabase
-        .from('campaign_leads')
-        .update({ next_action_at: new Date(Date.now() + 3 * 60 * 1000).toISOString() })
-        .eq('id', campaignLeadId)
-        .catch(() => null)
+      try {
+        await supabase
+          .from('campaign_leads')
+          .update({ next_action_at: new Date(Date.now() + 3 * 60 * 1000).toISOString() })
+          .eq('id', campaignLeadId)
+      } catch { /* non-fatal — scheduler will retry */ }
       // Don't rethrow — scheduler will re-queue from next_action_at
       return
     }

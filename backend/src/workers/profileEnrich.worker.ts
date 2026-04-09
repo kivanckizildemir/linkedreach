@@ -128,10 +128,6 @@ export const profileEnrichWorker = new Worker<ProfileEnrichJob>(
   {
     connection,
     concurrency: 1,
-    defaultJobOptions: {
-      attempts: 5,
-      backoff: { type: 'exponential', delay: 10_000 },
-    },
   }
 )
 

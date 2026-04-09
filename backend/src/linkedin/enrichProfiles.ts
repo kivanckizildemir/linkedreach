@@ -288,7 +288,7 @@ export async function scrapeLinkedInProfile(page: Page, linkedinUrl: string): Pr
         return found;
       })()`).catch(() => [] as string[])
 
-      result.recent_posts = posts
+      result.recent_posts = posts as string[]
     } catch {
       // non-fatal
     }
