@@ -839,6 +839,10 @@ function SetSessionModal({
   const [browserMsg, setBrowserMsg] = useState('')
   const [error, setError] = useState('')
 
+  // Cookie paste (used when IS_REMOTE_BACKEND)
+  const [cookieVal, setCookieVal] = useState('')
+  const [cookieSaving, setCookieSaving] = useState(false)
+
   // Advanced / auto-reconnect section
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [credEmail, setCredEmail] = useState('')
@@ -868,6 +872,33 @@ function SetSessionModal({
     }
   }
 
+  async function handleCookieSave() {
+    const val = cookieVal.trim()
+    if (!val) { setError('Paste your li_at cookie value above.'); return }
+    setCookieSaving(true); setError('')
+    try {
+      let cookies: string
+      if (val.startsWith('{') || val.startsWith('[')) {
+        let parsed: unknown
+        try { parsed = JSON.parse(val) } catch {
+          setError('Invalid JSON — paste a plain li_at value or a full linkedin_session.json.')
+          setCookieSaving(false); return
+        }
+        cookies = JSON.stringify(parsed)
+      } else {
+        cookies = JSON.stringify([{
+          name: 'li_at', value: val,
+          domain: '.linkedin.com', path: '/',
+          httpOnly: true, secure: true, sameSite: 'None', expires: -1,
+        }])
+      }
+      await updateAccount(accountId, { cookies, status: 'active' } as Parameters<typeof updateAccount>[1])
+      onSaved()
+    } catch (e) {
+      setError((e as Error).message); setCookieSaving(false)
+    }
+  }
+
   async function handleSaveCredentials() {
     if (!credEmail.trim() || !credPassword.trim()) return
     setCredSaving(true)
@@ -888,6 +919,52 @@ function SetSessionModal({
     }
   }
 
+  // ── Remote backend: show cookie paste form directly ───────────────────────
+  if (IS_REMOTE_BACKEND) {
+    return (
+      <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+        <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6 space-y-5">
+          <div>
+            <h2 className="text-lg font-semibold text-gray-900">Connect LinkedIn Account</h2>
+            <p className="mt-1 text-sm text-gray-500">Paste your session cookie to activate this account.</p>
+          </div>
+
+          <ol className="space-y-2 text-sm text-gray-700">
+            <li className="flex gap-2"><span className="font-bold text-blue-600">1.</span> Open <strong>linkedin.com</strong> in your browser and log in</li>
+            <li className="flex gap-2"><span className="font-bold text-blue-600">2.</span> Press <kbd className="px-1.5 py-0.5 bg-gray-100 border border-gray-300 rounded text-xs font-mono">F12</kbd> → Application → Cookies → <code className="bg-gray-100 px-1 rounded">linkedin.com</code></li>
+            <li className="flex gap-2"><span className="font-bold text-blue-600">3.</span> Copy the <code className="bg-gray-100 px-1 rounded font-mono">li_at</code> value and paste below</li>
+          </ol>
+
+          <textarea
+            autoFocus
+            value={cookieVal}
+            onChange={e => setCookieVal(e.target.value)}
+            placeholder="Paste li_at value or full linkedin_session.json…"
+            rows={4}
+            className="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono resize-none"
+          />
+
+          {error && <p className="text-xs text-red-600">{error}</p>}
+
+          <div className="flex gap-3">
+            <button type="button" onClick={onClose}
+              className="flex-1 py-2.5 border border-gray-200 text-sm font-medium rounded-xl hover:bg-gray-50 transition-colors">
+              Cancel
+            </button>
+            <button
+              onClick={() => void handleCookieSave()}
+              disabled={cookieSaving || !cookieVal.trim()}
+              className="flex-1 py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-xl hover:bg-blue-700 disabled:opacity-60 transition-colors"
+            >
+              {cookieSaving ? 'Saving…' : 'Save Session'}
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // ── Local backend: browser login flow ─────────────────────────────────────
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6 space-y-5">
@@ -901,11 +978,7 @@ function SetSessionModal({
         </div>
 
         {/* Primary action */}
-        {IS_REMOTE_BACKEND ? (
-          <div className="rounded-xl px-4 py-3 text-sm bg-amber-50 border border-amber-200 text-amber-800">
-            ⚠️ Browser login only works when the backend is running on your local machine. Use the <strong>Set Session</strong> tab to paste your <code>li_at</code> cookie instead.
-          </div>
-        ) : browserMsg ? (
+        {browserMsg ? (
           <div className={`rounded-xl px-4 py-3 text-sm font-medium ${browserMsg.startsWith('✓') ? 'bg-green-50 text-green-800' : 'bg-blue-50 text-blue-800'}`}>
             {browserMsg}
           </div>
