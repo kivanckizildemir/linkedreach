@@ -12,7 +12,6 @@ import { Inbox } from './pages/Inbox'
 import { Accounts } from './pages/Accounts'
 import { Blacklist } from './pages/Blacklist'
 import { Settings } from './pages/Settings'
-import { SequenceBuilder } from './pages/SequenceBuilder'
 import { Login } from './pages/Login'
 import { Signup } from './pages/Signup'
 

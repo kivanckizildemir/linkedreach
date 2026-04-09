@@ -67,8 +67,8 @@ export function LeadLists() {
       queryFn: () => getListScrapeStatus(job.jobId),
       refetchInterval: (data) => {
         if (!data) return 2000
-        const state = (data as { state: string }).state
-        const progress = (data as { progress?: number }).progress ?? 0
+        const state = (data as unknown as { state: string }).state
+        const progress = (data as unknown as { progress?: number }).progress ?? 0
         setActiveJobs(prev => prev[listId] ? { ...prev, [listId]: { ...prev[listId], progress } } : prev)
         if (state === 'completed' || state === 'failed') {
           setActiveJobs(prev => { const n = { ...prev }; delete n[listId]; return n })
@@ -359,7 +359,7 @@ export function LeadLists() {
               {!setOpResult && (
                 <button
                   onClick={() => void handleSetOp()}
-                  disabled={setSetOpLoading || !setOpSourceId}
+                  disabled={setOpLoading || !setOpSourceId}
                   className="flex-1 py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-blue-700 disabled:opacity-60"
                 >
                   {setOpLoading ? 'Working…' : 'Apply'}

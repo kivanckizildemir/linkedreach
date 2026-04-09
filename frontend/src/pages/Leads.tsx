@@ -2244,7 +2244,7 @@ const CL_CLASS_COLORS: Record<string, string> = {
   none:         'bg-gray-50 text-gray-500 border border-gray-200',
 }
 
-function LeadDetailDrawer({
+export function LeadDetailDrawer({
   lead,
   allLabels,
   onClose,

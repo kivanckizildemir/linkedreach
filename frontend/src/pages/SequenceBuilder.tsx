@@ -1133,7 +1133,7 @@ function TestMessageModal({
 }) {
   const messageSteps = allSteps.filter(s => MESSAGE_STEP_TYPES.has(s.type))
 
-  const [selectedStepId, setSelectedStepId] = useState<string>(initialStep?.id ?? messageSteps[0]?.id ?? '')
+  const [selectedStepId] = useState<string>(initialStep?.id ?? messageSteps[0]?.id ?? '')
   const [leadId, setLeadId] = useState('')
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<PreviewResult | null>(null)
@@ -2629,7 +2629,7 @@ interface SettingsProduct {
   tone_of_voice?: string
 }
 
-function SettingsTab({ campaignId }: { campaignId: string }) {
+export function SettingsTab({ campaignId }: { campaignId: string }) {
   const queryClient = useQueryClient()
 
   const { data: campaign, isLoading } = useQuery({

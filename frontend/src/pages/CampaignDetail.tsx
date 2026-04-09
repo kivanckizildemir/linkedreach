@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { ReactFlowProvider } from '@xyflow/react'
@@ -7,10 +7,8 @@ import {
   fetchCampaignLeads,
   updateCampaign,
   removeCampaignLead,
-  deleteCampaign,
   addLeadsToCampaign,
   scoreEngagement,
-  extractAudienceFromProducts,
   type Campaign,
   type CampaignLead,
 } from '../api/campaigns'
@@ -52,13 +50,6 @@ const ICP_BADGE: Record<string, string> = {
   warm:         'bg-orange-100 text-orange-700 border border-orange-200',
   cold:         'bg-blue-100 text-blue-700 border border-blue-200',
   disqualified: 'bg-gray-100 text-gray-500 border border-gray-200',
-}
-
-const ICP_COLORS: Record<string, string> = {
-  hot:          'text-red-600',
-  warm:         'text-orange-500',
-  cold:         'text-blue-500',
-  disqualified: 'text-gray-400',
 }
 
 const ICP_LABELS: Record<string, string> = {
@@ -139,11 +130,6 @@ export function CampaignDetail() {
       setShowAddLeads(false)
       setSelectedListToAdd('')
     },
-  })
-
-  const deleteMutation = useMutation({
-    mutationFn: () => deleteCampaign(id!),
-    onSuccess: () => navigate('/campaigns'),
   })
 
   const scheduleMutation = useMutation({
@@ -549,7 +535,7 @@ export function CampaignDetail() {
           <div className="flex items-center gap-2 flex-wrap">
             {campaignLeads.length > 0 && (
               <button
-                onClick={() => scoreEngagementMutation.mutate()}
+                onClick={() => scoreEngagementMutation.mutate(undefined)}
                 disabled={scoreEngagementMutation.isPending}
                 className="px-3 py-1.5 text-sm font-medium rounded-lg border border-violet-200 text-violet-700 bg-violet-50 hover:bg-violet-100 transition-colors shrink-0 disabled:opacity-50"
               >
@@ -824,23 +810,6 @@ export function CampaignDetail() {
 
 // ── Campaign Settings helpers ─────────────────────────────────────────────────
 
-const SUGGESTED_TITLES = [
-  'CEO', 'CTO', 'CMO', 'CFO', 'COO', 'CPO', 'CRO', 'CISO',
-  'VP Sales', 'VP Marketing', 'VP Engineering', 'VP Product',
-  'Director of Sales', 'Director of Marketing', 'Director of Engineering',
-  'Head of Sales', 'Head of Growth', 'Head of Product',
-  'Founder', 'Co-Founder', 'Managing Director', 'General Manager',
-  'Partner', 'Principal', 'President',
-]
-
-const SUGGESTED_INDUSTRIES = [
-  'SaaS', 'FinTech', 'HealthTech', 'EdTech', 'E-commerce', 'Retail',
-  'Financial Services', 'Banking', 'Insurance', 'Healthcare', 'Pharmaceuticals',
-  'Manufacturing', 'Logistics', 'Real Estate', 'Construction', 'Energy',
-  'Telecommunications', 'Media', 'Marketing & Advertising', 'Consulting',
-  'Legal', 'Education', 'Non-profit', 'Government',
-]
-
 const SUGGESTED_LOCATIONS = [
   // ── Regions ──
   'EMEA', 'APAC', 'AMER', 'LATAM', 'DACH',
@@ -983,11 +952,11 @@ const WEIGHT_OPTIONS: { value: CustomCriterion['weight']; label: string; color: 
   { value: 'disqualifier', label: 'Disqualifier', color: 'bg-red-100 text-red-800 border-red-200' },
 ]
 
-function uid() {
+export function uid() {
   return Math.random().toString(36).slice(2, 10)
 }
 
-function CriterionRow({
+export function CriterionRow({
   criterion,
   onChange,
   onRemove,

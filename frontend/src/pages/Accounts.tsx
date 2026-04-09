@@ -1003,7 +1003,7 @@ type ConnectMethod = 'select' | 'infinite' | 'credentials' | 'cookie' | 'browser
 type ConnectStep   = 'form' | 'connecting' | 'push' | 'verify' | 'done' | 'error' | 'browser'
 type CookieStep    = 'open' | 'copy' | 'paste'
 
-function ConnectModal({
+export function ConnectModal({
   accountId,
   onClose,
   onSaved,
