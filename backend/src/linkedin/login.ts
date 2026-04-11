@@ -692,6 +692,53 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       } catch { /* ok */ }
     }
 
+    // ── Full-page cookie consent redirect ─────────────────────────────────────
+    // When BrightData gives a non-UK IP LinkedIn sometimes redirects to a full-page
+    // cookie consent (URL contains /cookie or /consent, or the page text is the consent
+    // copy rather than the login form). Accept it and navigate back to /login.
+    {
+      const consentUrl  = page.url()
+      const consentText = await page.evaluate(() => (document.body?.innerText ?? '').substring(0, 600)).catch(() => '')
+      const isCookiePage =
+        /\/cookie|\/consent|\/authwall/i.test(consentUrl) ||
+        /essentielle.*cookies|essential.*cookies|cookie.*policy|politique.*cookies/i.test(consentText) ||
+        // Danish / other-language cookie consent copy patterns
+        /tredjeparter bruger|Acceptér|vi og vores|cookies til at levere/i.test(consentText)
+
+      if (isCookiePage) {
+        console.log(`[LOGIN DEBUG] Full-page cookie consent at ${consentUrl} — accepting`)
+
+        // Strategy 1: known attribute selectors
+        for (const sel of [
+          'button[action-type="ACCEPT"]',
+          'button[data-control-name="accept"]',
+          'button[data-tracking-control-name*="accept"]',
+          '#artdeco-global-alert-action--accept',
+        ]) {
+          try {
+            const el = await page.$(sel)
+            if (el) { await jsClick(sel); await DELAY(1200); break }
+          } catch { /* ok */ }
+        }
+
+        // Strategy 2: text-based search (works regardless of language)
+        await page.evaluate(() => {
+          const btns = Array.from(document.querySelectorAll('button, a[role="button"]'))
+          const accept = btns.find(b =>
+            /^(accept|allow|acceptér|accepter|akkoord|aceptar|accetta|akzeptieren|agree|continue|ok$)/i
+              .test((b.textContent ?? '').trim())
+          )
+          if (accept) (accept as HTMLElement).click()
+        }).catch(() => {})
+        await DELAY(1500)
+
+        // Navigate back to login regardless of whether the click worked
+        console.log('[LOGIN DEBUG] Navigating back to /login after cookie consent')
+        await page.goto('https://www.linkedin.com/login', { waitUntil: 'domcontentloaded', timeout: 30_000 })
+        await DELAY(2000)
+      }
+    }
+
     // Handle language selection page (shown on country-specific subdomains like pe.linkedin.com)
     // LinkedIn shows this when the IP country doesn't match the browser locale.
     // Look for an English link and click it, then re-navigate to the login page.
