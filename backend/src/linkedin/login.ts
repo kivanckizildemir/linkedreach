@@ -419,6 +419,23 @@ async function runLogin(key: string, email: string, password: string): Promise<v
         ? existingContexts[0]
         : await browser.newContext({ locale: 'en-US', viewport: { width: 1280, height: 800 } })
 
+      // Pre-inject LinkedIn consent cookies so the GDPR banner never appears.
+      // BrightData uses a fresh browser each session so cookies don't persist —
+      // injecting them here prevents the consent overlay on every navigation.
+      try {
+        await context.addCookies([
+          // li_gc: LinkedIn GDPR consent — "all accepted, no consent needed"
+          { name: 'li_gc', value: 'v=2&well-knownversion=1&needsConsent=0&display=1&lang=en&interactionMode=1&timestamp=' + Date.now(), domain: '.linkedin.com', path: '/', expires: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 365 },
+          // bcookie: browser ID cookie, expected by LinkedIn on every request
+          { name: 'bcookie', value: `"v=2&${Math.random().toString(36).slice(2)}"`, domain: '.linkedin.com', path: '/', expires: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 365 },
+          // lidc: data centre routing cookie
+          { name: 'lidc', value: `"b=VB87:s=V:r=V:a=V:p=V:g=3386:u=1:x=1:i=${Math.floor(Date.now()/1000)}:t=${Math.floor(Date.now()/1000) + 86400}:v=2:sig=AQFN1VB"`, domain: '.linkedin.com', path: '/', expires: Math.floor(Date.now() / 1000) + 86400 },
+        ])
+        console.log('[LOGIN DEBUG] Pre-injected LinkedIn consent cookies into BrightData context')
+      } catch (cookieErr) {
+        console.warn('[LOGIN DEBUG] Could not pre-inject consent cookies:', cookieErr)
+      }
+
     } else {
       // ── Strategy 2: playwright-extra + stealth + proxy ───────────────────
       // Uses chromiumExtra (playwright-extra) instead of raw chromium so the
@@ -912,7 +929,8 @@ async function runLogin(key: string, email: string, password: string): Promise<v
 
     console.log(`[LOGIN DEBUG] Using email selector: ${emailSelector}`)
 
-    // Helper: dismiss any consent/overlay banners using JS click (no pointer-event issues)
+    // Helper: dismiss any consent/overlay banners using JS click.
+    // Tries attribute selectors first, then a language-agnostic text search.
     const dismissBanners = async () => {
       for (const selector of [
         'button[action-type="ACCEPT"]',
@@ -920,12 +938,22 @@ async function runLogin(key: string, email: string, password: string): Promise<v
         '#artdeco-global-alert-action--accept',
         'button.artdeco-global-alert__action',
         'button[data-test-modal-close-btn]',
+        'button[data-control-name="accept"]',
       ]) {
         try {
           const exists = await page.$(selector)
           if (exists) { await jsClick(selector); await DELAY(500) }
         } catch { /* ok */ }
       }
+      // Language-agnostic text fallback: "Accept" / "Aceptar" / "Terima" / "Acceptér" etc.
+      await page.evaluate(() => {
+        const btns = Array.from(document.querySelectorAll('button, a[role="button"]'))
+        const accept = btns.find(b =>
+          /^(accept|allow|terima|acceptér|accepter|akkoord|aceptar|accetta|akzeptieren|agree|ok|قبول|同意|허용|kabul)$/i
+            .test((b.textContent ?? '').trim())
+        )
+        if (accept) (accept as HTMLElement).click()
+      }).catch(() => {})
     }
 
     // ── Credential submission via real browser interaction ────────────────────────
