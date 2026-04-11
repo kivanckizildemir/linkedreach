@@ -984,30 +984,37 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     const passSelector = '#password, input[name="session_password"], input[type="password"]'
     const passExists = await page.waitForSelector(passSelector, { timeout: 10_000 }).catch(() => null)
     if (!passExists) {
-      console.log('[LOGIN DEBUG] Password field not visible — proxy may have triggered email-only form. Retrying with /uas/login…')
-      // /uas/login is LinkedIn's legacy login page that always renders both email + password fields.
-      // The SDUI/React form (/login) sometimes shows only the email field for flagged proxy IPs.
-      await page.goto('https://www.linkedin.com/uas/login', { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => {})
-      await DELAY(2000)
-      // Re-find the email field on the new page
-      for (const sel of EMAIL_SELECTORS) {
-        try {
-          const el = await page.$(sel)
-          if (el) { emailSelector = sel; break }
-        } catch { /* try next */ }
-      }
-      console.log(`[LOGIN DEBUG] /uas/login — email selector: ${emailSelector} url: ${page.url()}`)
-      // Clear and re-fill email on the new page
+      // Email-only (2-step) login form: fill email → click Continue → wait for password field.
+      // This is LinkedIn's progressive login flow shown on certain proxy IPs.
+      console.log('[LOGIN DEBUG] Password field not visible — handling 2-step email-first flow')
       try {
+        // Fill email field first
         await page.click(emailSelector, { noWaitAfter: true, force: true, timeout: 5_000 }).catch(() => {})
         await page.keyboard.press('Control+A')
         await page.keyboard.press('Delete')
         await page.keyboard.type(email, { delay: 30 + Math.floor(Math.random() * 30) })
-      } catch { /* ok */ }
-      // Wait again for password field on the new page
-      await page.waitForSelector(passSelector, { timeout: 10_000 }).catch(() => {
-        console.log('[LOGIN DEBUG] Password field still not visible on /uas/login')
-      })
+        await DELAY(500)
+
+        // Click the Continue/Next button (NOT the final sign-in button)
+        const continueBtn = await page.$(
+          'button[type="submit"], [data-litms-control-urn*="continue"], ' +
+          '.btn__primary--large, button.sign-in-form__submit-button'
+        ).catch(() => null)
+        if (continueBtn) {
+          console.log('[LOGIN DEBUG] Clicking Continue button for 2-step flow')
+          await continueBtn.click()
+        } else {
+          await page.keyboard.press('Enter')
+        }
+
+        // Wait for password field to appear
+        console.log('[LOGIN DEBUG] Waiting for password field after Continue…')
+        await page.waitForSelector(passSelector, { timeout: 12_000 }).catch(() => {
+          console.log('[LOGIN DEBUG] Password field still not visible after Continue')
+        })
+      } catch (e) {
+        console.log('[LOGIN DEBUG] 2-step flow error:', String(e).substring(0, 100))
+      }
     } else {
       console.log('[LOGIN DEBUG] Password field found ✓')
     }
