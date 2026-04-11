@@ -589,6 +589,67 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     // as a security measure. We use page.evaluate() with the native value setter instead.
     const usingCDP = !!browserEndpoint
 
+    // ── CDP mode: consent-first flow ─────────────────────────────────────────
+    // BrightData gives us a fresh browser session with no cookies.
+    // Pre-injecting li_gc doesn't work because LinkedIn's server validates it
+    // server-side and ignores values it didn't generate itself.
+    // Fix: navigate to the LinkedIn homepage FIRST, click Accept on the consent
+    // banner, and wait until the banner is gone. LinkedIn then sets its own
+    // valid li_gc cookie in the browser. Only then navigate to /login —
+    // the login page won't show the banner and the fetch POST will succeed.
+    if (usingCDP) {
+      console.log('[LOGIN DEBUG] CDP consent-first flow: navigating to homepage')
+      try {
+        await page.goto('https://www.linkedin.com', { waitUntil: 'domcontentloaded', timeout: 45_000 })
+        await DELAY(2_000)
+
+        // Accept the consent banner — wait up to 6s for it to appear
+        const CONSENT_SELECTORS = [
+          'button[action-type="ACCEPT"]',
+          'button[data-tracking-control-name="cookie_policy_banner_accept"]',
+          '#artdeco-global-alert-action--accept',
+          'button.artdeco-global-alert__action',
+          'button[data-control-name="accept"]',
+        ]
+        let consentClicked = false
+        for (const sel of CONSENT_SELECTORS) {
+          const btn = await page.waitForSelector(sel, { timeout: 6_000 }).catch(() => null)
+          if (btn) {
+            console.log(`[LOGIN DEBUG] Clicking consent Accept via: ${sel}`)
+            await btn.click().catch(() => {})
+            consentClicked = true
+            break
+          }
+        }
+
+        // Fallback: language-agnostic text search
+        if (!consentClicked) {
+          consentClicked = await page.evaluate(() => {
+            const btns = Array.from(document.querySelectorAll('button, a[role="button"]'))
+            const accept = btns.find(b => /^(accept|allow|terima|acceptér|accepter|akkoord|aceptar|accetta|akzeptieren|agree|ok|قبول|同意|허용|kabul)$/i.test((b.textContent ?? '').trim()))
+            if (accept) { (accept as HTMLElement).click(); return true }
+            return false
+          }).catch(() => false)
+          if (consentClicked) console.log('[LOGIN DEBUG] Consent Accept clicked via text search')
+        }
+
+        if (consentClicked) {
+          // Wait for the Accept button to disappear — confirms LinkedIn accepted the click
+          // and has set its own li_gc cookie in the browser context.
+          await page.waitForSelector(
+            'button[action-type="ACCEPT"], button[data-tracking-control-name="cookie_policy_banner_accept"]',
+            { state: 'detached', timeout: 5_000 }
+          ).catch(() => { /* timeout is fine — banner may have already been removed */ })
+          await DELAY(500) // brief pause for LinkedIn to write consent cookies
+          console.log('[LOGIN DEBUG] Consent banner dismissed — li_gc should now be set by LinkedIn')
+        } else {
+          console.log('[LOGIN DEBUG] No consent banner found on homepage (already accepted or not shown)')
+        }
+      } catch (homepageErr) {
+        console.log('[LOGIN DEBUG] Homepage consent-first navigation error (continuing):', String(homepageErr).substring(0, 100))
+      }
+    }
+
     // Navigate to LinkedIn login — retry up to 3× on proxy 502/no_peer errors.
     // Static residential proxies occasionally return 502 when the tunnel peer is
     // temporarily unavailable; a fresh attempt usually succeeds within seconds.
@@ -699,51 +760,58 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     }
 
     // ── Cookie consent dismissal (banner OR full-page redirect) ─────────────────
-    // LinkedIn renders the consent banner asynchronously after the page loads.
-    // Wait up to 5s for it to appear, then try attribute selectors first,
-    // then fall back to a language-agnostic text search across all languages.
-    // If the URL also changed to a consent/cookie page, navigate back to /login.
+    // In CDP mode the consent-first flow above (homepage → accept → /login) should
+    // have already set li_gc. This block is a safety net for both modes.
+    // Strategy: wait for the Accept button, click it, then wait for it to disappear
+    // (confirms LinkedIn processed the click and set its own consent cookie).
     {
-      // Wait briefly for the banner to hydrate before querying.
-      // With li_gc pre-injected the banner rarely appears — keep this short.
-      await page.waitForSelector(
-        'button[action-type="ACCEPT"], button[data-tracking-control-name="cookie_policy_banner_accept"], #artdeco-global-alert-action--accept, button.artdeco-global-alert__action',
-        { timeout: 2_000 }
-      ).catch(() => { /* banner may not appear — that's fine */ })
-
-      // Strategy 1: attribute-based selectors
-      let dismissedViaAttr = false
-      for (const selector of [
+      const CONSENT_ACCEPT_SELECTORS = [
         'button[action-type="ACCEPT"]',
         'button[data-tracking-control-name="cookie_policy_banner_accept"]',
         '#artdeco-global-alert-action--accept',
         'button.artdeco-global-alert__action',
         'button[data-control-name="accept"]',
         'button[data-tracking-control-name*="accept"]',
-      ]) {
+      ]
+
+      // Wait up to 3s for any consent button to appear
+      await page.waitForSelector(CONSENT_ACCEPT_SELECTORS.join(', '), { timeout: 3_000 })
+        .catch(() => { /* fine — banner not present */ })
+
+      // Strategy 1: attribute-based selectors — click and wait for banner to vanish
+      let dismissedViaAttr = false
+      for (const selector of CONSENT_ACCEPT_SELECTORS) {
         try {
           const exists = await page.$(selector)
-          if (exists) { await jsClick(selector); await DELAY(1000); dismissedViaAttr = true; break }
+          if (exists) {
+            await jsClick(selector)
+            console.log(`[LOGIN DEBUG] Consent banner clicked via: ${selector}`)
+            // Wait for the button to be removed from DOM — confirms LinkedIn accepted it
+            await page.waitForSelector(selector, { state: 'detached', timeout: 4_000 }).catch(() => {})
+            dismissedViaAttr = true
+            break
+          }
         } catch { /* ok */ }
       }
 
       // Strategy 2: language-agnostic text search — handles any locale
-      // Covers: English, Danish, Indonesian, French, German, Dutch, Spanish, Italian, Arabic, etc.
       if (!dismissedViaAttr) {
         const clicked = await page.evaluate(() => {
           const btns = Array.from(document.querySelectorAll('button, a[role="button"]'))
           const accept = btns.find(b => {
             const t = (b.textContent ?? '').trim()
-            // Single-word accept tokens in many languages
             return /^(accept|allow|terima|acceptér|accepter|akkoord|aceptar|accetta|akzeptieren|agree|ok|قبول|同意|허용|kabul)$/i.test(t)
           })
           if (accept) { (accept as HTMLElement).click(); return true }
           return false
         }).catch(() => false)
-        if (clicked) await DELAY(1000)
+        if (clicked) {
+          console.log('[LOGIN DEBUG] Consent banner clicked via text search')
+          await DELAY(1_500) // give LinkedIn time to process and remove banner
+        }
       }
 
-      // If the page URL changed to a consent/cookie/authwall page, navigate back
+      // If URL changed to a consent/cookie/authwall page, navigate back to login
       const postConsentUrl = page.url()
       if (/\/cookie|\/consent|\/authwall/i.test(postConsentUrl)) {
         console.log(`[LOGIN DEBUG] Consent page redirect at ${postConsentUrl} — navigating back to /login`)
@@ -1327,15 +1395,81 @@ async function runLogin(key: string, email: string, password: string): Promise<v
 
       console.log('[LOGIN DEBUG] fetch-submit result:', JSON.stringify(fetchResult))
 
-      // Navigate to wherever LinkedIn redirected us after the POST
-      const dest = fetchResult.finalUrl || ''
-      if (dest && !dest.includes('/login')) {
-        await page.goto(dest, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => {})
+      // If the fetch returned a consent/cookie page URL, the li_gc cookie wasn't valid.
+      // Accept the banner NOW (LinkedIn will set its own li_gc), then retry the POST once.
+      const destUrl = fetchResult.finalUrl || ''
+      if (/\/cookie|\/consent|\/authwall/i.test(destUrl) || destUrl.includes('needsConsent')) {
+        console.log('[LOGIN DEBUG] fetch-submit returned consent page — accepting banner and retrying POST')
+        await page.goto(destUrl, { waitUntil: 'domcontentloaded', timeout: 20_000 }).catch(() => {})
+        await DELAY(1_000)
+        // Click the consent Accept button on this page and wait for it to be gone
+        const consentAccepted = await (async () => {
+          for (const sel of [
+            'button[action-type="ACCEPT"]',
+            'button[data-tracking-control-name="cookie_policy_banner_accept"]',
+            '#artdeco-global-alert-action--accept',
+          ]) {
+            const btn = await page.$(sel).catch(() => null)
+            if (btn) {
+              await btn.click()
+              await page.waitForSelector(sel, { state: 'detached', timeout: 4_000 }).catch(() => {})
+              console.log('[LOGIN DEBUG] Consent banner clicked on consent page')
+              return true
+            }
+          }
+          return false
+        })()
+        if (consentAccepted) {
+          await DELAY(500)
+          // Navigate back to /login and retry submit
+          await page.goto('https://www.linkedin.com/login', { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => {})
+          await DELAY(1_500)
+          // Re-submit
+          const retryResult = await page.evaluate(async (args: { email: string; pass: string }) => {
+            const form = document.querySelector('form') as HTMLFormElement | null
+            const params = new URLSearchParams()
+            Array.from(form?.querySelectorAll('input') ?? []).forEach(inp => {
+              const i = inp as HTMLInputElement
+              if (i.name && i.type !== 'submit' && !i.disabled) params.set(i.name, i.value)
+            })
+            params.set('session_key',      args.email)
+            params.set('session_password', args.pass)
+            const action = form?.getAttribute('action') || '/checkpoint/lg/login-submit'
+            try {
+              const r = await fetch(action, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                credentials: 'include',
+                body: params.toString(),
+              })
+              return { ok: r.ok, status: r.status, finalUrl: r.url }
+            } catch (e) {
+              return { ok: false, status: 0, finalUrl: '', error: String(e) }
+            }
+          }, { email, pass: password }).catch(e => ({ ok: false, status: 0, finalUrl: '', error: String(e) }))
+          console.log('[LOGIN DEBUG] fetch-submit RETRY result:', JSON.stringify(retryResult))
+          const retryDest = retryResult.finalUrl || ''
+          if (retryDest && !retryDest.includes('/login')) {
+            await page.goto(retryDest, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => {})
+          } else {
+            await page.reload({ waitUntil: 'domcontentloaded', timeout: 20_000 }).catch(() => {})
+          }
+          await DELAY(1_500)
+        } else {
+          // Couldn't accept consent — navigate to login and reload to see state
+          await page.goto('https://www.linkedin.com/login', { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => {})
+          await DELAY(1_500)
+        }
       } else {
-        // Stay on login page — reload to see current session state / error message
-        await page.reload({ waitUntil: 'domcontentloaded', timeout: 20_000 }).catch(() => {})
+        // Normal path: navigate to wherever LinkedIn redirected us after the POST
+        if (destUrl && !destUrl.includes('/login')) {
+          await page.goto(destUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => {})
+        } else {
+          // Stay on login page — reload to see current session state / error message
+          await page.reload({ waitUntil: 'domcontentloaded', timeout: 20_000 }).catch(() => {})
+        }
+        await DELAY(1500)
       }
-      await DELAY(1500)
     } else {
       const submitBtn = await page.$(
         'button[type="submit"], .btn__primary--large, ' +
