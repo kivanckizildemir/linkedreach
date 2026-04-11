@@ -38,14 +38,14 @@ export async function schedulePendingLeads(): Promise<void> {
 
     if (!leads || leads.length === 0) continue
 
-    type RawLead = { id: string; account_id: string | null; leads: { icp_score: number | null } | null }
+    type RawLead = { id: string; account_id: string | null; leads: { icp_score: number | null } | { icp_score: number | null }[] | null }
 
     // Resolve each lead's effective account_id: use the lead's own, fall back to campaign's
     const resolvedLeads = (leads as RawLead[])
       .map(l => ({
         id: l.id,
         effective_account_id: l.account_id ?? campaign.account_id,
-        icp_score: l.leads?.icp_score ?? null,
+        icp_score: (Array.isArray(l.leads) ? l.leads[0]?.icp_score : l.leads?.icp_score) ?? null,
       }))
       .filter(l => l.effective_account_id !== null) as Array<{ id: string; effective_account_id: string; icp_score: number | null }>
 

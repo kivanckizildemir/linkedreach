@@ -93,6 +93,7 @@ interface SequenceStep {
   condition: Record<string, unknown> | null
   parent_step_id: string | null
   branch: 'main' | 'if_yes' | 'if_no'
+  ai_generation_mode: boolean | null
 }
 
 interface CampaignLead {
