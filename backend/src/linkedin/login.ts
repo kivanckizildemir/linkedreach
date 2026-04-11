@@ -767,7 +767,11 @@ async function runLogin(key: string, email: string, password: string): Promise<v
         await DELAY(4000)
         console.log(`[LOGIN DEBUG] CAPTCHA submitted — page now at ${page.url()}`)
       } else {
-        console.warn('[LOGIN DEBUG] 2captcha solve failed for initial CAPTCHA — proceeding anyway')
+        console.warn('[LOGIN DEBUG] 2captcha solve failed for initial CAPTCHA — aborting login')
+        session.status = 'error'
+        session.error  = 'LinkedIn is showing a CAPTCHA that cannot be solved automatically (TWOCAPTCHA_API_KEY not configured). Please try again in a few minutes or use the browser extension method to connect.'
+        await browser.close().catch(() => {})
+        return
       }
     }
 
@@ -1182,11 +1186,14 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       // With the browser-click approach, we are ALREADY on the challenge page after submit.
       // Wait for networkidle so the React/JS challenge UI fully renders before we read it.
       // LinkedIn's challenge pages load their content via API calls after the initial HTML.
+      // Use Promise.race — Playwright's built-in timeout can hang on certain proxy/redirect
+      // states where requests never fully settle, blocking indefinitely.
       let postNavUrl = page.url()
       let postNavText = ''
-      try {
-        await page.waitForLoadState('networkidle', { timeout: 8_000 })
-      } catch { /* ok — some challenges never reach networkidle */ }
+      await Promise.race([
+        page.waitForLoadState('networkidle').catch(() => {}),
+        DELAY(8_000),
+      ])
       await DELAY(1_000) // extra buffer for any lazy-loaded challenge widgets
       postNavUrl = page.url()
       postNavText = await page.evaluate(() => (document.body?.innerText ?? '').substring(0, 600)).catch(() => '') as string
