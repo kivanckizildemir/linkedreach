@@ -1296,41 +1296,46 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       //   1. Native value setter updates the DOM (and React state via dispatched events)
       //   2. form.submit() sends raw DOM values, bypassing any SPA JS interception
       //   3. page.route() interceptor above also fires as a belt-and-suspenders backup
-      console.log('[LOGIN DEBUG] CDP mode: evaluate-inject password + form.submit()')
-      await page.evaluate((args: { pass: string }) => {
-        const passEl = document.querySelector(
-          '#password, input[name="session_password"], input[type="password"]'
-        ) as HTMLInputElement | null
-        if (passEl) {
-          // Temporarily un-hide to allow value setter (BrightData may block password fields)
-          const origType = passEl.type
-          passEl.setAttribute('type', 'text')
-          const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
-          if (setter) setter.call(passEl, args.pass); else passEl.value = args.pass
-          passEl.dispatchEvent(new Event('input',  { bubbles: true }))
-          passEl.dispatchEvent(new Event('change', { bubbles: true }))
-          passEl.setAttribute('type', origType)
-        }
-        // Submit form directly — includes all hidden fields (CSRF etc.) + the password we just set
+      // CDP mode: submit via fetch() from page context — does NOT navigate the page so
+      // BrightData's CDP session stays alive. form.submit() causes a navigation that
+      // drops the WebSocket connection ("Browser session closed unexpectedly").
+      console.log('[LOGIN DEBUG] CDP mode: fetch-submit from page context')
+      const fetchResult = await page.evaluate(async (args: { email: string; pass: string }) => {
         const form = document.querySelector('form') as HTMLFormElement | null
-        if (form) form.submit()
-        else {
-          const btn = document.querySelector('button[type="submit"], form button') as HTMLElement | null
-          if (btn) btn.click()
+        const params = new URLSearchParams()
+        // Collect all visible form inputs (CSRF, hidden fields, email…)
+        Array.from(form?.querySelectorAll('input') ?? []).forEach(inp => {
+          const i = inp as HTMLInputElement
+          if (i.name && i.type !== 'submit' && !i.disabled) params.set(i.name, i.value)
+        })
+        // Override credentials
+        params.set('session_key',      args.email)
+        params.set('session_password', args.pass)
+        const action = form?.getAttribute('action') || '/checkpoint/lg/login-submit'
+        try {
+          const r = await fetch(action, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            credentials: 'include',
+            body: params.toString(),
+          })
+          return { ok: r.ok, status: r.status, finalUrl: r.url }
+        } catch (e) {
+          return { ok: false, status: 0, finalUrl: '', error: String(e) }
         }
-      }, { pass: password }).catch(() => {
-        // evaluate failed — fall back to button click (route interceptor handles password)
-        return page.$('button[type="submit"], .btn__primary--large').then(btn => btn?.click())
-      })
-      // Wait for navigation — route interceptor fires during this, then LinkedIn redirects
-      try {
-        await page.waitForURL(
-          (u) => !String(u).includes('/login') || String(u).includes('/checkpoint') || String(u).includes('/challenge'),
-          { timeout: 20_000, waitUntil: 'domcontentloaded' }
-        )
-      } catch {
-        console.log('[LOGIN DEBUG] waitForURL timed out after CDP submit — checking page state anyway')
+      }, { email, pass: password }).catch(e => ({ ok: false, status: 0, finalUrl: '', error: String(e) }))
+
+      console.log('[LOGIN DEBUG] fetch-submit result:', JSON.stringify(fetchResult))
+
+      // Navigate to wherever LinkedIn redirected us after the POST
+      const dest = fetchResult.finalUrl || ''
+      if (dest && !dest.includes('/login')) {
+        await page.goto(dest, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => {})
+      } else {
+        // Stay on login page — reload to see current session state / error message
+        await page.reload({ waitUntil: 'domcontentloaded', timeout: 20_000 }).catch(() => {})
       }
+      await DELAY(1500)
     } else {
       const submitBtn = await page.$(
         'button[type="submit"], .btn__primary--large, ' +
