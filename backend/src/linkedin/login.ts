@@ -760,11 +760,21 @@ async function runLogin(key: string, email: string, password: string): Promise<v
               if (typeof cb === 'function') try { cb(token) } catch { /* ok */ }
             }
           }
-          // Submit the form
-          const form = document.querySelector('form') as HTMLFormElement | null
-          if (form) form.submit()
+          // Click submit button (fires JS event listeners) rather than form.submit()
+          // LinkedIn's SPA intercepts the click; form.submit() bypasses it and returns a bare response
+          const btn = document.querySelector('button[type="submit"], .btn__primary--large, [data-id="sign-in-form__submit-btn"]') as HTMLElement | null
+          if (btn) btn.click()
+          else {
+            const form = document.querySelector('form') as HTMLFormElement | null
+            if (form) form.submit()
+          }
         }, captchaToken)
-        await DELAY(4000)
+        // Wait for the page to navigate away from login before continuing
+        await Promise.race([
+          page.waitForURL(u => !String(u).includes('/login') || String(u).includes('/checkpoint') || String(u).includes('/feed'), { timeout: 12_000 }).catch(() => {}),
+          DELAY(12_000),
+        ])
+        await DELAY(1_000)
         console.log(`[LOGIN DEBUG] CAPTCHA submitted — page now at ${page.url()}`)
       } else {
         console.warn('[LOGIN DEBUG] 2captcha solve failed for initial CAPTCHA — aborting login')
