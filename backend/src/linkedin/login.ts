@@ -431,21 +431,51 @@ async function runLogin(key: string, email: string, password: string): Promise<v
         ? existingContexts[0]
         : await browser.newContext({ locale: 'en-US', viewport: { width: 1280, height: 800 } })
 
-      // Pre-inject LinkedIn consent cookies so the GDPR banner never appears.
-      // BrightData uses a fresh browser each session so cookies don't persist —
-      // injecting them here prevents the consent overlay on every navigation.
+      // Inject a MutationObserver init script that auto-clicks the consent Accept
+      // button the instant it appears in the DOM — language-agnostic, fires before
+      // any page JavaScript can re-render or re-attach the banner.
+      // This is more reliable than waitForSelector + click() after the fact because:
+      //   1. Works in any language (Norwegian, Ukrainian, Arabic, etc.)
+      //   2. Fires synchronously on DOM insertion — no timing race
+      //   3. Runs inside the page context so BrightData can't sandbox it
       try {
-        await context.addCookies([
-          // li_gc: LinkedIn GDPR consent — "all accepted, no consent needed"
-          { name: 'li_gc', value: 'v=2&well-knownversion=1&needsConsent=0&display=1&lang=en&interactionMode=1&timestamp=' + Date.now(), domain: '.linkedin.com', path: '/', expires: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 365 },
-          // bcookie: browser ID cookie, expected by LinkedIn on every request
-          { name: 'bcookie', value: `"v=2&${Math.random().toString(36).slice(2)}"`, domain: '.linkedin.com', path: '/', expires: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 365 },
-          // lidc: data centre routing cookie
-          { name: 'lidc', value: `"b=VB87:s=V:r=V:a=V:p=V:g=3386:u=1:x=1:i=${Math.floor(Date.now()/1000)}:t=${Math.floor(Date.now()/1000) + 86400}:v=2:sig=AQFN1VB"`, domain: '.linkedin.com', path: '/', expires: Math.floor(Date.now() / 1000) + 86400 },
-        ])
-        console.log('[LOGIN DEBUG] Pre-injected LinkedIn consent cookies into BrightData context')
-      } catch (cookieErr) {
-        console.warn('[LOGIN DEBUG] Could not pre-inject consent cookies:', cookieErr)
+        await context.addInitScript(() => {
+          const tryAccept = () => {
+            // Attribute-based: LinkedIn artdeco consent button
+            const attrBtn = document.querySelector(
+              'button[action-type="ACCEPT"], ' +
+              'button[data-tracking-control-name="cookie_policy_banner_accept"], ' +
+              '#artdeco-global-alert-action--accept, ' +
+              'button[data-control-name="accept"]'
+            ) as HTMLElement | null
+            if (attrBtn) { attrBtn.click(); return true }
+            // Fallback: any button whose FULL text is a single "accept"-like word
+            // Covers 30+ languages without needing a hardcoded list
+            const allBtns = Array.from(document.querySelectorAll('button'))
+            const acceptBtn = allBtns.find(b => {
+              const t = (b.textContent ?? '').trim().toLowerCase()
+              // Match short single-word accept tokens (≤12 chars, no spaces)
+              return t.length > 0 && t.length <= 12 && !/\s/.test(t) &&
+                /^(accept|allow|agree|ok|terima|accepter|akkoord|aceptar|accetta|akzept|kabul|прийняти|принять|accep|godta|acceptér|hyväksy|elfogad|قبول|同意|허용|承認|ยอมรับ)/.test(t)
+            }) as HTMLElement | undefined
+            if (acceptBtn) { acceptBtn.click(); return true }
+            return false
+          }
+
+          // Try immediately in case the banner is already in the DOM
+          if (!tryAccept()) {
+            // Watch for banner to be inserted dynamically
+            const obs = new MutationObserver(() => {
+              if (tryAccept()) obs.disconnect()
+            })
+            obs.observe(document.documentElement, { childList: true, subtree: true })
+            // Stop watching after 15s to avoid memory leaks on pages without a banner
+            setTimeout(() => obs.disconnect(), 15_000)
+          }
+        })
+        console.log('[LOGIN DEBUG] Consent MutationObserver init script injected')
+      } catch (initErr) {
+        console.warn('[LOGIN DEBUG] Could not inject consent init script:', initErr)
       }
 
     } else {
