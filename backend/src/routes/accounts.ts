@@ -222,11 +222,12 @@ accountsRouter.post('/:id/connect-interact/:sessionKey', async (req: Request, re
 })
 
 // POST /api/accounts/:id/health-check — verify saved cookies still log into LinkedIn
-// Uses direct HTTP (no browser) so it works from any IP without a residential proxy.
+// Uses direct HTTP (no browser). LinkedIn's Voyager API accepts authenticated requests
+// from any IP when all cookies + proper headers are sent — no residential proxy needed.
 accountsRouter.post('/:id/health-check', async (req: Request, res: Response) => {
   const { data: account, error: accountErr } = await supabase
     .from('linkedin_accounts')
-    .select('id, cookies, status')
+    .select('id, cookies, status, proxy_id')
     .eq('id', req.params.id)
     .eq('user_id', req.user.id)
     .single()
@@ -253,31 +254,55 @@ accountsRouter.post('/:id/health-check', async (req: Request, res: Response) => 
 
     // Send ALL saved cookies (not just li_at) — LinkedIn may require bcookie, JSESSIONID, etc.
     const cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join('; ')
+    const jsessionid = cookies.find(c => c.name === 'JSESSIONID')?.value?.replace(/"/g, '') ?? 'ajax:0'
 
-    // Route through the residential proxy so LinkedIn doesn't block datacenter IPs
-    const proxyUrl = process.env.PROXY_HOST && process.env.PROXY_USERNAME
-      ? `http://${encodeURIComponent(process.env.PROXY_USERNAME)}:${encodeURIComponent(process.env.PROXY_PASSWORD ?? '')}@${process.env.PROXY_HOST}:${process.env.PROXY_PORT ?? '10000'}`
-      : process.env.BRIGHTDATA_PROXY_URL ?? null
+    // Build proxy agent — prefer account's own residential proxy (proxy_id → proxies table),
+    // fall back to BRIGHTDATA_PROXY_URL env var, then try direct (no proxy).
+    // Never use PROXY_HOST/PROXY_USERNAME env vars — those point to nsocks (datacenter IP)
+    // which gets 999-blocked by LinkedIn just like Railway's own IP.
+    let agent: ProxyAgent | undefined
+    if ((account as { proxy_id?: string | null }).proxy_id) {
+      const { data: proxyRow } = await supabase
+        .from('proxies')
+        .select('proxy_url')
+        .eq('id', (account as { proxy_id: string }).proxy_id)
+        .single()
+      if (proxyRow) {
+        agent = new ProxyAgent((proxyRow as { proxy_url: string }).proxy_url)
+      }
+    }
+    if (!agent && process.env.BRIGHTDATA_PROXY_URL) {
+      agent = new ProxyAgent(process.env.BRIGHTDATA_PROXY_URL)
+    }
+    // If neither residential proxy is available, try direct — Voyager API often works
+    // without a proxy when all auth cookies + LinkedIn headers are present.
 
-    const agent = proxyUrl ? new ProxyAgent(proxyUrl) : undefined
+    const attemptProbe = async (useAgent: ProxyAgent | undefined) =>
+      fetch('https://www.linkedin.com/voyager/api/me', {
+        method: 'GET',
+        headers: {
+          Cookie: cookieHeader,
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+            '(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+          Accept: 'application/vnd.linkedin.normalized+json+2.1',
+          'x-li-lang': 'en_US',
+          'x-restli-protocol-version': '2.0.0',
+          'csrf-token': jsessionid,
+        },
+        ...(useAgent ? { dispatcher: useAgent } : {}),
+        signal: AbortSignal.timeout(12_000),
+      } as RequestInit)
 
-    // Use the Voyager API — returns clean 200 (valid) or 401 (expired), no redirect ambiguity.
-    // Much more reliable than hitting /feed/ which returns 999 from datacenter IPs.
-    const probe = await fetch('https://www.linkedin.com/voyager/api/me', {
-      method: 'GET',
-      headers: {
-        Cookie: cookieHeader,
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
-          '(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        Accept: 'application/vnd.linkedin.normalized+json+2.1',
-        'x-li-lang': 'en_US',
-        'x-restli-protocol-version': '2.0.0',
-        'csrf-token': cookies.find(c => c.name === 'JSESSIONID')?.value?.replace(/"/g, '') ?? 'ajax:0',
-      },
-      ...(agent ? { dispatcher: agent } : {}),
-      signal: AbortSignal.timeout(12_000),
-    } as RequestInit)
+    // First attempt (with proxy if available)
+    let probe = await attemptProbe(agent)
+
+    // If proxy returned 999/blocked AND we had a proxy, retry without it — direct call
+    // might succeed since Voyager API is more permissive than browser-facing endpoints
+    if (probe.status === 999 && agent) {
+      console.log(`[health-check] ${req.params.id} proxy returned 999 — retrying direct`)
+      probe = await attemptProbe(undefined)
+    }
 
     if (probe.status === 200) {
       if (account.status === 'paused') {
