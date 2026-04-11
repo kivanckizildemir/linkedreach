@@ -139,9 +139,9 @@ async function pollAccountInbox(account: Account): Promise<void> {
         }))
       )
 
-      // Classify the latest received message if not yet classified
+      // Classify the latest received message — always update so later replies can change the classification
       const receivedMessages = newMessages.filter(m => m.direction === 'received')
-      if (receivedMessages.length > 0 && cl.reply_classification === 'none') {
+      if (receivedMessages.length > 0) {
         const latest = receivedMessages[receivedMessages.length - 1]
         try {
           const { classification } = await classifyReply(latest.content)

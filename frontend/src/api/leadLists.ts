@@ -55,6 +55,7 @@ export async function importSalesNavList(payload: {
   search_url: string
   account_id: string
   max_leads?: number
+  source_type?: string
 }): Promise<{ job_id: string; list_id: string; list_name: string }> {
   const res = await apiFetch('/api/lead-lists/import-sales-nav', {
     method: 'POST',
@@ -121,6 +122,7 @@ export async function scrapeIntoList(listId: string, payload: {
   search_url: string
   account_id: string
   max_leads?: number
+  source_type?: string
 }): Promise<{ job_id: string; list_id: string }> {
   const res = await apiFetch(`/api/lead-lists/${listId}/scrape`, {
     method: 'POST',
@@ -148,4 +150,9 @@ export async function importExcelIntoList(listId: string, file: File): Promise<{
 export async function getListScrapeStatus(jobId: string) {
   const res = await apiFetch(`/api/leads/scrape-status/${jobId}`)
   return res.json() as Promise<{ state: string; progress: number; result?: { scraped: number; saved: number }; error?: string }>
+}
+
+export async function cancelScrapeJob(jobId: string) {
+  const res = await apiFetch(`/api/leads/scrape-status/${jobId}`, { method: 'DELETE' })
+  return res.json() as Promise<{ ok: boolean }>
 }

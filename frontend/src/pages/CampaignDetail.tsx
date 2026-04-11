@@ -1,21 +1,23 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { ReactFlowProvider } from '@xyflow/react'
 import {
   fetchCampaign,
   fetchCampaignLeads,
+  fetchCampaignActivity,
   updateCampaign,
   removeCampaignLead,
   addLeadsToCampaign,
   scoreEngagement,
   type Campaign,
   type CampaignLead,
+  type CampaignActivityEntry,
 } from '../api/campaigns'
 import { fetchAccounts } from '../api/accounts'
 import { fetchLeadLists, fetchListLeads } from '../api/leadLists'
 import { apiFetch } from '../lib/fetchJson'
-import { fetchSequences, createSequence } from '../api/sequences'
+import { fetchSequences, createSequence, type SequenceStep } from '../api/sequences'
 import { FlowCanvas } from './SequenceBuilder'
 import { ChatSequenceBuilder } from '../components/ChatSequenceBuilder'
 
@@ -57,6 +59,155 @@ const ICP_LABELS: Record<string, string> = {
   hot: '🔥 Hot', warm: '☀️ Warm', cold: '❄️ Cold', disqualified: '✗ Disqualified',
 }
 
+// ── Action labels & icons for the activity feed ──────────────────────────────
+const ACTION_META: Record<string, { label: string; icon: string; color: string }> = {
+  view_profile:    { label: 'Viewed profile',       icon: '👁',  color: 'text-gray-500' },
+  connect:         { label: 'Connection sent',       icon: '🔗',  color: 'text-blue-600' },
+  connection_sent: { label: 'Connection sent',       icon: '🔗',  color: 'text-blue-600' },
+  message:         { label: 'Message sent',          icon: '💬',  color: 'text-purple-600' },
+  message_sent:    { label: 'Message sent',          icon: '💬',  color: 'text-purple-600' },
+  follow:          { label: 'Followed',              icon: '➕',  color: 'text-indigo-500' },
+  react_post:      { label: 'Reacted to post',       icon: '👍',  color: 'text-pink-500' },
+  inmail:          { label: 'InMail sent',           icon: '✉️',  color: 'text-teal-600' },
+  reply_received:  { label: 'Reply received',        icon: '📩',  color: 'text-green-600' },
+  connected:       { label: 'Connected',             icon: '✅',  color: 'text-green-600' },
+}
+
+function timeAgo(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime()
+  const mins = Math.floor(diff / 60_000)
+  if (mins < 1)  return 'just now'
+  if (mins < 60) return `${mins}m ago`
+  const hrs = Math.floor(mins / 60)
+  if (hrs < 24)  return `${hrs}h ago`
+  return `${Math.floor(hrs / 24)}d ago`
+}
+
+function ActivityFeed({ entries }: { entries: CampaignActivityEntry[] }) {
+  return (
+    <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6 mt-4">
+      <h3 className="text-sm font-semibold text-gray-900 mb-4">Activity Log</h3>
+      {entries.length === 0 ? (
+        <p className="text-sm text-gray-400 italic text-center py-6">
+          No activity yet — actions will appear here as the sequence runs.
+        </p>
+      ) : (
+        <div className="divide-y divide-gray-50 max-h-80 overflow-y-auto">
+          {entries.map(e => {
+            const meta = ACTION_META[e.action] ?? { label: e.action.replace(/_/g, ' '), icon: '·', color: 'text-gray-600' }
+            return (
+              <div key={e.id} className="flex items-center gap-3 py-2.5">
+                <span className="text-base w-5 text-center shrink-0">{meta.icon}</span>
+                <div className="flex-1 min-w-0">
+                  <span className={`text-xs font-semibold ${meta.color}`}>{meta.label}</span>
+                  {e.detail && (
+                    <span className="text-xs text-gray-400 ml-1.5 truncate">{e.detail}</span>
+                  )}
+                </div>
+                <span className="text-[10px] text-gray-300 shrink-0 tabular-nums">{timeAgo(e.created_at)}</span>
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Next Action cell ─────────────────────────────────────────────────────────
+const STEP_ICON: Record<string, string> = {
+  connect:      '🔗',
+  message:      '💬',
+  view_profile: '👁',
+  react_post:   '👍',
+  wait:         '⏳',
+  inmail:       '✉️',
+  follow:       '➕',
+  fork:         '🔀',
+  end:          '✅',
+}
+
+function etaLabel(dueMs: number): string {
+  const diff = dueMs - Date.now()
+  if (diff <= 0) return 'overdue · running soon'
+  const mins = Math.floor(diff / 60_000)
+  if (mins < 60)  return `in ${mins}m`
+  const hrs = Math.floor(mins / 60)
+  if (hrs < 24)   return `in ${hrs}h`
+  const days = Math.floor(hrs / 24)
+  const remHrs = hrs % 24
+  return remHrs > 0 ? `in ${days}d ${remHrs}h` : `in ${days}d`
+}
+
+function NextActionCell({ cl, steps }: { cl: CampaignLead; steps: SequenceStep[] }) {
+  // Terminal states — nothing pending
+  if (['stopped', 'converted'].includes(cl.status)) {
+    return <span className="text-xs text-gray-300">—</span>
+  }
+
+  if (steps.length === 0) {
+    return <span className="text-xs text-gray-300">no sequence</span>
+  }
+
+  // Find current step node
+  let currentStep: SequenceStep | undefined
+  if (cl.current_step === 0) {
+    // Not started yet — show first step
+    currentStep = steps.find(s => s.parent_step_id === null && s.branch === 'main')
+    if (!currentStep) currentStep = steps[0]
+    const icon = STEP_ICON[currentStep?.type ?? ''] ?? '·'
+    const label = (currentStep?.type ?? 'start').replace(/_/g, ' ')
+    return (
+      <div className="flex flex-col gap-0.5">
+        <span className="text-xs font-medium text-gray-700">{icon} {label}</span>
+        <span className="text-[10px] text-blue-500">pending · starts soon</span>
+      </div>
+    )
+  }
+
+  currentStep = steps.find(s => s.step_order === cl.current_step)
+  if (!currentStep) return <span className="text-xs text-gray-300">—</span>
+
+  if (currentStep.type === 'wait') {
+    // Compute when the wait ends
+    const waitVal  = currentStep.wait_days ?? 1
+    const waitUnit = (currentStep.condition?.wait_unit as string) ?? 'days'
+    const waitMs   = waitUnit === 'minutes' ? waitVal * 60_000
+      : waitUnit === 'hours' ? waitVal * 3_600_000
+      : waitVal * 86_400_000
+
+    const lastAt = cl.last_action_at ? new Date(cl.last_action_at).getTime() : null
+    const dueMs  = lastAt ? lastAt + waitMs : null
+
+    // Next action is the step after this wait
+    const afterWait = steps.find(s =>
+      s.step_order > currentStep!.step_order &&
+      s.parent_step_id === currentStep!.parent_step_id &&
+      s.branch === currentStep!.branch
+    )
+    const nextIcon  = afterWait ? (STEP_ICON[afterWait.type] ?? '·') : '✅'
+    const nextLabel = afterWait ? afterWait.type.replace(/_/g, ' ') : 'done'
+
+    return (
+      <div className="flex flex-col gap-0.5">
+        <span className="text-xs font-medium text-gray-700">{nextIcon} {nextLabel}</span>
+        <span className={`text-[10px] ${dueMs && dueMs > Date.now() ? 'text-gray-400' : 'text-orange-500'}`}>
+          {dueMs ? etaLabel(dueMs) : 'scheduled'}
+        </span>
+      </div>
+    )
+  }
+
+  // Current step is an action step — it's pending scheduler pickup
+  const icon  = STEP_ICON[currentStep.type] ?? '·'
+  const label = currentStep.type.replace(/_/g, ' ')
+  return (
+    <div className="flex flex-col gap-0.5">
+      <span className="text-xs font-medium text-gray-700">{icon} {label}</span>
+      <span className="text-[10px] text-blue-500">queued · running soon</span>
+    </div>
+  )
+}
 
 export function CampaignDetail() {
   const { id } = useParams<{ id: string }>()
@@ -70,6 +221,10 @@ export function CampaignDetail() {
   const [sortCol, setSortCol] = useState<'name' | 'company' | 'icp' | 'engagement' | 'status' | 'reply'>('name')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc')
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [scoreEngStatus, setScoreEngStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle')
+  const [scoreEngProgress, setScoreEngProgress] = useState(0)
+  const [scoreEngTotal, setScoreEngTotal] = useState(0)
+  const scoreEngCancelRef = useRef(false)
 
   const { data: campaign, isLoading: campaignLoading } = useQuery({
     queryKey: ['campaign', id],
@@ -81,6 +236,13 @@ export function CampaignDetail() {
     queryKey: ['campaign-leads', id],
     queryFn: () => fetchCampaignLeads(id!),
     enabled: !!id,
+  })
+
+  const { data: activityLog = [] } = useQuery({
+    queryKey: ['campaign-activity', id],
+    queryFn: () => fetchCampaignActivity(id!),
+    enabled: !!id && tab === 'dashboard',
+    refetchInterval: 15_000,
   })
 
   const { data: leadLists = [] } = useQuery({
@@ -126,7 +288,7 @@ export function CampaignDetail() {
   })
 
   const addMutation = useMutation({
-    mutationFn: (leadIds: string[]) => addLeadsToCampaign(id!, leadIds),
+    mutationFn: (leadIds: string[]) => addLeadsToCampaign(id!, leadIds, campaign?.account_id),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['campaign-leads', id] })
       setShowAddLeads(false)
@@ -139,14 +301,31 @@ export function CampaignDetail() {
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['campaign', id] }),
   })
 
-  const scoreEngagementMutation = useMutation({
-    mutationFn: (clIds?: string[]) => scoreEngagement(id!, clIds),
-    onSuccess: (result) => {
+  async function handleScoreEngagement(clIds?: string[]) {
+    const ids = clIds ?? campaignLeads.map(cl => cl.id)
+    if (ids.length === 0) return
+    scoreEngCancelRef.current = false
+    setScoreEngStatus('running')
+    setScoreEngProgress(0)
+    setScoreEngTotal(ids.length)
+    const BATCH = 10
+    let done = 0
+    try {
+      for (let i = 0; i < ids.length; i += BATCH) {
+        if (scoreEngCancelRef.current) break
+        const batch = ids.slice(i, i + BATCH)
+        await scoreEngagement(id!, batch)
+        done += batch.length
+        setScoreEngProgress(Math.round((done / ids.length) * 100))
+      }
       void queryClient.invalidateQueries({ queryKey: ['campaign-leads', id] })
-      alert(`Scored engagement for ${result.scored} of ${result.total} leads.`)
-    },
-    onError: (err: Error) => alert(err.message),
-  })
+      setScoreEngStatus('done')
+      setTimeout(() => setScoreEngStatus('idle'), 3000)
+    } catch {
+      setScoreEngStatus('error')
+      setTimeout(() => setScoreEngStatus('idle'), 3000)
+    }
+  }
 
 
   if (campaignLoading) {
@@ -554,6 +733,9 @@ export function CampaignDetail() {
           </div>
         )
       })()}
+
+      {/* ── Activity Feed ── */}
+      <ActivityFeed entries={activityLog} />
       </>}
 
       {/* ── Leads tab ──────────────────────────────────────────────────── */}
@@ -574,11 +756,29 @@ export function CampaignDetail() {
           <div className="flex items-center gap-2 flex-wrap">
             {campaignLeads.length > 0 && (
               <button
-                onClick={() => scoreEngagementMutation.mutate(undefined)}
-                disabled={scoreEngagementMutation.isPending}
-                className="px-3 py-1.5 text-sm font-medium rounded-lg border border-violet-200 text-violet-700 bg-violet-50 hover:bg-violet-100 transition-colors shrink-0 disabled:opacity-50"
+                onClick={() => {
+                  if (scoreEngStatus === 'running') { scoreEngCancelRef.current = true }
+                  else { void handleScoreEngagement() }
+                }}
+                disabled={scoreEngStatus === 'done' || scoreEngStatus === 'error'}
+                className={`px-3 py-1.5 text-sm font-medium rounded-lg border transition-colors shrink-0 ${
+                  scoreEngStatus === 'running' ? 'border-violet-300 text-violet-700 bg-violet-100 hover:bg-violet-200' :
+                  scoreEngStatus === 'done' ? 'border-green-200 text-green-700 bg-green-50' :
+                  scoreEngStatus === 'error' ? 'border-red-200 text-red-700 bg-red-50' :
+                  'border-violet-200 text-violet-700 bg-violet-50 hover:bg-violet-100'
+                }`}
               >
-                {scoreEngagementMutation.isPending ? '⏳ Scoring…' : '⚡ Score Engagement'}
+                {scoreEngStatus === 'running' ? (
+                  <span className="flex items-center gap-1.5">
+                    <svg className="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 100 16v-4l-3 3 3 3v-4a8 8 0 01-8-8z"/>
+                    </svg>
+                    {scoreEngProgress}% · click to stop
+                  </span>
+                ) : scoreEngStatus === 'done' ? '✓ Done' :
+                  scoreEngStatus === 'error' ? '✕ Error' :
+                  '⚡ Score Engagement'}
               </button>
             )}
             {campaignLeads.length > 0 && (
@@ -634,11 +834,29 @@ export function CampaignDetail() {
               {removeMutation.isPending ? 'Removing…' : '✕ Remove'}
             </button>
             <button
-              onClick={() => scoreEngagementMutation.mutate([...selectedIds])}
-              disabled={scoreEngagementMutation.isPending}
-              className="px-3 py-1.5 bg-violet-50 text-violet-700 border border-violet-200 text-sm font-medium rounded-lg hover:bg-violet-100 transition-colors disabled:opacity-50"
+              onClick={() => {
+                if (scoreEngStatus === 'running') { scoreEngCancelRef.current = true }
+                else { void handleScoreEngagement([...selectedIds]) }
+              }}
+              disabled={scoreEngStatus === 'done' || scoreEngStatus === 'error'}
+              className={`px-3 py-1.5 text-sm font-medium rounded-lg border transition-colors ${
+                scoreEngStatus === 'running' ? 'border-violet-300 text-violet-700 bg-violet-100 hover:bg-violet-200' :
+                scoreEngStatus === 'done' ? 'border-green-200 text-green-700 bg-green-50' :
+                scoreEngStatus === 'error' ? 'border-red-200 text-red-700 bg-red-50' :
+                'border-violet-200 text-violet-700 bg-violet-50 hover:bg-violet-100'
+              }`}
             >
-              {scoreEngagementMutation.isPending ? '⏳ Scoring…' : `⚡ Score Engagement (${selectedIds.size})`}
+              {scoreEngStatus === 'running' ? (
+                <span className="flex items-center gap-1.5">
+                  <svg className="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 100 16v-4l-3 3 3 3v-4a8 8 0 01-8-8z"/>
+                  </svg>
+                  {scoreEngProgress}% · click to stop
+                </span>
+              ) : scoreEngStatus === 'done' ? '✓ Done' :
+                scoreEngStatus === 'error' ? '✕ Error' :
+                `⚡ Score Engagement (${selectedIds.size})`}
             </button>
             <button onClick={() => setSelectedIds(new Set())} className="ml-auto text-sm text-blue-500 hover:text-blue-700">
               Clear selection
@@ -677,6 +895,7 @@ export function CampaignDetail() {
                   <th className="px-4 py-3 text-left font-medium cursor-pointer select-none hover:text-gray-700" onClick={() => toggleSort('engagement')}>Warmth{sortIndicator('engagement')}</th>
                   <th className="px-4 py-3 text-left font-medium cursor-pointer select-none hover:text-gray-700" onClick={() => toggleSort('status')}>Status{sortIndicator('status')}</th>
                   <th className="px-4 py-3 text-left font-medium cursor-pointer select-none hover:text-gray-700" onClick={() => toggleSort('reply')}>Reply{sortIndicator('reply')}</th>
+                  <th className="px-4 py-3 text-left font-medium">Next Action</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
@@ -739,10 +958,13 @@ export function CampaignDetail() {
                           <span className="text-xs text-gray-300">—</span>
                         )}
                         <button
-                          onClick={() => scoreEngagementMutation.mutate([cl.id])}
-                          disabled={scoreEngagementMutation.isPending}
-                          title="Re-score engagement"
-                          className="text-gray-300 hover:text-violet-500 transition-colors disabled:opacity-30 text-xs"
+                          onClick={() => {
+                            if (scoreEngStatus === 'running') { scoreEngCancelRef.current = true }
+                            else { void handleScoreEngagement([cl.id]) }
+                          }}
+                          disabled={scoreEngStatus === 'done' || scoreEngStatus === 'error'}
+                          title={scoreEngStatus === 'running' ? 'Click to stop' : 'Re-score engagement'}
+                          className={`transition-colors disabled:opacity-30 text-xs ${scoreEngStatus === 'running' ? 'text-violet-500 animate-pulse' : 'text-gray-300 hover:text-violet-500'}`}
                         >
                           ⚡
                         </button>
@@ -758,6 +980,9 @@ export function CampaignDetail() {
                         <span className="text-xs text-gray-600 capitalize">{cl.reply_classification.replace(/_/g, ' ')}</span>
                       ) : <span className="text-xs text-gray-300">—</span>}
                     </td>
+                    <td className="px-4 py-3.5">
+                      <NextActionCell cl={cl} steps={sequences[0]?.sequence_steps ?? []} />
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -770,13 +995,13 @@ export function CampaignDetail() {
       {showAddLeads && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl flex flex-col max-h-[80vh]">
-            <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+            <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between shrink-0">
               <h2 className="text-lg font-semibold text-gray-900">Add Leads to Campaign</h2>
               <button onClick={() => { setShowAddLeads(false); setSelectedListToAdd('') }} className="text-gray-400 hover:text-gray-600">✕</button>
             </div>
 
-            <div className="px-6 py-6 space-y-4">
-              <p className="text-sm text-gray-500">Select a lead list to add all its leads to this campaign at once.</p>
+            <div className="flex-1 overflow-y-auto px-6 py-4">
+              <p className="text-sm text-gray-500 mb-3">Select a lead list to add all its leads to this campaign at once.</p>
               <div className="space-y-2">
                 {leadLists.length === 0 ? (
                   <p className="text-sm text-gray-400 text-center py-4">No lead lists found. Create one first.</p>
@@ -807,26 +1032,27 @@ export function CampaignDetail() {
                   ))
                 )}
               </div>
-              <div className="flex gap-3 pt-2">
-                <button
-                  onClick={() => { setShowAddLeads(false); setSelectedListToAdd('') }}
-                  className="flex-1 py-2.5 border border-gray-200 text-sm font-medium rounded-lg hover:bg-gray-50"
-                >
-                  Cancel
-                </button>
-                <button
-                  disabled={!selectedListToAdd || listLeadsFetching || addMutation.isPending}
-                  onClick={() => {
-                    const newLeadIds = selectedListLeads.filter(l => !existingLeadIds.has(l.id)).map(l => l.id)
-                    if (newLeadIds.length > 0) addMutation.mutate(newLeadIds)
-                  }}
-                  className="flex-1 py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-blue-700 disabled:opacity-60"
-                >
-                  {listLeadsFetching ? 'Loading…' : addMutation.isPending ? 'Adding…' : selectedListToAdd && selectedListLeads.length > 0
-                    ? `Add ${selectedListLeads.filter(l => !existingLeadIds.has(l.id)).length} Leads`
-                    : 'Add Leads'}
-                </button>
-              </div>
+            </div>
+
+            <div className="px-6 py-4 border-t border-gray-100 flex gap-3 shrink-0">
+              <button
+                onClick={() => { setShowAddLeads(false); setSelectedListToAdd('') }}
+                className="flex-1 py-2.5 border border-gray-200 text-sm font-medium rounded-lg hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                disabled={!selectedListToAdd || listLeadsFetching || addMutation.isPending}
+                onClick={() => {
+                  const newLeadIds = selectedListLeads.filter(l => !existingLeadIds.has(l.id)).map(l => l.id)
+                  if (newLeadIds.length > 0) addMutation.mutate(newLeadIds)
+                }}
+                className="flex-1 py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-blue-700 disabled:opacity-60"
+              >
+                {listLeadsFetching ? 'Loading…' : addMutation.isPending ? 'Adding…' : selectedListToAdd && selectedListLeads.length > 0
+                  ? `Add ${selectedListLeads.filter(l => !existingLeadIds.has(l.id)).length} Leads`
+                  : 'Add Leads'}
+              </button>
             </div>
           </div>
         </div>
@@ -991,7 +1217,7 @@ const WEIGHT_OPTIONS: { value: CustomCriterion['weight']; label: string; color: 
   { value: 'disqualifier', label: 'Disqualifier', color: 'bg-red-100 text-red-800 border-red-200' },
 ]
 
-export function uid() {
+function uid() {
   return Math.random().toString(36).slice(2, 10)
 }
 
@@ -1152,7 +1378,7 @@ function CampaignSettings({
   }
 
   const [accountId, setAccountId] = useState(campaign.account_id ?? '')
-  const [minScore, setMinScore] = useState(campaign.min_icp_score ?? 0)
+  const [leadPriority, setLeadPriority] = useState<'high_icp' | 'low_icp' | 'fifo'>((campaign as unknown as Record<string, unknown>).lead_priority as 'high_icp' | 'low_icp' | 'fifo' ?? 'high_icp')
   const [connLimit, setConnLimit] = useState(campaign.daily_connection_limit)
   const [msgLimit, setMsgLimit] = useState(campaign.daily_message_limit)
   const [scheduleDays, setScheduleDays] = useState<number[]>(campaign.schedule_days ?? [1,2,3,4,5])
@@ -1192,7 +1418,7 @@ function CampaignSettings({
 
   const isDirty =
     accountId !== (campaign.account_id ?? '') ||
-    minScore !== campaign.min_icp_score ||
+    leadPriority !== (((campaign as unknown as Record<string, unknown>).lead_priority as string | undefined) ?? 'high_icp') ||
     connLimit !== campaign.daily_connection_limit ||
     msgLimit !== campaign.daily_message_limit ||
     JSON.stringify(selectedProductIds) !== JSON.stringify(icp.selected_product_ids ?? []) ||
@@ -1212,7 +1438,7 @@ function CampaignSettings({
   function handleSave() {
     onSave({
       account_id: accountId || null,
-      min_icp_score: minScore,
+      lead_priority: leadPriority,
       daily_connection_limit: connLimit,
       daily_message_limit: msgLimit,
       schedule_days: scheduleDays,
@@ -1240,8 +1466,7 @@ function CampaignSettings({
       ? (accounts.find(a => a.id === accountId)?.linkedin_email ?? 'Selected account')
       : 'Auto-select'
     const limits = `${connLimit} conn · ${msgLimit} msg/day`
-    const scores = minScore > 0 ? `ICP ≥${minScore}` : null
-    return [accountLabel, limits, scores].filter(Boolean).join(' · ')
+    return [accountLabel, limits].filter(Boolean).join(' · ')
   })()
 
   const productsSummary = (() => {
@@ -1478,24 +1703,39 @@ function CampaignSettings({
           </select>
         </div>
 
-        {/* Score thresholds */}
-        <div className="max-w-xs">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Minimum ICP Score</label>
-            <p className="text-xs text-gray-400 mb-2">Only reach out to leads at or above this score. 0 = all leads.</p>
-            <div className="flex items-center gap-3">
-              <input
-                type="range" min={0} max={100} step={5}
-                value={minScore}
-                onChange={e => setMinScore(Number(e.target.value))}
-                className="flex-1"
-              />
-              <span className={`text-sm font-bold w-12 text-center shrink-0 ${minScore >= 75 ? 'text-red-600' : minScore >= 50 ? 'text-orange-500' : minScore > 0 ? 'text-blue-600' : 'text-gray-400'}`}>
-                {minScore > 0 ? `≥${minScore}` : 'Any'}
-              </span>
-            </div>
+        {/* Sequence Priority */}
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Sequence Priority</label>
+          <p className="text-xs text-gray-400 mb-2">Determines the order leads are worked through the sequence.</p>
+          <div className="flex flex-col gap-2 max-w-sm">
+            {([
+              { value: 'high_icp', label: '⬆ Prioritise high ICP score', desc: 'Best-fit leads go first' },
+              { value: 'low_icp',  label: '⬇ Prioritise low ICP score',  desc: 'Lower-fit leads go first' },
+              { value: 'fifo',     label: '↕ Wait for others (FIFO)',      desc: 'Process in the order leads were added' },
+            ] as const).map(opt => (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => setLeadPriority(opt.value)}
+                className={[
+                  'flex items-start gap-3 px-4 py-3 rounded-xl border-2 text-sm text-left transition-all',
+                  leadPriority === opt.value
+                    ? 'border-rose-400 bg-rose-50'
+                    : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50',
+                ].join(' ')}
+              >
+                <span className={`mt-0.5 w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 ${leadPriority === opt.value ? 'border-rose-500 bg-rose-500' : 'border-gray-300'}`}>
+                  {leadPriority === opt.value && <span className="w-1.5 h-1.5 rounded-full bg-white block" />}
+                </span>
+                <div>
+                  <p className="font-semibold text-gray-800">{opt.label}</p>
+                  <p className="text-xs text-gray-500 mt-0.5">{opt.desc}</p>
+                </div>
+              </button>
+            ))}
           </div>
         </div>
+
 
         {/* Daily limits */}
         <div className="grid grid-cols-2 gap-6 max-w-sm">

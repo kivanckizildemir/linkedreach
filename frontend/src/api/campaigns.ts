@@ -72,6 +72,8 @@ export type EngagementTrend = 'up' | 'down' | 'stable'
 export interface CampaignLead {
   id: string
   status: string
+  current_step: number
+  last_action_at: string | null
   reply_classification: string
   engagement_score: number | null
   previous_engagement_score: number | null
@@ -95,6 +97,23 @@ export interface CampaignLead {
   }
 }
 
+export interface CampaignActivityEntry {
+  id: string
+  action: string
+  detail: string | null
+  created_at: string
+  account_id: string | null
+  campaign_id: string | null
+  lead_id: string | null
+}
+
+export async function fetchCampaignActivity(campaignId: string, limit = 50): Promise<CampaignActivityEntry[]> {
+  const res = await apiFetch(`/api/activity?campaign_id=${campaignId}&limit=${limit}`)
+  if (!res.ok) return []
+  const { data } = await res.json() as { data: CampaignActivityEntry[] }
+  return data ?? []
+}
+
 export async function fetchCampaignLeads(campaignId: string): Promise<CampaignLead[]> {
   const res = await apiFetch(`/api/campaigns/${campaignId}/leads`)
   if (!res.ok) throw new Error(await parseErrorResponse(res))
@@ -102,11 +121,11 @@ export async function fetchCampaignLeads(campaignId: string): Promise<CampaignLe
   return data ?? []
 }
 
-export async function addLeadsToCampaign(campaignId: string, leadIds: string[]): Promise<void> {
+export async function addLeadsToCampaign(campaignId: string, leadIds: string[], accountId?: string | null): Promise<void> {
   const res = await apiFetch(`/api/campaigns/${campaignId}/leads`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ lead_ids: leadIds }),
+    body: JSON.stringify({ lead_ids: leadIds, ...(accountId ? { account_id: accountId } : {}) }),
   })
   if (!res.ok) throw new Error(await parseErrorResponse(res))
 }

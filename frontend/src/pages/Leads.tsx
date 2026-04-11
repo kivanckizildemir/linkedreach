@@ -7,7 +7,7 @@ import { supabase } from '../lib/supabase'
 import { fetchLabels, fetchLeadLabels, fetchAllLeadLabelAssignments, assignLabel, removeLabel, createLabel, type LeadLabel } from '../api/labels'
 import { fetchAccounts } from '../api/accounts'
 import { addLeadsToCampaign } from '../api/campaigns'
-import { scrapeIntoList, importExcelIntoList, fetchLeadList } from '../api/leadLists'
+import { scrapeIntoList, importExcelIntoList, fetchLeadList, cancelScrapeJob, getListScrapeStatus } from '../api/leadLists'
 import * as XLSX from 'xlsx'
 
 const FLAG_COLORS: Record<NonNullable<Lead['icp_flag']>, string> = {
@@ -164,22 +164,22 @@ export function Leads() {
   const [showManualAdd, setShowManualAdd] = useState(false)
   const [expandedLeadId, setExpandedLeadId] = useState<string | null>(null)
 
-  // List-context "Add Leads" modal
+  // List-context "Add Leads" wizard
+  type AddLeadsSource = 'sales_nav' | 'linkedin_search' | 'post_reactors' | 'event_attendees' | 'csv' | 'sales_nav_accounts' | 'linkedin_companies'
   const [showAddToList, setShowAddToList] = useState(false)
-  const [addToListTab, setAddToListTab] = useState<'manual' | 'sales_nav' | 'excel'>('manual')
-  const [listScrapeUrl, setListScrapeUrl] = useState('')
-  const [listScrapeAccount, setListScrapeAccount] = useState('')
-  const [listScrapeMax, setListScrapeMax] = useState(100)
-  const [listScrapeStatus, setListScrapeStatus] = useState<'idle' | 'scraping' | 'done' | 'error'>('idle')
-  const [listScrapeError, setListScrapeError] = useState('')
-  const [listScrapeProgress, setListScrapeProgress] = useState(0)
-  const [listScrapeResult, setListScrapeResult] = useState<{ scraped: number; saved: number } | null>(null)
-  const listScrapePollRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const [listExcelFile, setListExcelFile] = useState<File | null>(null)
-  const [listExcelError, setListExcelError] = useState('')
-  const [listExcelLoading, setListExcelLoading] = useState(false)
-  const [listExcelResult, setListExcelResult] = useState<{ saved: number; skipped: number } | null>(null)
-  const listExcelRef = useRef<HTMLInputElement>(null)
+  const [addLeadsStep, setAddLeadsStep] = useState<'source' | 'form'>('source')
+  const [addLeadsSource, setAddLeadsSource] = useState<AddLeadsSource | null>(null)
+  const [addLeadsUrl, setAddLeadsUrl] = useState('')
+  const [addLeadsAccountId, setAddLeadsAccountId] = useState('')
+  const [addLeadsMax, setAddLeadsMax] = useState(100)
+  const [addLeadsCsvFile, setAddLeadsCsvFile] = useState<File | null>(null)
+  const [addLeadsDragging, setAddLeadsDragging] = useState(false)
+  const [addLeadsError, setAddLeadsError] = useState('')
+  const [addLeadsImporting, setAddLeadsImporting] = useState(false)
+  const [addLeadsJobId, setAddLeadsJobId] = useState<string | null>(null)
+  const [addLeadsProgress, setAddLeadsProgress] = useState(0)
+  const addLeadsPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const addLeadsCsvRef = useRef<HTMLInputElement>(null)
 
   const [showEnrichModal, setShowEnrichModal] = useState(false)
   const [enrichAccountId, setEnrichAccountId] = useState('')
@@ -204,7 +204,7 @@ export function Leads() {
 
   useEffect(() => {
     return () => {
-      if (listScrapePollRef.current) clearInterval(listScrapePollRef.current)
+      if (addLeadsPollRef.current) clearInterval(addLeadsPollRef.current)
       if (enrichPollRef.current) clearInterval(enrichPollRef.current)
       if (scoringPollRef.current) clearInterval(scoringPollRef.current)
     }
@@ -598,8 +598,29 @@ export function Leads() {
             </button>
           )}
           {listId ? (
+            addLeadsJobId ? (
+              <button
+                onClick={async () => {
+                  if (addLeadsPollRef.current) clearInterval(addLeadsPollRef.current)
+                  await cancelScrapeJob(addLeadsJobId).catch(() => null)
+                  setAddLeadsJobId(null)
+                  setAddLeadsProgress(0)
+                  void queryClient.invalidateQueries({ queryKey: ['leads'] })
+                }}
+                title="Click to cancel"
+                className="group relative flex items-center gap-2 px-3 py-2 rounded-lg bg-blue-50 border border-blue-200 hover:bg-red-50 hover:border-red-200 transition-colors"
+              >
+                <div className="relative w-20 h-1.5 bg-blue-100 group-hover:bg-red-100 rounded-full overflow-hidden">
+                  <div className="h-full bg-blue-500 group-hover:bg-red-400 rounded-full transition-all duration-500" style={{ width: `${Math.max(addLeadsProgress, 3)}%` }} />
+                </div>
+                <span className="text-xs font-semibold text-blue-600 group-hover:text-red-600 w-8 text-right">
+                  <span className="group-hover:hidden">{addLeadsProgress}%</span>
+                  <span className="hidden group-hover:inline">✕</span>
+                </span>
+              </button>
+            ) : (
             <button
-              onClick={() => { setShowAddToList(true); setAddToListTab('manual'); setListScrapeError(''); setListExcelError(''); setListExcelResult(null) }}
+              onClick={() => { setShowAddToList(true); setAddLeadsStep('source'); setAddLeadsSource(null); setAddLeadsError('') }}
               className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors"
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -607,6 +628,7 @@ export function Leads() {
               </svg>
               Add Leads
             </button>
+            )
           ) : (
             <>
               <button
@@ -985,187 +1007,274 @@ export function Leads() {
         />
       )}
 
-      {/* Add Leads to list modal */}
-      {showAddToList && listId && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6 space-y-4">
-            <h2 className="text-lg font-semibold text-gray-900">Add Leads</h2>
+      {/* ── Add Leads Wizard Modal ──────────────────────────────────────────── */}
+      {showAddToList && listId && (() => {
+        const activeAccts = accounts.filter((a: { status: string }) => a.status === 'active' || a.status === 'warming_up')
 
-            {/* Tab selector */}
-            <div className="flex gap-1 bg-gray-100 rounded-xl p-1">
-              {(['manual', 'sales_nav', 'excel'] as const).map(tab => (
-                <button
-                  key={tab}
-                  onClick={() => { setAddToListTab(tab); setListScrapeError(''); setListExcelError(''); setListExcelResult(null) }}
-                  className={`flex-1 py-2 text-sm font-medium rounded-lg transition-colors ${
-                    addToListTab === tab ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
-                  }`}
-                >
-                  {tab === 'manual' ? '✏️ Manual' : tab === 'sales_nav' ? '🔍 Sales Nav' : '📊 Excel'}
+        type SourceDef = { id: AddLeadsSource; label: string; description: string; badge?: string; soon?: boolean; color: string; bgColor: string; borderColor: string; icon: JSX.Element }
+        const SOURCE_GROUPS: Array<{ heading: string; items: SourceDef[] }> = [
+          {
+            heading: 'People',
+            items: [
+              { id: 'sales_nav', label: 'Sales Navigator (Leads)', badge: 'Most popular', description: 'Paste a Sales Navigator people search URL to scrape up to 2,500 leads using your connected account.', color: 'text-blue-700', bgColor: 'bg-blue-50', borderColor: 'border-blue-200', icon: <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg> },
+              { id: 'linkedin_search', label: 'LinkedIn Search Bar', description: 'Paste a LinkedIn people search URL (/search/results/people/…). Scraped server-side using your session.', color: 'text-violet-700', bgColor: 'bg-violet-50', borderColor: 'border-violet-200', icon: <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" /></svg> },
+              { id: 'post_reactors', label: 'LinkedIn Post (Reactors)', description: 'Paste a LinkedIn post URL to import everyone who liked or commented on it.', color: 'text-pink-700', bgColor: 'bg-pink-50', borderColor: 'border-pink-200', icon: <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z" /></svg> },
+              { id: 'event_attendees', label: 'LinkedIn Event (Attendees)', soon: true, description: 'Paste a LinkedIn event URL to import attendees who are going or interested.', color: 'text-gray-500', bgColor: 'bg-gray-50', borderColor: 'border-gray-200', icon: <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg> },
+              { id: 'csv', label: 'CSV / Excel', description: 'Upload a spreadsheet. Required columns: First Name, Last Name, LinkedIn URL.', color: 'text-emerald-700', bgColor: 'bg-emerald-50', borderColor: 'border-emerald-200', icon: <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg> },
+            ],
+          },
+          {
+            heading: 'Companies',
+            items: [
+              { id: 'sales_nav_accounts', label: 'Sales Navigator (Accounts)', soon: true, description: 'Paste a Sales Navigator account search URL to import companies and then find decision-makers.', color: 'text-gray-500', bgColor: 'bg-gray-50', borderColor: 'border-gray-200', icon: <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-2 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" /></svg> },
+              { id: 'linkedin_companies', label: 'LinkedIn Search Bar (Companies)', soon: true, description: 'Paste a LinkedIn company search URL to import companies from your search results.', color: 'text-gray-500', bgColor: 'bg-gray-50', borderColor: 'border-gray-200', icon: <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v3m0 0v3m0-3h3m-3 0H7" /></svg> },
+            ],
+          },
+        ]
+
+        const allSources = SOURCE_GROUPS.flatMap(g => g.items)
+        const selectedDef = allSources.find(s => s.id === addLeadsSource)
+
+        async function handleAddLeadsSubmit() {
+          if (!addLeadsSource || addLeadsImporting) return
+          setAddLeadsError('')
+          setAddLeadsImporting(true)
+          try {
+            if (addLeadsSource === 'csv') {
+              if (!addLeadsCsvFile) return
+              const result = await importExcelIntoList(listId, addLeadsCsvFile)
+              setShowAddToList(false)
+              setAddLeadsCsvFile(null)
+              void queryClient.invalidateQueries({ queryKey: ['leads'] })
+              void queryClient.invalidateQueries({ queryKey: ['lead-list', listId] })
+              // brief toast via console; UI will refresh
+              console.log(`Imported: ${result.saved} saved, ${result.skipped} skipped`)
+            } else {
+              const { job_id } = await scrapeIntoList(listId, { search_url: addLeadsUrl, account_id: addLeadsAccountId, max_leads: addLeadsMax, source_type: addLeadsSource })
+              setAddLeadsJobId(job_id)
+              setAddLeadsProgress(0)
+              setShowAddToList(false)
+              addLeadsPollRef.current = setInterval(async () => {
+                try {
+                  const s = await getListScrapeStatus(job_id)
+                  setAddLeadsProgress(s.progress ?? 0)
+                  if (s.state === 'completed' || s.state === 'failed') {
+                    clearInterval(addLeadsPollRef.current!)
+                    setAddLeadsJobId(null)
+                    setAddLeadsProgress(0)
+                    void queryClient.invalidateQueries({ queryKey: ['leads'] })
+                    void queryClient.invalidateQueries({ queryKey: ['lead-list', listId] })
+                  }
+                } catch { /* keep polling */ }
+              }, 3000)
+            }
+          } catch (e) {
+            setAddLeadsError((e as Error).message)
+          } finally {
+            setAddLeadsImporting(false)
+          }
+        }
+
+        const isUrlSource = addLeadsSource && addLeadsSource !== 'csv'
+        const needsAccount = isUrlSource
+        const needsMax = addLeadsSource === 'sales_nav' || addLeadsSource === 'linkedin_search'
+        const canSubmit = addLeadsSource === 'csv'
+          ? !!addLeadsCsvFile
+          : !!addLeadsUrl.trim() && !!addLeadsAccountId
+
+        return (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={e => { if (e.target === e.currentTarget) setShowAddToList(false) }}>
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden">
+
+              {/* Header */}
+              <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+                <div className="flex items-center gap-3">
+                  {addLeadsStep === 'form' && (
+                    <button onClick={() => { setAddLeadsStep('source'); setAddLeadsSource(null); setAddLeadsError('') }} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-gray-100 text-gray-500 transition-colors">
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
+                    </button>
+                  )}
+                  <h2 className="text-base font-semibold text-gray-900">
+                    {addLeadsStep === 'source' ? 'Add Leads' : `Import from ${selectedDef?.label ?? ''}`}
+                  </h2>
+                </div>
+                <button onClick={() => setShowAddToList(false)} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-gray-100 text-gray-400 transition-colors">
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
                 </button>
-              ))}
-            </div>
+              </div>
 
-            {addToListTab === 'manual' && (
-              <ManualAddLeadModal
-                listId={listId}
-                inline
-                onClose={() => setShowAddToList(false)}
-                onAdded={() => {
-                  void queryClient.invalidateQueries({ queryKey: ['leads'] })
-                }}
-              />
-            )}
+              {/* Step 1 — Source selection */}
+              {addLeadsStep === 'source' && (
+                <div className="p-6 space-y-5 max-h-[70vh] overflow-y-auto">
+                  <p className="text-sm text-gray-500">Choose how you want to add leads to this list.</p>
 
-            {addToListTab === 'sales_nav' && (
-              <div className="space-y-3">
-                {listScrapeStatus === 'done' ? (
-                  <div className="space-y-4 py-4 text-center">
-                    <div className="w-12 h-12 rounded-full bg-green-100 flex items-center justify-center mx-auto">
-                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#16A34A" strokeWidth="2.5"><path d="M20 6L9 17l-5-5" /></svg>
-                    </div>
-                    <div>
-                      <p className="text-base font-semibold text-gray-900">Import complete</p>
-                      <p className="text-sm text-gray-500 mt-1">
-                        Scraped {listScrapeResult?.scraped ?? 0} profiles · {listScrapeResult?.saved ?? 0} leads saved — AI scoring queued
-                      </p>
-                    </div>
+                  {/* Manual add option */}
+                  <div>
+                    <p className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">Manual</p>
                     <button
-                      onClick={() => {
-                        setShowAddToList(false)
-                        setListScrapeStatus('idle')
-                        setListScrapeProgress(0)
-                        setListScrapeResult(null)
-                        void queryClient.invalidateQueries({ queryKey: ['leads'] })
-                        void queryClient.invalidateQueries({ queryKey: ['lead-list', listId] })
-                      }}
-                      className="w-full py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-xl hover:bg-blue-700"
+                      onClick={() => { setShowAddToList(false); setShowManualAdd(true) }}
+                      className="w-full flex items-center gap-3 p-3.5 rounded-xl border text-left bg-gray-50 border-gray-200 hover:shadow-sm hover:scale-[1.01] transition-all"
                     >
-                      Done
+                      <div className="flex-shrink-0 text-gray-600">
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <span className="text-sm font-semibold text-gray-700">Add manually</span>
+                        <p className="text-xs text-gray-400 mt-0.5">Enter a LinkedIn URL to add a single lead.</p>
+                      </div>
+                      <svg className="w-4 h-4 flex-shrink-0 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
                     </button>
                   </div>
-                ) : listScrapeStatus === 'scraping' ? (
-                  <div className="space-y-4 py-6">
-                    <div className="text-center">
-                      <p className="text-sm font-medium text-gray-700 mb-1">Scraping Sales Navigator…</p>
-                      <p className="text-xs text-gray-400">This can take a few minutes depending on result count.</p>
-                    </div>
-                    <div className="w-full bg-gray-100 rounded-full h-2 overflow-hidden">
-                      <div className="h-full bg-blue-500 rounded-full transition-all duration-500" style={{ width: `${Math.max(5, listScrapeProgress)}%` }} />
-                    </div>
-                    <p className="text-center text-xs text-gray-400">{listScrapeProgress}% complete</p>
-                    {listScrapeError && <p className="text-sm text-red-600 text-center">{listScrapeError}</p>}
-                  </div>
-                ) : (
-                  <>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-700 mb-1.5">LinkedIn Search URL</label>
-                      <input
-                        value={listScrapeUrl}
-                        onChange={e => setListScrapeUrl(e.target.value)}
-                        placeholder="https://www.linkedin.com/sales/search/people?… or /search/results/people/…"
-                        className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-xs font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      />
-                      <p className="text-[10px] text-gray-400 mt-1">Sales Navigator or regular LinkedIn people search URL</p>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-700 mb-1.5">LinkedIn Account</label>
-                      <AccountSelector value={listScrapeAccount} onChange={setListScrapeAccount} />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-gray-700 mb-1.5">Max leads</label>
-                      <input
-                        type="number"
-                        value={listScrapeMax}
-                        onChange={e => setListScrapeMax(Number(e.target.value))}
-                        min={1} max={2500}
-                        className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      />
-                    </div>
-                    {listScrapeError && <p className="text-xs text-red-600">{listScrapeError}</p>}
-                    <div className="flex gap-3 pt-1">
-                      <button onClick={() => setShowAddToList(false)} className="flex-1 py-2.5 border border-gray-300 text-sm font-medium rounded-lg hover:bg-gray-50">Cancel</button>
-                      <button
-                        disabled={!listScrapeUrl.trim() || !listScrapeAccount}
-                        onClick={async () => {
-                          setListScrapeError('')
-                          setListScrapeStatus('scraping')
-                          setListScrapeProgress(0)
-                          try {
-                            const { job_id } = await scrapeIntoList(listId, { search_url: listScrapeUrl, account_id: listScrapeAccount, max_leads: listScrapeMax })
-                            listScrapePollRef.current = setInterval(async () => {
-                              try {
-                                const s = await getScrapeStatus(job_id)
-                                setListScrapeProgress(s.progress ?? 0)
-                                if (s.state === 'completed') {
-                                  clearInterval(listScrapePollRef.current!)
-                                  setListScrapeResult(s.result ?? { scraped: 0, saved: 0 })
-                                  setListScrapeStatus('done')
-                                } else if (s.state === 'failed') {
-                                  clearInterval(listScrapePollRef.current!)
-                                  setListScrapeError(s.error ?? 'Scrape job failed.')
-                                  setListScrapeStatus('error')
-                                }
-                              } catch { /* transient error, keep polling */ }
-                            }, 3000)
-                          } catch (e) {
-                            setListScrapeError((e as Error).message)
-                            setListScrapeStatus('error')
-                          }
-                        }}
-                        className="flex-1 py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-blue-700 disabled:opacity-60"
-                      >
-                        Start Scrape
-                      </button>
-                    </div>
-                  </>
-                )}
-              </div>
-            )}
 
-            {addToListTab === 'excel' && (
-              <div className="space-y-3">
-                <div
-                  onClick={() => listExcelRef.current?.click()}
-                  className="border-2 border-dashed border-gray-200 rounded-xl p-6 text-center cursor-pointer hover:border-blue-400 transition-colors"
-                >
-                  {listExcelFile ? (
-                    <p className="text-sm text-gray-700 font-medium">{listExcelFile.name}</p>
-                  ) : (
-                    <>
-                      <p className="text-sm text-gray-500">Click to upload</p>
-                      <p className="text-xs text-gray-400 mt-1">Columns: First Name, Last Name, LinkedIn URL</p>
-                    </>
+                  {SOURCE_GROUPS.map(group => (
+                    <div key={group.heading}>
+                      <p className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">{group.heading}</p>
+                      <div className="space-y-2">
+                        {group.items.map(src => (
+                          <button
+                            key={src.id}
+                            onClick={() => { if (!src.soon) { setAddLeadsSource(src.id); setAddLeadsStep('form'); setAddLeadsUrl(''); setAddLeadsError('') } }}
+                            disabled={!!src.soon}
+                            className={`w-full flex items-center gap-3 p-3.5 rounded-xl border text-left transition-all ${src.soon ? 'opacity-50 cursor-not-allowed bg-gray-50 border-gray-200' : `${src.bgColor} ${src.borderColor} hover:shadow-sm hover:scale-[1.01]`}`}
+                          >
+                            <div className={`flex-shrink-0 ${src.soon ? 'text-gray-400' : src.color}`}>{src.icon}</div>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className={`text-sm font-semibold ${src.soon ? 'text-gray-500' : src.color}`}>{src.label}</span>
+                                {src.badge && !src.soon && <span className="text-xs font-medium px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded-md">{src.badge}</span>}
+                                {src.soon && <span className="text-xs font-medium px-1.5 py-0.5 bg-gray-200 text-gray-500 rounded-md">Soon</span>}
+                              </div>
+                              <p className="text-xs text-gray-400 mt-0.5 leading-relaxed">{src.description}</p>
+                            </div>
+                            {!src.soon && <svg className={`w-4 h-4 flex-shrink-0 ${src.color} opacity-50`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Step 2 — Form */}
+              {addLeadsStep === 'form' && addLeadsSource && (
+                <div className="p-6 space-y-4">
+                  {/* URL input */}
+                  {isUrlSource && (
+                    <div>
+                      <label className="block text-xs font-semibold text-gray-700 mb-1.5">
+                        {addLeadsSource === 'sales_nav' && 'Sales Navigator Search URL'}
+                        {addLeadsSource === 'linkedin_search' && 'LinkedIn People Search URL'}
+                        {addLeadsSource === 'post_reactors' && 'LinkedIn Post URL'}
+                        {addLeadsSource === 'event_attendees' && 'LinkedIn Event URL'}
+                      </label>
+                      <textarea
+                        rows={2}
+                        autoFocus
+                        value={addLeadsUrl}
+                        onChange={e => setAddLeadsUrl(e.target.value)}
+                        placeholder={
+                          addLeadsSource === 'sales_nav' ? 'https://www.linkedin.com/sales/search/people?savedSearchId=…'
+                          : addLeadsSource === 'linkedin_search' ? 'https://www.linkedin.com/search/results/people/?keywords=…'
+                          : addLeadsSource === 'post_reactors' ? 'https://www.linkedin.com/posts/johndoe_activity-12345678-abcd/'
+                          : 'https://www.linkedin.com/events/1234567890/'
+                        }
+                        className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none font-mono"
+                      />
+                    </div>
                   )}
+
+                  {/* Account selector */}
+                  {needsAccount && (
+                    <div>
+                      <label className="block text-xs font-semibold text-gray-700 mb-1.5">LinkedIn Account</label>
+                      {activeAccts.length === 0 ? (
+                        <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-700">
+                          No active LinkedIn accounts found.{' '}
+                          <button onClick={() => navigate('/accounts')} className="underline font-medium">Add one in Accounts →</button>
+                        </div>
+                      ) : (
+                        <select
+                          value={addLeadsAccountId}
+                          onChange={e => setAddLeadsAccountId(e.target.value)}
+                          className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        >
+                          <option value="">Select account…</option>
+                          {activeAccts.map((a: { id: string; sender_name?: string; linkedin_email: string }) => (
+                            <option key={a.id} value={a.id}>{a.sender_name ? `${a.sender_name} (${a.linkedin_email})` : a.linkedin_email}</option>
+                          ))}
+                        </select>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Max leads slider */}
+                  {needsMax && (
+                    <div>
+                      <label className="block text-xs font-semibold text-gray-700 mb-1.5">
+                        Max leads to import <span className="text-gray-400 font-normal">(up to 2,500)</span>
+                      </label>
+                      <div className="flex items-center gap-3">
+                        <input type="range" min={25} max={2500} step={25} value={addLeadsMax} onChange={e => setAddLeadsMax(Number(e.target.value))} className="flex-1 accent-blue-600" />
+                        <span className="text-sm font-semibold text-gray-800 w-12 text-right">{addLeadsMax.toLocaleString()}</span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* CSV file drop */}
+                  {addLeadsSource === 'csv' && (
+                    <div>
+                      <label className="block text-xs font-semibold text-gray-700 mb-1.5">Upload File</label>
+                      <div
+                        className={`relative border-2 border-dashed rounded-xl p-8 text-center transition-colors cursor-pointer ${addLeadsDragging ? 'border-blue-400 bg-blue-50' : addLeadsCsvFile ? 'border-emerald-300 bg-emerald-50' : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'}`}
+                        onClick={() => addLeadsCsvRef.current?.click()}
+                        onDragOver={e => { e.preventDefault(); setAddLeadsDragging(true) }}
+                        onDragLeave={() => setAddLeadsDragging(false)}
+                        onDrop={e => { e.preventDefault(); setAddLeadsDragging(false); const f = e.dataTransfer.files[0]; if (f) setAddLeadsCsvFile(f) }}
+                      >
+                        <input ref={addLeadsCsvRef} type="file" accept=".csv,.xlsx,.xls" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) setAddLeadsCsvFile(f) }} />
+                        {addLeadsCsvFile ? (
+                          <>
+                            <svg className="w-8 h-8 text-emerald-500 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                            <p className="text-sm font-semibold text-emerald-700">{addLeadsCsvFile.name}</p>
+                            <p className="text-xs text-emerald-600 mt-0.5">{(addLeadsCsvFile.size / 1024).toFixed(0)} KB — click to change</p>
+                          </>
+                        ) : (
+                          <>
+                            <svg className="w-8 h-8 text-gray-300 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" /></svg>
+                            <p className="text-sm font-medium text-gray-600">Drop your CSV or Excel file here</p>
+                            <p className="text-xs text-gray-400 mt-1">or click to browse — .csv, .xlsx, .xls</p>
+                          </>
+                        )}
+                      </div>
+                      <p className="text-xs text-gray-400 mt-2">Required columns: <span className="font-medium text-gray-600">First Name, Last Name, LinkedIn URL</span></p>
+                    </div>
+                  )}
+
+                  {addLeadsError && (
+                    <div className="flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-xl">
+                      <svg className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                      <p className="text-xs text-red-700">{addLeadsError}</p>
+                    </div>
+                  )}
+
+                  <div className="flex gap-3 pt-1">
+                    <button onClick={() => setShowAddToList(false)} className="flex-1 py-2.5 border border-gray-200 text-sm font-medium rounded-xl hover:bg-gray-50 transition-colors">Cancel</button>
+                    <button
+                      onClick={() => void handleAddLeadsSubmit()}
+                      disabled={addLeadsImporting || !canSubmit}
+                      className="flex-1 py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-xl hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
+                    >
+                      {addLeadsImporting ? (
+                        <><svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>Starting…</>
+                      ) : addLeadsSource === 'csv' ? 'Import' : 'Start Scraping'}
+                    </button>
+                  </div>
                 </div>
-                <input ref={listExcelRef} type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={e => { setListExcelFile(e.target.files?.[0] ?? null); setListExcelResult(null) }} />
-                {listExcelError && <p className="text-xs text-red-600">{listExcelError}</p>}
-                {listExcelResult && <p className="text-xs text-green-600">{listExcelResult.saved} leads added, {listExcelResult.skipped} skipped (already exist)</p>}
-                <div className="flex gap-3 pt-1">
-                  <button onClick={() => setShowAddToList(false)} className="flex-1 py-2.5 border border-gray-300 text-sm font-medium rounded-lg hover:bg-gray-50">Cancel</button>
-                  <button
-                    disabled={listExcelLoading || !listExcelFile}
-                    onClick={async () => {
-                      if (!listExcelFile) return
-                      setListExcelLoading(true); setListExcelError('')
-                      try {
-                        const result = await importExcelIntoList(listId, listExcelFile)
-                        setListExcelResult(result)
-                        setListExcelFile(null)
-                        void queryClient.invalidateQueries({ queryKey: ['leads'] })
-                      } catch (e) { setListExcelError((e as Error).message) }
-                      finally { setListExcelLoading(false) }
-                    }}
-                    className="flex-1 py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-blue-700 disabled:opacity-60"
-                  >
-                    {listExcelLoading ? 'Importing…' : 'Import'}
-                  </button>
-                </div>
-              </div>
-            )}
+              )}
+            </div>
           </div>
-        </div>
-      )}
+        )
+      })()}
 
       {showCsvModal && (
         <CsvImportModal

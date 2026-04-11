@@ -138,6 +138,7 @@ campaignsRouter.patch('/:id', async (req: Request, res: Response) => {
     'connection_note',
     'target_audience',
     'product_id',
+    'lead_priority',
   ] as const
   type AllowedKey = (typeof allowed)[number]
 
@@ -234,6 +235,9 @@ campaignsRouter.get('/:id/leads', async (req: Request, res: Response) => {
       account_id,
       campaign_fit_score,
       campaign_fit_reasoning,
+      engagement_score,
+      engagement_trend,
+      engagement_reasoning,
       created_at,
       lead:leads (
         id, first_name, last_name, title, company, industry, location,
@@ -263,10 +267,10 @@ campaignsRouter.post('/:id/leads', async (req: Request, res: Response) => {
     return
   }
 
-  // Verify campaign ownership
+  // Verify campaign ownership and fetch account_id
   const { data: campaign, error: campErr } = await supabase
     .from('campaigns')
-    .select('id')
+    .select('id, account_id')
     .eq('id', req.params.id)
     .eq('user_id', req.user.id)
     .single()
@@ -275,6 +279,9 @@ campaignsRouter.post('/:id/leads', async (req: Request, res: Response) => {
     res.status(404).json({ error: 'Campaign not found' })
     return
   }
+
+  // Resolve account: use explicit param → fall back to campaign's assigned account
+  const resolvedAccountId: string | null = account_id ?? (campaign as { account_id: string | null }).account_id ?? null
 
   // Skip leads already in this campaign
   const { data: existing } = await supabase
@@ -294,7 +301,7 @@ campaignsRouter.post('/:id/leads', async (req: Request, res: Response) => {
   const rows = newLeadIds.map(lead_id => ({
     campaign_id: req.params.id,
     lead_id,
-    account_id: account_id ?? null,
+    account_id: resolvedAccountId,
     status: 'pending',
     current_step: 0,
   }))
@@ -372,16 +379,19 @@ campaignsRouter.post('/:id/score-engagement', async (req: Request, res: Response
     return
   }
 
+  console.log(`[score-engagement] Scoring ${clRows.length} leads for campaign ${req.params.id}`)
   let scored = 0
   for (const cl of clRows as Array<{ id: string }>) {
     try {
-      await scoreEngagement(cl.id)
+      const result = await scoreEngagement(cl.id)
       scored++
+      console.log(`[score-engagement] ✓ ${cl.id}: score=${result?.score} trend=${result?.trend}`)
     } catch (e) {
-      console.warn(`[score-engagement] Failed for campaign_lead ${cl.id}:`, (e as Error).message)
+      console.warn(`[score-engagement] ✗ ${cl.id}:`, (e as Error).message)
     }
   }
 
+  console.log(`[score-engagement] Done: ${scored}/${clRows.length} scored`)
   res.json({ scored, total: clRows.length })
 })
 

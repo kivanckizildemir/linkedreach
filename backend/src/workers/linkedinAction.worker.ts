@@ -83,10 +83,13 @@ async function incrementCounter(accountId: string, field: 'daily_connection_coun
     .eq('id', accountId)
 }
 
-async function logActivity(accountId: string, action: string, targetUrl: string, status: string, via: string) {
-  await supabase.from('activity_logs').insert({
-    account_id: accountId, action_type: action, target_url: targetUrl,
-    status, executed_via: via,
+async function logActivity(
+  userId: string, accountId: string, action: string, detail: string,
+  campaignId?: string | null, leadId?: string | null,
+) {
+  await supabase.from('activity_log').insert({
+    user_id: userId, account_id: accountId, action, detail,
+    campaign_id: campaignId ?? null, lead_id: leadId ?? null,
   }).then(({ error }) => {
     if (error) console.warn('[Worker] activity_log insert failed:', error.message)
   })
@@ -171,8 +174,21 @@ async function processLinkedInAction(job: Job<LinkedInActionJob>) {
   if (action === 'connect') await incrementCounter(accountId, 'daily_connection_count')
   if (action === 'message') await incrementCounter(accountId, 'daily_message_count')
 
+  // Look up campaign_id + lead_id so we can associate the log entry
+  let campaignId: string | null = null
+  let leadId: string | null = null
+  if (campaignLeadId) {
+    const { data: cl } = await supabase
+      .from('campaign_leads')
+      .select('campaign_id, lead_id')
+      .eq('id', campaignLeadId)
+      .single()
+    campaignId = cl?.campaign_id ?? null
+    leadId     = cl?.lead_id ?? null
+  }
+
   // Log activity
-  await logActivity(accountId, action, targetProfileUrl, 'success', via)
+  await logActivity(effectiveUserId, accountId, action, targetProfileUrl, campaignId, leadId)
 
   // Update campaign lead status
   if (campaignLeadId) {
@@ -196,7 +212,7 @@ async function processLinkedInAction(job: Job<LinkedInActionJob>) {
 export const linkedinActionWorker = new Worker<LinkedInActionJob>(
   'linkedin-actions',
   processLinkedInAction,
-  { connection, concurrency: 3, limiter: { max: 1, duration: MIN_DELAY_MS } }
+  { connection, concurrency: 3 }
 )
 
 linkedinActionWorker.on('completed', (job) => {

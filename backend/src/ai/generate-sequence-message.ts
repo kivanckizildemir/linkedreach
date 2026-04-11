@@ -216,12 +216,27 @@ function buildPrompt(input: GenerateSequenceMessageInput): string {
     lines.push(`Strategic angle: ${approach}`)
     if (APPROACH_GUIDANCE[approach]) lines.push(APPROACH_GUIDANCE[approach])
     lines.push('')
+    lines.push('APPROACH APPLIES TO THE ENTIRE SEQUENCE — NOT JUST THIS MESSAGE:')
+    lines.push(`Every message in this sequence is a continuation of the same "${approach}" strategy.`)
+    lines.push('Do not reset to a generic follow-up style. The approach must be felt in this message too,')
+    lines.push('even if earlier messages already introduced it. Each message deepens or evolves it.')
+    lines.push('')
   }
 
   // ── Tone block ──
   if (tone) {
     lines.push('━━━ TONE ━━━')
     lines.push(`Write in a ${tone} tone.${TONE_GUIDANCE[tone] ? ' ' + TONE_GUIDANCE[tone] : ''}`)
+    lines.push('')
+    lines.push('TONE APPLIES TO EVERY ELEMENT INCLUDING THE SALUTATION:')
+    if (tone === 'casual' || tone === 'conversational') {
+      lines.push('Open with "Hey {{first_name}}," — warm and peer-level. Never "Dear" or "Hello".')
+    } else if (tone === 'professional') {
+      lines.push('Open with "Hi {{first_name}}," — clean and direct. Never "Dear" or "Hello".')
+    } else if (tone === 'bold') {
+      lines.push('Skip the greeting entirely. Launch straight into the first sentence. No preamble.')
+    }
+    lines.push('The tone must be consistent from the very first word to the last. Do not drift.')
     lines.push('')
   }
 
@@ -268,17 +283,63 @@ function buildPrompt(input: GenerateSequenceMessageInput): string {
   lines.push('━━━ CONVERSATION HISTORY ━━━')
   if (prior_messages.length === 0) {
     lines.push('First message in the sequence. No prior contact.')
+    lines.push('This is the opening move of the entire outreach strategy. Set the tone and approach clearly.')
   } else {
-    lines.push('Messages already sent/received. Your new message MUST NOT repeat the same hook, value prop, or CTA.')
+    const sentMessages = prior_messages.filter(m => m.direction === 'sent')
+    const theyReplied = prior_messages.some(m => m.direction === 'received')
+
+    lines.push('Full message thread so far:')
     lines.push('')
     prior_messages.forEach((m, i) => {
       const label = m.direction === 'sent'
-        ? `Sent (${m.step_type ?? `Step ${i + 1}`})`
-        : `${lead.first_name} replied`
-      lines.push(`${label}: "${m.content}"`)
+        ? `YOU (${m.step_type ?? `Step ${i + 1}`})`
+        : `${lead.first_name} REPLIED`
+      lines.push(`[${label}]: "${m.content}"`)
     })
+    lines.push('')
+
+    lines.push('THREADING RULES — mandatory for this message:')
+    lines.push('1. NEVER repeat the same hook, value prop, or CTA already used in a previous message.')
+    lines.push('2. This message must feel like it belongs to the same conversation — not a cold restart.')
+    if (theyReplied) {
+      lines.push(`3. ${lead.first_name} has replied. Build directly on what they said. Acknowledge it naturally.`)
+      lines.push('   Do not ignore their reply and continue the original pitch sequence.')
+    } else {
+      lines.push(`3. ${lead.first_name} has not replied. Do NOT say "I reached out before" or "following up".`)
+      lines.push('   Instead, create a natural link: reference something from the previous message without announcing it.')
+      lines.push('   Example: if message 1 mentioned a specific problem, message 2 can open on a consequence of that')
+      lines.push('   problem — without saying "as I mentioned".')
+    }
+    lines.push(`4. ${sentMessages.length} message${sentMessages.length > 1 ? 's have' : ' has'} already been sent. This message must earn its place`)
+    lines.push('   with a completely new angle — a different result, question, story, or insight.')
+    lines.push('5. The energy and voice should feel like the same person on a different day, not a copy-paste.')
   }
   lines.push('')
+
+  // ── Sequence continuity block ──
+  if (prior_messages.length > 0 && approach) {
+    lines.push('━━━ SEQUENCE CONTINUITY ━━━')
+    lines.push(`This is message ${prior_messages.filter(m => m.direction === 'sent').length + 1} in a "${approach}" sequence.`)
+    lines.push('The messages in this sequence are a coordinated arc — not isolated attempts.')
+    lines.push('Each message should:')
+    lines.push('  - Advance the strategy, not repeat it')
+    lines.push('  - Reference or build on the thread above (naturally, without meta-commentary)')
+    lines.push('  - Feel like momentum, not desperation')
+    if (approach === 'trigger_based') {
+      lines.push('Evolve the trigger: message 1 named the signal, message 2 deepens its implication.')
+    } else if (approach === 'problem_solution') {
+      lines.push('Deepen the problem: earlier messages named it, this one shows a consequence or makes it feel urgent.')
+    } else if (approach === 'social_proof') {
+      lines.push('Layer in a new proof point: different company type, different metric, different role.')
+    } else if (approach === 'insight_challenger') {
+      lines.push('Sharpen the insight: the earlier message introduced a perspective — this one extends it or challenges the implication.')
+    } else if (approach === 'question_hook') {
+      lines.push('A new question — different angle, same genuine curiosity. Never reuse the same question frame.')
+    } else if (approach === 'value_first') {
+      lines.push('Surface a different value dimension: the earlier message named one outcome — this one names a different one.')
+    }
+    lines.push('')
+  }
 
   // ── Step constraints ──
   lines.push('━━━ THIS STEP ━━━')
@@ -329,11 +390,15 @@ export async function generateSequenceMessage(
 
   const systemPrompt = `You are a B2B sales copywriter who writes LinkedIn outreach that gets replies because it reads like a real human wrote it.
 
-You study the lead's profile — their about section, current role, skills, recent posts — and find the one specific angle that would make this particular person pause and read.
+You think in sequences, not individual messages. Each message you write is one move in a deliberate strategy — connected to what came before and setting up what comes next. You never write a message in isolation; you always ask: how does this fit the arc?
 
-${HUMAN_WRITING_RULES}
+You study the lead's profile — their about section, current role, skills, recent posts — and find the one specific angle that makes this particular person pause and read.
 
-Every message you write is distinct from the others in the sequence — a new angle, not a repetition.`
+The very first word of a message (the greeting, or the lack of one) is a deliberate choice that must match the tone. Salutations are not interchangeable. A bold tone skips the greeting. A casual tone uses "Hey". A professional tone uses "Hi". You never use "Dear" or "Hello".
+
+Every message in a sequence has its own distinct voice-within-the-same-voice: different sentence rhythm, different energy, different angle — but unmistakably the same sender continuing the same story.
+
+${HUMAN_WRITING_RULES}`
 
   const response = await getAi().messages.create({
     model: 'claude-sonnet-4-20250514',
