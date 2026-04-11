@@ -180,3 +180,9 @@ export async function requestSessionExport(
   return res.json() as Promise<{ ok: boolean; cookieCount?: number }>
 }
 
+export async function fetchExtensionStatus(): Promise<{ online: boolean }> {
+  const res = await apiFetch('/api/accounts/extension-status')
+  if (!res.ok) return { online: false }
+  return res.json() as Promise<{ online: boolean }>
+}
+

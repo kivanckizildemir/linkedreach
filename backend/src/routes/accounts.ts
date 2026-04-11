@@ -723,6 +723,11 @@ accountsRouter.get('/:id/proxy-test', async (req: Request, res: Response) => {
   res.json({ result, ok, hint: ok ? 'Proxy authenticated OK' : 'Proxy auth failed or unreachable — check BrightData credentials' })
 })
 
+// GET /api/extension-status — check if the calling user's extension is online
+accountsRouter.get('/extension-status', (req: Request, res: Response) => {
+  res.json({ online: isExtensionOnline(req.user.id) })
+})
+
 // POST /api/accounts/:id/request-session-export
 // Triggers the Chrome extension (via WebSocket) to export the LinkedIn session for this account.
 // Extension must be connected (user has it installed and is logged into the web app).
@@ -737,6 +742,13 @@ accountsRouter.post('/:id/request-session-export', async (req: Request, res: Res
   if (accountErr || !account) {
     res.status(404).json({ error: 'Account not found' })
     return
+  }
+
+  // Wait up to 8 seconds for the extension to connect — MV3 service workers can be
+  // momentarily offline while the WS is reconnecting after Chrome woke the worker.
+  const deadline = Date.now() + 8_000
+  while (!isExtensionOnline(req.user.id) && Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 500))
   }
 
   if (!isExtensionOnline(req.user.id)) {

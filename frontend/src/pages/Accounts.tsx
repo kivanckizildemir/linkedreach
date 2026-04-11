@@ -13,6 +13,7 @@ import {
   testHealthCheck,
   requestVerificationCode,
   requestSessionExport,
+  fetchExtensionStatus,
   type LinkedInAccount,
 } from '../api/accounts'
 import { apiFetch } from '../lib/fetchJson'
@@ -1035,6 +1036,15 @@ export function ConnectModal({
   const [error, setError]           = useState('')
   const [requestingCode, setRequestingCode] = useState(false)
 
+  // Poll extension status every 3s so users get real-time feedback
+  const { data: extStatus } = useQuery({
+    queryKey: ['extension-status'],
+    queryFn: fetchExtensionStatus,
+    refetchInterval: 3_000,
+    enabled: step === 'choose',
+  })
+  const extOnline = extStatus?.online ?? false
+
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   useEffect(() => {
@@ -1088,7 +1098,7 @@ export function ConnectModal({
     } catch (err) {
       const msg = (err as Error).message
       if (msg === 'extension_offline') {
-        setError('Extension not connected. Make sure the LinkedReach Chrome extension is installed and you\'re logged into the app in the extension.')
+        setError('Extension not connected after waiting 8 seconds. Make sure: (1) the extension is installed and reloaded, (2) you clicked "Link Extension" in the sidebar.')
       } else {
         setError(msg)
       }
@@ -1175,6 +1185,13 @@ export function ConnectModal({
                   <p className="text-xs text-gray-500 leading-relaxed">
                     One-click connection using your active LinkedIn session. Zero bot risk — LinkedIn never sees automation.
                   </p>
+                  {/* Live extension status */}
+                  <div className="flex items-center gap-1.5 mt-2">
+                    <span className={`w-2 h-2 rounded-full flex-shrink-0 ${extOnline ? 'bg-green-500' : 'bg-gray-300'}`} />
+                    <span className={`text-[11px] font-medium ${extOnline ? 'text-green-700' : 'text-gray-400'}`}>
+                      {extOnline ? 'Extension connected' : 'Extension not detected — click "Link Extension" in the sidebar first'}
+                    </span>
+                  </div>
                 </div>
               </button>
 
