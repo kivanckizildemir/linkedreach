@@ -49,6 +49,7 @@ function timeAgo(dateStr: string): string {
 }
 
 export function Inbox() {
+  const [view, setView] = useState<'replies' | 'sent'>('replies')
   const [filter, setFilter] = useState('')
   const [campaignFilter, setCampaignFilter] = useState('')
   const [inboxSearch, setInboxSearch] = useState('')
@@ -65,8 +66,12 @@ export function Inbox() {
   })
 
   const { data: messages = [], isLoading } = useQuery({
-    queryKey: ['inbox', filter, campaignFilter],
-    queryFn: () => fetchInbox(filter || undefined, campaignFilter || undefined),
+    queryKey: ['inbox', view, filter, campaignFilter],
+    queryFn: () => fetchInbox(
+      view === 'replies' ? (filter || undefined) : undefined,
+      campaignFilter || undefined,
+      view,
+    ),
   })
 
   const selectedMsg = messages.find(m => m.campaign_lead_id === selectedId)
@@ -134,6 +139,17 @@ export function Inbox() {
       <div className="w-80 shrink-0 border-r border-gray-200 bg-white flex flex-col">
         <div className="px-4 py-4 border-b border-gray-200">
           <h1 className="text-lg font-bold text-gray-900">Inbox</h1>
+          {/* Replies / Sent tab switcher */}
+          <div className="mt-3 flex rounded-lg border border-gray-200 overflow-hidden text-xs font-medium">
+            <button
+              onClick={() => { setView('replies'); setSelectedId(null) }}
+              className={['flex-1 py-1.5 transition-colors', view === 'replies' ? 'bg-gray-800 text-white' : 'text-gray-600 hover:bg-gray-50'].join(' ')}
+            >Replies</button>
+            <button
+              onClick={() => { setView('sent'); setSelectedId(null) }}
+              className={['flex-1 py-1.5 border-l border-gray-200 transition-colors', view === 'sent' ? 'bg-gray-800 text-white' : 'text-gray-600 hover:bg-gray-50'].join(' ')}
+            >Sent</button>
+          </div>
           {campaigns.length > 0 && (
             <select
               value={campaignFilter}
@@ -153,22 +169,24 @@ export function Inbox() {
             placeholder="Search by name or company…"
             className="mt-2 w-full px-2.5 py-1.5 border border-gray-200 rounded-lg text-xs text-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
-          <div className="mt-3 flex flex-wrap gap-1.5">
-            {FILTERS.map(({ label, value }) => (
-              <button
-                key={value}
-                onClick={() => setFilter(value)}
-                className={[
-                  'px-2.5 py-1 text-xs rounded-full border transition-colors',
-                  filter === value
-                    ? 'bg-blue-600 text-white border-blue-600'
-                    : 'border-gray-200 text-gray-600 hover:bg-gray-50',
-                ].join(' ')}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
+          {view === 'replies' && (
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {FILTERS.map(({ label, value }) => (
+                <button
+                  key={value}
+                  onClick={() => setFilter(value)}
+                  className={[
+                    'px-2.5 py-1 text-xs rounded-full border transition-colors',
+                    filter === value
+                      ? 'bg-blue-600 text-white border-blue-600'
+                      : 'border-gray-200 text-gray-600 hover:bg-gray-50',
+                  ].join(' ')}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         <div className="flex-1 overflow-y-auto">
@@ -176,7 +194,7 @@ export function Inbox() {
             <div className="py-10 text-center text-sm text-gray-400">Loading…</div>
           ) : messages.length === 0 ? (
             <div className="py-16 text-center px-4">
-              <p className="text-sm text-gray-500">No replies yet</p>
+              <p className="text-sm text-gray-500">{view === 'sent' ? 'No messages sent yet' : 'No replies yet'}</p>
               <p className="mt-1 text-xs text-gray-400">Replies from your campaigns will appear here</p>
             </div>
           ) : (

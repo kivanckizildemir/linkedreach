@@ -545,8 +545,8 @@ function StepNodeComp({ data }: NodeProps) {
           <p className="text-[10px] font-bold uppercase tracking-widest mb-0.5" style={{ color: cfg.color }}>
             {cfg.label}
           </p>
-          {/* AI/Manual badge for message steps */}
-          {(step.type === 'connect' || step.type === 'message' || step.type === 'inmail') && (
+          {/* AI/Manual badge for message and react_post steps */}
+          {(step.type === 'connect' || step.type === 'message' || step.type === 'inmail' || step.type === 'react_post') && (
             <span className={`absolute top-2 right-2 text-xs font-semibold px-1.5 py-0.5 rounded-full ${step.ai_generation_mode ? 'bg-violet-100 text-violet-600' : 'bg-gray-100 text-gray-400'}`}>
               {step.ai_generation_mode ? '✨' : '✍️'}
             </span>
@@ -565,21 +565,27 @@ function StepNodeComp({ data }: NodeProps) {
             {step.type === 'follow' && <span className="text-gray-500">Follows this lead on LinkedIn</span>}
             {step.type === 'end' && <span className="text-red-400">Stops the sequence for this lead</span>}
             {step.type === 'react_post' && (
-              <span>{reaction ? `${REACTIONS[reaction].emoji} ${REACTIONS[reaction].label}` : <span className="text-gray-400 italic">No reaction set</span>}</span>
+              <span>{step.ai_generation_mode
+                ? <span className="text-violet-500 italic">AI picks reaction</span>
+                : reaction ? `${REACTIONS[reaction].emoji} ${REACTIONS[reaction].label}` : <span className="text-gray-400 italic">No reaction set</span>
+              }</span>
             )}
             {step.type === 'connect' && (
-              <span className="truncate block text-gray-500 italic">
-                {step.message_template ? `"${step.message_template}"` : 'No note attached'}
-              </span>
+              step.ai_generation_mode
+                ? <span className="text-violet-500 italic">AI writes note</span>
+                : <span className="truncate block text-gray-500 italic">
+                    {step.message_template ? `"${step.message_template}"` : 'No note attached'}
+                  </span>
             )}
             {(step.type === 'message' || step.type === 'inmail') && (
               <div className="space-y-0.5">
                 {step.type === 'inmail' && step.subject && (
                   <p className="font-semibold text-gray-800 truncate">Sub: {step.subject}</p>
                 )}
-                <p className="text-gray-500 truncate italic">
-                  {step.message_template ?? 'No message set'}
-                </p>
+                {step.ai_generation_mode
+                  ? <p className="text-violet-500 italic">AI writes this message</p>
+                  : <p className="text-gray-500 truncate italic">{step.message_template ?? 'No message set'}</p>
+                }
               </div>
             )}
           </div>
@@ -771,7 +777,7 @@ function EditModal({ step, sequenceId, defaultLengthPreset, onSave, onDelete, on
   const [regen,        setRegen] = useState(false)
   const [regenErr,     setRegenErr] = useState('')
   const cfg = STEP_CFG[step.type]
-  const isMessage = step.type === 'connect' || step.type === 'message' || step.type === 'inmail'
+  const isMessage = step.type === 'connect' || step.type === 'message' || step.type === 'inmail' || step.type === 'react_post'
 
   const waitMax = waitUnit === 'minutes' ? 120 : waitUnit === 'hours' ? 72 : 60
 
@@ -794,7 +800,7 @@ function EditModal({ step, sequenceId, defaultLengthPreset, onSave, onDelete, on
     const u: Partial<SequenceStep> = {}
     if (step.type === 'wait')        { u.wait_days = waitVal; u.condition = { wait_unit: waitUnit } }
     if (step.type === 'fork')        u.condition = { type: forkCond }
-    if (step.type === 'react_post')  u.condition = { reaction }
+    if (step.type === 'react_post')  { u.ai_generation_mode = aiMode; u.condition = aiMode ? {} : { reaction } }
     if (step.type === 'inmail')      { u.subject = subject; u.message_template = msg || null; u.ai_generation_mode = aiMode; u.condition = { max_length_preset: lengthPreset, profile_sources: profileSources } }
     if (step.type === 'connect' || step.type === 'message') { u.message_template = msg || null; u.ai_generation_mode = aiMode; u.condition = { max_length_preset: lengthPreset, profile_sources: profileSources } }
     onSave(u)
@@ -900,7 +906,7 @@ function EditModal({ step, sequenceId, defaultLengthPreset, onSave, onDelete, on
             </div>
           )}
 
-          {step.type === 'react_post' && (
+          {step.type === 'react_post' && !aiMode && (
             <div>
               <label className="block text-sm font-semibold text-gray-700 mb-2">Reaction type</label>
               <div className="flex flex-wrap gap-2">
@@ -917,6 +923,11 @@ function EditModal({ step, sequenceId, defaultLengthPreset, onSave, onDelete, on
                 ))}
               </div>
             </div>
+          )}
+          {step.type === 'react_post' && aiMode && (
+            <p className="text-sm text-violet-600 bg-violet-50 rounded-xl px-4 py-3">
+              ✨ The app will automatically pick the most fitting reaction based on the post content.
+            </p>
           )}
 
           {step.type === 'inmail' && (
@@ -941,8 +952,8 @@ function EditModal({ step, sequenceId, defaultLengthPreset, onSave, onDelete, on
                   <div className="grid grid-cols-2 gap-1.5">
                     {([
                       { key: 'basic',      label: 'Basic profile info',   desc: 'Name, title, company' },
-                      { key: 'summary',    label: 'Summary',              desc: 'LinkedIn About section' },
-                      { key: 'experience', label: 'Work experience',      desc: 'Current & past roles' },
+                      { key: 'summary',    label: 'About',                desc: 'LinkedIn About section' },
+                      { key: 'experience', label: 'Current role',         desc: 'Their current position' },
                       { key: 'articles',   label: 'Articles & projects',  desc: 'Coming soon', disabled: true },
                       { key: 'posts',      label: 'Recent posts',         desc: 'What they posted' },
                     ] as { key: string; label: string; desc: string; disabled?: boolean }[]).map(opt => {

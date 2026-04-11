@@ -168,3 +168,14 @@ export async function loginBrowser(accountId: string): Promise<{ message: string
   return res.json() as Promise<{ message: string }>
 }
 
+export async function requestSessionExport(
+  accountId: string
+): Promise<{ ok: boolean; cookieCount?: number }> {
+  const res = await apiFetch(`/api/accounts/${accountId}/request-session-export`, { method: 'POST' })
+  if (!res.ok) {
+    const body = await res.json() as { error?: string }
+    throw new Error(body.error ?? `Request failed (${res.status})`)
+  }
+  return res.json() as Promise<{ ok: boolean; cookieCount?: number }>
+}
+
