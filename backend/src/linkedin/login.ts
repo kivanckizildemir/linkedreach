@@ -387,10 +387,10 @@ async function runLogin(key: string, email: string, password: string): Promise<v
 
   let browser: Browser | undefined
   try {
-    // Re-enable BrightData Scraping Browser for login. CDP blocks keyboard input on password
-    // fields, but page.route() network interception still works — we intercept the login-submit
-    // POST and inject the password directly into the request body, bypassing all input restrictions.
-    const browserEndpoint = await resolveBrowserEndpoint(session.accountId)
+    // Use local Chromium + nsocks/HTTP proxy for login (not BrightData Scraping Browser).
+    // Scraping Browser blocks password typing and form submit. Local Chromium with a residential/ISP
+    // proxy gives a non-datacenter IP without any interaction restrictions.
+    const browserEndpoint = null
 
     let context: BrowserContext
 
