@@ -20,7 +20,6 @@ import {
   verifyConnectCode,
   testHealthCheck,
   requestVerificationCode,
-  requestSessionExport,
   fetchExtensionStatus,
   type LinkedInAccount,
 } from '../api/accounts'
