@@ -33,7 +33,12 @@
     }
   ],
   "externally_connectable": {
-    "matches": ["http://localhost:5173/*", "http://localhost:5174/*"]
+    "matches": [
+      "http://localhost:5173/*",
+      "http://localhost:5174/*",
+      "https://linkedreach.pages.dev/*",
+      "https://*.linkedreach.pages.dev/*"
+    ]
   },
   "action": {
     "default_popup": "popup.html",

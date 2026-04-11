@@ -1,8 +1,9 @@
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useAuth } from '../contexts/AuthContext'
 import { fetchUnreadCount } from '../api/inbox'
+import { supabase } from '../lib/supabase'
 
 const PAGE_TITLES: Record<string, string> = {
   '/': 'Dashboard',
@@ -14,10 +15,36 @@ const PAGE_TITLES: Record<string, string> = {
   '/settings': 'Settings',
 }
 
+// Extension ID — must match the installed extension.
+// In production the extension is loaded unpacked (developer mode) so the ID is
+// generated from the key field or auto-assigned. We try to send; if the extension
+// isn't installed the chrome API call just fails silently.
+declare const chrome: {
+  runtime?: {
+    sendMessage: (extId: string | undefined, msg: unknown, cb?: (r: unknown) => void) => void
+    lastError?: { message?: string }
+  }
+} | undefined
+
+async function pushTokenToExtension(token: string, user: { id: string; email?: string }): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (typeof chrome === 'undefined' || !chrome?.runtime?.sendMessage) { resolve(false); return }
+    try {
+      // undefined extId = send to self (works when page IS the extension popup;
+      // for externally_connectable web pages Chrome routes it to the extension).
+      chrome.runtime.sendMessage(undefined, { type: 'RECEIVE_AUTH_TOKEN', token, user }, (res) => {
+        if (chrome?.runtime?.lastError) { resolve(false); return }
+        resolve(!!(res as { ok?: boolean })?.ok)
+      })
+    } catch { resolve(false) }
+  })
+}
+
 export function Layout() {
   const { user, signOut } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
+  const [extLinkState, setExtLinkState] = useState<'idle' | 'linking' | 'done' | 'error'>('idle')
 
   useEffect(() => {
     const base = location.pathname.split('/').slice(0, 2).join('/') || '/'
@@ -44,6 +71,23 @@ export function Layout() {
   async function handleSignOut() {
     await signOut()
     navigate('/login')
+  }
+
+  async function handleLinkExtension() {
+    setExtLinkState('linking')
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session?.access_token) throw new Error('No session')
+      const ok = await pushTokenToExtension(session.access_token, {
+        id: session.user.id,
+        email: session.user.email,
+      })
+      setExtLinkState(ok ? 'done' : 'error')
+      setTimeout(() => setExtLinkState('idle'), 3000)
+    } catch {
+      setExtLinkState('error')
+      setTimeout(() => setExtLinkState('idle'), 3000)
+    }
   }
 
   return (
@@ -79,10 +123,42 @@ export function Layout() {
           ))}
         </nav>
 
-        <div className="px-3 py-4 border-t border-gray-200">
+        <div className="px-3 py-4 border-t border-gray-200 space-y-1">
           <div className="px-3 mb-2">
             <p className="text-xs text-gray-400 truncate">{user?.email}</p>
           </div>
+
+          {/* Link Chrome Extension — one-click auth push */}
+          <button
+            onClick={handleLinkExtension}
+            disabled={extLinkState === 'linking'}
+            title="Send your login session to the Chrome extension — no password needed in the extension"
+            className={[
+              'flex items-center gap-3 w-full px-3 py-2 rounded-lg text-sm font-medium transition-colors',
+              extLinkState === 'done'
+                ? 'bg-green-50 text-green-700'
+                : extLinkState === 'error'
+                  ? 'bg-red-50 text-red-600'
+                  : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900',
+            ].join(' ')}
+          >
+            {extLinkState === 'linking' ? (
+              <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+              </svg>
+            ) : extLinkState === 'done' ? (
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7"/>
+              </svg>
+            ) : (
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17 14v6m-3-3h6M6 10h2a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v2a2 2 0 002 2zm10 0h2a2 2 0 002-2V6a2 2 0 00-2-2h-2a2 2 0 00-2 2v2a2 2 0 002 2zM6 20h2a2 2 0 002-2v-2a2 2 0 00-2-2H6a2 2 0 00-2 2v2a2 2 0 002 2z"/>
+              </svg>
+            )}
+            {extLinkState === 'done' ? 'Extension linked!' : extLinkState === 'error' ? 'Extension not found' : 'Link Extension'}
+          </button>
+
           <button
             onClick={handleSignOut}
             className="flex items-center gap-3 w-full px-3 py-2 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-100 hover:text-gray-900 transition-colors"

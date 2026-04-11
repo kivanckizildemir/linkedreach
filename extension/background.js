@@ -106,6 +106,19 @@ async function handle(msg, sender) {
       return { ok: true, user }
     }
 
+    // Called from the web app via chrome.runtime.sendMessage(extId, ...) to push
+    // the user's session token directly — no manual login in the popup needed.
+    case 'RECEIVE_AUTH_TOKEN': {
+      const { token, user } = msg
+      if (!token) throw new Error('No token provided')
+      await chrome.storage.local.set({ lr_token: token, lr_user: user })
+      // Reconnect WebSocket with the new token
+      if (ws) { ws.close(); ws = null }
+      clearTimeout(wsReconnectTimer)
+      setTimeout(connectWs, 500)
+      return { ok: true, user }
+    }
+
     case 'LOGOUT':
       await chrome.storage.local.remove(['lr_token', 'lr_user'])
       return { ok: true }
