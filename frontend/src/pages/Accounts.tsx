@@ -12,6 +12,7 @@ import {
   verifyConnectCode,
   testHealthCheck,
   requestVerificationCode,
+  requestSessionExport,
   type LinkedInAccount,
 } from '../api/accounts'
 import { apiFetch } from '../lib/fetchJson'
@@ -1004,9 +1005,9 @@ function AddProxyModal({
 
 
 // ── Connect Modal ─────────────────────────────────────────────────────────────
-// Credentials-only login: email + password (+ optional TOTP secret)
+// Two methods: 1) Chrome extension (primary — zero bot risk), 2) credentials
 
-type ConnectStep = 'form' | 'connecting' | 'push' | 'verify' | 'done' | 'error'
+type ConnectStep = 'choose' | 'extension_waiting' | 'form' | 'connecting' | 'push' | 'verify' | 'done' | 'error'
 
 export function ConnectModal({
   account,
@@ -1019,7 +1020,7 @@ export function ConnectModal({
 }) {
   const accountId = account.id
 
-  const [step, setStep]             = useState<ConnectStep>('form')
+  const [step, setStep]             = useState<ConnectStep>('choose')
   const [password, setPassword]     = useState('')
   const [totpSecret, setTotpSecret] = useState('')
   const [showTotp, setShowTotp]     = useState(false)
@@ -1028,6 +1029,7 @@ export function ConnectModal({
   const [sessionKey, setSessionKey] = useState('')
   const [error, setError]           = useState('')
   const [requestingCode, setRequestingCode] = useState(false)
+  const [extensionExporting, setExtensionExporting] = useState(false)
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -1074,6 +1076,25 @@ export function ConnectModal({
     }
   }
 
+  async function handleConnectViaExtension() {
+    setExtensionExporting(true); setError(''); setStep('extension_waiting')
+    try {
+      await requestSessionExport(accountId)
+      // Extension exported cookies directly to the account — we're done
+      setStep('done'); setTimeout(onSaved, 1500)
+    } catch (err) {
+      const msg = (err as Error).message
+      if (msg === 'extension_offline') {
+        setError('Extension not connected. Make sure the LinkedReach Chrome extension is installed and you\'re logged into the app in the extension.')
+      } else {
+        setError(msg)
+      }
+      setStep('error')
+    } finally {
+      setExtensionExporting(false)
+    }
+  }
+
   async function handleVerify(e: React.FormEvent) {
     e.preventDefault()
     setStep('connecting'); setError('')
@@ -1114,8 +1135,9 @@ export function ConnectModal({
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
           <h2 className="text-lg font-semibold text-gray-900">
-            {step === 'push'    ? 'Check your phone'
-             : step === 'verify' ? 'Enter verification code'
+            {step === 'push'              ? 'Check your phone'
+             : step === 'verify'          ? 'Enter verification code'
+             : step === 'extension_waiting' ? 'Connecting via Extension…'
              : 'Connect LinkedIn Account'}
           </h2>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors">
@@ -1126,6 +1148,82 @@ export function ConnectModal({
         </div>
 
         <div className="px-6 py-5">
+
+          {/* ── Method chooser (primary screen) ── */}
+          {step === 'choose' && (
+            <div className="space-y-3">
+              <p className="text-sm text-gray-500 mb-4">
+                Choose how to connect <span className="font-medium text-gray-700">{account.linkedin_email}</span>
+              </p>
+
+              {/* Extension method — recommended */}
+              <button
+                onClick={handleConnectViaExtension}
+                className="w-full flex items-start gap-4 p-4 border-2 border-blue-500 bg-blue-50 rounded-xl text-left hover:bg-blue-100 transition-colors group"
+              >
+                <div className="w-10 h-10 rounded-lg bg-blue-600 flex items-center justify-center flex-shrink-0 mt-0.5">
+                  <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                  </svg>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-sm font-semibold text-gray-900">Connect via Chrome Extension</span>
+                    <span className="px-1.5 py-0.5 text-[10px] font-bold bg-blue-600 text-white rounded uppercase tracking-wide">Recommended</span>
+                  </div>
+                  <p className="text-xs text-gray-500 leading-relaxed">
+                    One-click connection using your active LinkedIn session. Zero bot risk — LinkedIn never sees automation.
+                  </p>
+                </div>
+              </button>
+
+              {/* Password method — fallback */}
+              <button
+                onClick={() => setStep('form')}
+                className="w-full flex items-start gap-4 p-4 border border-gray-200 rounded-xl text-left hover:bg-gray-50 transition-colors"
+              >
+                <div className="w-10 h-10 rounded-lg bg-gray-100 flex items-center justify-center flex-shrink-0 mt-0.5">
+                  <svg className="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                  </svg>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold text-gray-900 mb-1">Connect with password</p>
+                  <p className="text-xs text-gray-500 leading-relaxed">
+                    Automated login via BrightData residential IP. Use if the extension isn't installed.
+                  </p>
+                </div>
+              </button>
+
+              <p className="text-xs text-center text-gray-400 pt-1">
+                Don't have the extension?{' '}
+                <a
+                  href="https://chrome.google.com/webstore"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-blue-600 hover:underline"
+                >
+                  Install LinkedReach for Chrome
+                </a>
+              </p>
+            </div>
+          )}
+
+          {/* ── Extension waiting ── */}
+          {step === 'extension_waiting' && (
+            <div className="flex flex-col items-center gap-4 py-6">
+              <div className="w-14 h-14 rounded-full bg-blue-50 flex items-center justify-center">
+                <svg className="w-7 h-7 text-blue-600 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                </svg>
+              </div>
+              <div className="text-center">
+                <p className="text-sm font-semibold text-gray-900">Exporting session from extension…</p>
+                <p className="text-xs text-gray-500 mt-1">The extension is reading your LinkedIn cookies and sending them securely.</p>
+              </div>
+            </div>
+          )}
 
           {/* ── Credentials form ── */}
           {step === 'form' && (

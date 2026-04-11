@@ -9,6 +9,21 @@
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+const PROD_API = 'https://api-production-5994.up.railway.app'
+
+async function apiFetch(path, opts = {}) {
+  const { lr_backend, lr_token } = await chrome.storage.local.get(['lr_backend', 'lr_token'])
+  const base = (lr_backend || PROD_API).replace(/\/$/, '')
+  return fetch(base + path, {
+    ...opts,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(lr_token ? { Authorization: 'Bearer ' + lr_token } : {}),
+      ...(opts.headers || {}),
+    },
+  })
+}
+
 function showScreen(id) {
   document.querySelectorAll('.screen').forEach(el => el.classList.remove('active'))
   document.getElementById(id).classList.add('active')
@@ -96,17 +111,15 @@ function renderPageBadge(type) {
   }
 }
 
-function renderActionButtons(type, tabId) {
+function renderActionButtons(type) {
   const notLinkedIn = document.getElementById('not-linkedin-notice')
   const btnExport = document.getElementById('btn-export-session')
   const btnProfile = document.getElementById('btn-import-profile')
-  const btnSales = document.getElementById('btn-scrape-sales')
 
   const isLinkedIn = type !== 'not-linkedin'
   notLinkedIn.style.display = isLinkedIn ? 'none' : ''
   btnExport.style.display = isLinkedIn ? '' : 'none'
   btnProfile.style.display = type === 'li-profile' ? '' : 'none'
-  btnSales.style.display = type === 'sales-search' ? '' : 'none'
 }
 
 // ── Account selector ──────────────────────────────────────────────────────────
@@ -146,21 +159,6 @@ async function loadAccounts(select) {
   }
 }
 
-// ── Update Sales Nav capture count badge ──────────────────────────────────────
-
-async function updateCaptureCount(tabId) {
-  const badge = document.getElementById('capture-count-badge')
-  try {
-    const reply = await chrome.tabs.sendMessage(tabId, { type: 'GET_CAPTURES' })
-    if (reply?.ok && reply.captures?.length > 0) {
-      badge.textContent = '(' + reply.captures.length + ' batches)'
-    } else {
-      badge.textContent = ''
-    }
-  } catch (_) {
-    badge.textContent = ''
-  }
-}
 
 // ── Main init ────────────────────────────────────────────────────────────────
 
@@ -192,7 +190,7 @@ async function init() {
   // Show main screen and populate
   showScreen('screen-main')
   renderPageBadge(type)
-  renderActionButtons(type, tab?.id)
+  renderActionButtons(type)
 
   // Load accounts
   const select = document.getElementById('account-select')
@@ -202,11 +200,6 @@ async function init() {
   select.addEventListener('change', () => {
     if (select.value) chrome.storage.local.set({ lr_selected_account: select.value })
   })
-
-  // Update capture count for Sales Nav
-  if (type === 'sales-search' && tab?.id) {
-    await updateCaptureCount(tab.id)
-  }
 
   // ── Wire up action buttons ────────────────────────────────────────────────
 
@@ -245,21 +238,6 @@ async function init() {
     }
   })
 
-  const btnSales = document.getElementById('btn-scrape-sales')
-  btnSales.addEventListener('click', async () => {
-    clearStatus()
-    setButtonLoading(btnSales, true)
-    try {
-      const { scraped, imported } = await bg({ type: 'SCRAPE_CAPTURES', tabId: tab.id })
-      setStatus(`Scraped ${scraped} leads — ${imported} imported (${scraped - imported} already existed).`, 'success')
-      await updateCaptureCount(tab.id)
-    } catch (err) {
-      setStatus(err.message, 'error')
-    } finally {
-      setButtonLoading(btnSales, false)
-    }
-  })
-
   // ── Logout ────────────────────────────────────────────────────────────────
   document.getElementById('btn-logout').addEventListener('click', async () => {
     await bg({ type: 'LOGOUT' })
@@ -267,6 +245,7 @@ async function init() {
     document.getElementById('header-user-email').textContent = ''
   })
 }
+
 
 // ── Login form ────────────────────────────────────────────────────────────────
 
@@ -294,5 +273,53 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
   }
 })
 
+// ── Settings panel ────────────────────────────────────────────────────────────
+
+const PROD_BACKEND = PROD_API  // alias for settings panel
+const LOCAL_BACKEND = 'http://localhost:3001'
+
+async function initSettings() {
+  const btnGear     = document.getElementById('btn-settings')
+  const panel       = document.getElementById('settings-panel')
+  const inputBe     = document.getElementById('settings-backend')
+  const btnSave     = document.getElementById('btn-save-backend')
+  const btnLocal    = document.getElementById('btn-use-local')
+  const btnProd     = document.getElementById('btn-use-prod')
+  const settingSt   = document.getElementById('settings-status')
+  const wsDot       = document.getElementById('ws-dot')
+
+  // Load current backend
+  const { lr_backend } = await chrome.storage.local.get('lr_backend')
+  inputBe.value = lr_backend || PROD_BACKEND
+
+  // Toggle panel
+  btnGear.addEventListener('click', () => panel.classList.toggle('open'))
+
+  async function saveBackend(url) {
+    await bg({ type: 'SET_BACKEND', url })
+    inputBe.value = url
+    settingSt.textContent = 'Saved — reconnecting…'
+    setTimeout(() => { settingSt.textContent = '' }, 3000)
+  }
+
+  btnSave.addEventListener('click', () => saveBackend(inputBe.value.trim() || PROD_BACKEND))
+  btnLocal.addEventListener('click', () => saveBackend(LOCAL_BACKEND))
+  btnProd.addEventListener('click',  () => saveBackend(PROD_BACKEND))
+
+  // Poll WS status every 2s
+  async function updateWsDot() {
+    try {
+      const { online } = await bg({ type: 'EXTENSION_STATUS' })
+      wsDot.className = 'ws-dot ' + (online ? 'connected' : 'disconnected')
+      wsDot.title = online ? 'Hub connected ✓' : 'Hub disconnected'
+    } catch {
+      wsDot.className = 'ws-dot disconnected'
+    }
+  }
+  updateWsDot()
+  setInterval(updateWsDot, 2000)
+}
+
 // ── Boot ──────────────────────────────────────────────────────────────────────
+initSettings()
 init()

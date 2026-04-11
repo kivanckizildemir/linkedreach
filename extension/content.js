@@ -1,11 +1,6 @@
 'use strict'
-// ── Inject page-world script ─────────────────────────────────────────────────
-;(function () {
-  const s = document.createElement('script')
-  s.src = chrome.runtime.getURL('injected.js')
-  s.onload = () => s.remove()
-  ;(document.head || document.documentElement).prepend(s)
-})()
+// injected.js is now declared as a world:MAIN content script in manifest.json
+// so it runs synchronously before any page scripts — no script tag needed.
 
 // ── Pending async request map ─────────────────────────────────────────────────
 const _pending = new Map()

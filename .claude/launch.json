@@ -3,20 +3,20 @@
   "configurations": [
     {
       "name": "frontend",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--prefix", "frontend"],
+      "runtimeExecutable": "/usr/local/bin/node",
+      "runtimeArgs": ["frontend/node_modules/.bin/vite"],
       "port": 5173
     },
     {
       "name": "backend",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--prefix", "backend"],
+      "runtimeExecutable": "/Users/kivanckizildemir/.nvm/versions/node/v24.14.0/bin/node",
+      "runtimeArgs": ["/Users/kivanckizildemir/linkedreach/backend/node_modules/.bin/tsx", "watch", "--env-file=backend/.env", "backend/src/index.ts"],
       "port": 3001
     },
     {
       "name": "workers",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "workers", "--prefix", "backend"],
+      "runtimeExecutable": "/Users/kivanckizildemir/.nvm/versions/node/v24.14.0/bin/node",
+      "runtimeArgs": ["/Users/kivanckizildemir/linkedreach/backend/node_modules/.bin/tsx", "watch", "--env-file=backend/.env", "backend/src/workers/index.ts"],
       "port": 3002
     }
   ]

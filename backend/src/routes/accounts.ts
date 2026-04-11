@@ -6,6 +6,7 @@ import type { AccountStatus } from '../types'
 import { startLogin, startManualSession, submitVerificationCode, getLoginStatus, checkPushApproval, getSessionScreenshot, getSessionPageInfo, getSessionDebugSnapshot, interactWithPage, testProxyRaw, requestVerificationCode } from '../linkedin/login'
 import { isExtensionOnline, sendActionToExtension } from '../lib/extensionHub'
 import { extractCookies, getProfileDir } from '../linkedin/session'
+import { generateFingerprint } from '../lib/fingerprint'
 import { chromium } from 'playwright'
 import * as fsSync from 'fs'
 import { execSync } from 'child_process'
@@ -85,7 +86,7 @@ accountsRouter.patch('/:id', async (req: Request, res: Response) => {
   const allowed = ['status', 'proxy_id', 'cookies', 'warmup_day', 'proxy_country', 'linkedin_password', 'totp_secret', 'sender_name'] as const
   type AllowedKey = (typeof allowed)[number]
 
-  const updates: Partial<Record<AllowedKey, unknown>> = {}
+  const updates: Partial<Record<AllowedKey, unknown>> & { fingerprint?: object } = {}
   for (const key of allowed) {
     if (key in req.body) {
       updates[key] = req.body[key] as unknown
@@ -98,6 +99,24 @@ accountsRouter.patch('/:id', async (req: Request, res: Response) => {
       res.status(400).json({ error: 'Invalid status value' })
       return
     }
+  }
+
+  // When a proxy is assigned, regenerate the fingerprint with the proxy's country
+  // so timezone/locale in the fingerprint are geo-consistent with the proxy IP.
+  // When a proxy is assigned, generate an updated fingerprint with correct geo timezone/locale.
+  // Saved opportunistically — silently skip if the column doesn't exist yet (migration pending).
+  if (updates.proxy_id) {
+    try {
+      const rawProxyId = updates.proxy_id as unknown
+      const proxyId: string = Array.isArray(rawProxyId) ? String(rawProxyId[0]) : String(rawProxyId)
+      const { data: proxy } = await supabase
+        .from('proxies')
+        .select('country')
+        .eq('id', proxyId)
+        .single()
+      const country = (proxy as { country?: string | null } | null)?.country ?? null
+      updates.fingerprint = generateFingerprint(String(req.params.id), country)
+    } catch { /* migration not yet applied — fingerprint generated lazily in session */ }
   }
 
   const { data, error } = await supabase

@@ -8,6 +8,8 @@ import { SELECTORS } from './selectors'
 import * as fs from 'fs/promises'
 import * as path from 'path'
 import * as os from 'os'
+import { buildFingerprintInitScript, generateFingerprint } from '../lib/fingerprint'
+import type { AccountFingerprint } from '../lib/fingerprint'
 
 // Set DISABLE_PROXY=true to run without any proxy (local dev only).
 const DISABLE_PROXY = process.env.DISABLE_PROXY === 'true'
@@ -40,6 +42,8 @@ export interface AccountRecord {
   cookies: string
   proxy_id: string | null
   status: string
+  /** Stable browser fingerprint (generated once, reused every session). */
+  fingerprint?: import('../lib/fingerprint').AccountFingerprint | null
 }
 
 // ─── Storage-state helpers ────────────────────────────────────────────────────
@@ -136,15 +140,19 @@ export async function createSession(account: AccountRecord): Promise<{
     '--ignore-certificate-errors',
   ]
 
+  // Build the stable fingerprint for this account (stored in DB, generated lazily).
+  // contextOptions uses it so user-agent, viewport, locale and timezone are consistent
+  // with what the init script injects into the page JS environment.
+  const fp: AccountFingerprint = account.fingerprint ?? generateFingerprint(account.id)
+
   const contextOptions = {
     proxy: proxySettings,
     ignoreHTTPSErrors: true,
-    userAgent:
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
-      '(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    viewport: { width: 1920, height: 1080 } as { width: number; height: number },
-    locale: 'en-US',
-    extraHTTPHeaders: { 'Accept-Language': 'en-US,en;q=0.9' },
+    userAgent: fp.user_agent,
+    viewport:  { width: fp.screen_width, height: fp.screen_height },
+    locale:    fp.locale,
+    timezoneId: fp.timezone,
+    extraHTTPHeaders: { 'Accept-Language': fp.language.join(',') },
   }
 
   // ── Pre-flight: warn if stored li_at is already expired ──────────────────
@@ -210,13 +218,8 @@ export async function createSession(account: AccountRecord): Promise<{
           await context.addCookies(cookiesOnly as Parameters<BrowserContext['addCookies']>[0])
         }
         const page = context.pages()[0] ?? await context.newPage()
-        await page.addInitScript(() => {
-          Object.defineProperty(navigator, 'webdriver', { get: () => undefined })
-          Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] })
-          Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] })
-          // @ts-ignore
-          window.chrome = { runtime: {} }
-        })
+        const fallbackFp = account.fingerprint ?? generateFingerprint(account.id)
+        await page.addInitScript({ content: buildFingerprintInitScript(fallbackFp) })
         return { browser, context, page }
       }
     }
@@ -258,14 +261,11 @@ export async function createSession(account: AccountRecord): Promise<{
 
   const page = context.pages()[0] ?? await context.newPage()
 
-  // Stealth patches
-  await page.addInitScript(() => {
-    Object.defineProperty(navigator, 'webdriver', { get: () => undefined })
-    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] })
-    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] })
-    // @ts-ignore
-    window.chrome = { runtime: {} }
-  })
+  // Full fingerprint injection — replaces the basic webdriver patch with a
+  // complete, account-stable device profile covering WebGL, canvas, screen,
+  // platform, plugins, and locale.  fp was resolved earlier in this function.
+  await page.addInitScript({ content: buildFingerprintInitScript(fp) })
+  console.log(`[session] Fingerprint injected for ${account.id}: ${fp.webgl_renderer} / ${fp.platform} / ${fp.timezone}`)
 
   return { browser, context, page }
 }

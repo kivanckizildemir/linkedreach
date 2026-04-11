@@ -3,7 +3,7 @@
   "name": "LinkedReach",
   "version": "1.2.0",
   "description": "LinkedIn automation — runs sequences from your real browser session",
-  "permissions": ["cookies", "storage", "activeTab", "scripting", "tabs", "windows"],
+  "permissions": ["cookies", "storage", "activeTab", "scripting", "tabs", "windows", "alarms"],
   "host_permissions": [
     "https://*.linkedin.com/*",
     "https://api-production-5994.up.railway.app/*",
@@ -12,6 +12,13 @@
   ],
   "background": { "service_worker": "background.js" },
   "content_scripts": [
+    {
+      "matches": ["https://www.linkedin.com/*"],
+      "js": ["injected.js"],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": false
+    },
     {
       "matches": ["https://www.linkedin.com/*"],
       "js": ["content.js"],
@@ -25,6 +32,9 @@
       "matches": ["https://www.linkedin.com/*"]
     }
   ],
+  "externally_connectable": {
+    "matches": ["http://localhost:5173/*", "http://localhost:5174/*"]
+  },
   "action": {
     "default_popup": "popup.html",
     "default_title": "LinkedReach",

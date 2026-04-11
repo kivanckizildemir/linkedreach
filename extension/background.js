@@ -147,18 +147,6 @@ async function handle(msg, sender) {
       return { ok: true, cookieCount: cookies.length, hasLocalStorage: origins.length > 0 }
     }
 
-    case 'SCRAPE_CAPTURES': {
-      const { tabId } = msg
-      const reply = await chrome.tabs.sendMessage(tabId, { type: 'GET_CAPTURES' })
-      if (!reply?.ok) throw new Error(reply?.error ?? 'Could not read captures from page')
-      const leads = parseCaptures(reply.captures)
-      if (leads.length === 0) throw new Error('No leads captured yet. Make sure the Sales Nav search results are visible in the tab and scroll down to load more.')
-      const res = await apiFetch('/api/leads/import', { method: 'POST', body: JSON.stringify({ leads }) })
-      if (!res.ok) throw new Error('Failed to import leads (' + res.status + ')')
-      const { imported } = await res.json()
-      return { ok: true, scraped: leads.length, imported }
-    }
-
     case 'IMPORT_PROFILE': {
       const { tabId } = msg
       const reply = await chrome.tabs.sendMessage(tabId, { type: 'GET_PROFILE' })
@@ -172,6 +160,21 @@ async function handle(msg, sender) {
     case 'CAPTURE_UPDATE': return { ok: true }
 
     case 'EXTENSION_STATUS': return { online: ws?.readyState === WS_OPEN }
+
+    case 'GET_BACKEND': {
+      const { backend } = await getConfig()
+      return { backend }
+    }
+
+    case 'SET_BACKEND': {
+      if (!msg.url) throw new Error('url required')
+      await chrome.storage.local.set({ lr_backend: msg.url.replace(/\/$/, '') })
+      // Reconnect with new backend
+      if (ws) { ws.close(); ws = null }
+      clearTimeout(wsReconnectTimer)
+      setTimeout(connectWs, 500)
+      return { ok: true, backend: msg.url }
+    }
 
     default: throw new Error('Unknown: ' + msg.type)
   }
@@ -258,8 +261,6 @@ async function getOrCreateBgWindow() {
     type:    'popup',
     width:   1024,
     height:  768,
-    left:    -2000,   // off-screen — invisible to the user
-    top:     0,
     focused: false,
   })
   bgWindowId = win.id
@@ -313,6 +314,33 @@ async function executeJob(job) {
       case 'react_post':
         result = await actionReactPost(windowId, profileUrl, reaction || 'like')
         break
+
+      case 'export_session': {
+        // Export the current LinkedIn session cookies directly to the account
+        const { accountId } = job
+        const chromeCookies = await chrome.cookies.getAll({ domain: '.linkedin.com' })
+        const cookies = chromeCookies.map(cookieToPlaywright)
+        if (!cookies.find(c => c.name === 'li_at')) throw new Error('No LinkedIn session found. Please log in to linkedin.com first.')
+
+        let origins = []
+        try {
+          const tabs = await chrome.tabs.query({ url: 'https://www.linkedin.com/*' })
+          if (tabs.length > 0) {
+            const r = await chrome.tabs.sendMessage(tabs[0].id, { type: 'GET_LOCALSTORAGE' })
+            if (r?.ok && r.items?.length) origins = [{ origin: 'https://www.linkedin.com', localStorage: r.items }]
+          }
+        } catch (_) { /* localStorage is optional */ }
+
+        const storageState = { cookies, origins }
+        const saveRes = await apiFetch('/api/accounts/' + accountId, {
+          method: 'PATCH',
+          body: JSON.stringify({ cookies: JSON.stringify(storageState), status: 'active' }),
+        })
+        if (!saveRes.ok) throw new Error('Failed to save session (' + saveRes.status + ')')
+        result = { ok: true, cookieCount: cookies.length, hasLocalStorage: origins.length > 0 }
+        break
+      }
+
       default:
         throw new Error('Unknown action: ' + action)
     }
@@ -406,7 +434,7 @@ async function actionConnect(windowId, profileUrl, note) {
       const items = Array.from(document.querySelectorAll('[role="menuitem"]'))
       const connectItem = items.find(el => el.textContent?.trim() === 'Connect')
       if (!connectItem) return { skipped: true, reason: 'connect_not_in_menu' }
-      ;(connectItem as HTMLElement).click()
+      connectItem.click()
       return { clicked: true }
     })
     if (!result2?.clicked) { await closeTab(tabId); return result2 }
@@ -420,13 +448,13 @@ async function actionConnect(windowId, profileUrl, note) {
     // If "Add a note" modal appeared
     const addNoteBtn = document.querySelector('button[aria-label="Add a note"]')
     if (addNoteBtn && noteText) {
-      ;(addNoteBtn as HTMLElement).click()
+      addNoteBtn.click()
       return { addingNote: true }
     }
     // Send without note
     const sendBtn = document.querySelector('button[aria-label="Send without a note"]')
       || Array.from(document.querySelectorAll('button')).find(b => b.textContent?.trim() === 'Send without a note')
-    if (sendBtn) { ;(sendBtn as HTMLElement).click(); return { sent: true } }
+    if (sendBtn) { sendBtn.click(); return { sent: true } }
     return { sent: false }
   }, [note || ''])
 
@@ -445,7 +473,7 @@ async function actionConnect(windowId, profileUrl, note) {
     await injectScript(tabId, () => {
       const sendBtn = document.querySelector('button[aria-label="Send invitation"]')
         || Array.from(document.querySelectorAll('button')).find(b => b.textContent?.trim() === 'Send')
-      ;(sendBtn as HTMLElement)?.click()
+      sendBtn?.click()
       return { sent: true }
     })
   }
@@ -466,7 +494,7 @@ async function actionMessage(windowId, profileUrl, messageText) {
     const buttons = Array.from(document.querySelectorAll('button'))
     const msgBtn  = buttons.find(b => b.textContent?.trim() === 'Message')
     if (!msgBtn) return { skipped: true, reason: 'message_button_not_found' }
-    ;(msgBtn as HTMLElement).click()
+    msgBtn.click()
     return { clicked: true }
   }, [messageText])
 
@@ -480,7 +508,7 @@ async function actionMessage(windowId, profileUrl, messageText) {
       || document.querySelector('[data-placeholder="Write a message…"]')
     if (!editor) return { error: 'message_editor_not_found' }
 
-    ;(editor as HTMLElement).focus()
+    editor.focus()
     document.execCommand('insertText', false, text)
     editor.dispatchEvent(new Event('input', { bubbles: true }))
 
@@ -495,7 +523,7 @@ async function actionMessage(windowId, profileUrl, messageText) {
     const sendBtn = document.querySelector('button.msg-form__send-button')
       || document.querySelector('[data-control-name="send-message-from-thread"]')
       || Array.from(document.querySelectorAll('button')).find(b => b.textContent?.trim() === 'Send')
-    ;(sendBtn as HTMLElement)?.click()
+    sendBtn?.click()
     return { sent: true }
   })
 
@@ -520,7 +548,7 @@ async function actionReactPost(windowId, profileUrl, reaction) {
       return { hovered: true, reactionType }
     }
 
-    ;(likeBtn as HTMLElement).click()
+    likeBtn.click()
     return { reacted: true, reaction: 'like' }
   }, [reaction])
 
@@ -529,7 +557,7 @@ async function actionReactPost(windowId, profileUrl, reaction) {
     await injectScript(tabId, (reactionType) => {
       const btn = document.querySelector(`button[aria-label="${reactionType}"]`)
         || document.querySelector(`[data-reaction-type="${reactionType}"]`)
-      ;(btn as HTMLElement)?.click()
+      btn?.click()
       return { reacted: true, reaction: reactionType }
     }, [reaction])
   }
@@ -559,10 +587,19 @@ chrome.storage.onChanged.addListener((changes) => {
   }
 })
 
-// Heartbeat — ping every 25s to keep the connection alive
-setInterval(() => {
-  wsSend({ type: 'ping' })
-}, 25_000)
+// ── MV3 service worker keepalive via alarms ───────────────────────────────────
+// setInterval() is unreliable in MV3 service workers — use alarms instead.
+// The alarm fires every 25s to send the WS ping and keep the SW alive.
+chrome.alarms.create('lr-keepalive', { periodInMinutes: 0.4 })  // ~25s
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name !== 'lr-keepalive') return
+  // If WS is open, ping to keep alive. If not, reconnect.
+  if (ws && ws.readyState === WS_OPEN) {
+    wsSend({ type: 'ping' })
+  } else {
+    void connectWs()
+  }
+})
 
 // Initial connection attempt
 setTimeout(connectWs, 1000)

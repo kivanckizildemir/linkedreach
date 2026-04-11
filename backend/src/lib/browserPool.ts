@@ -27,6 +27,7 @@ import type { AccountRecord } from '../linkedin/session'
 import { supabase } from '../lib/supabase'
 import * as fs from 'fs'
 import { chromium } from 'playwright'
+import { generateFingerprint, buildFingerprintInitScript } from './fingerprint'
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const speakeasy = require('speakeasy') as {
   totp: (opts: { secret: string; encoding: string }) => string
@@ -201,13 +202,22 @@ export async function reconnectWithPersistentProfile(
     }
 
     console.log(`[browser-pool] reconnect: launching persistent profile headlessly for ${accountId}`)
+    // Load account fingerprint (or generate lazily) for consistent device identity
+    const { data: accData } = await supabase
+      .from('linkedin_accounts')
+      .select('fingerprint, proxy_id')
+      .eq('id', accountId)
+      .single()
+    const fp = (accData as any)?.fingerprint ?? generateFingerprint(accountId)
+
     bgContext = await chromium.launchPersistentContext(profileDir, {
       headless: true,
       args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled'],
       proxy: proxySettings,
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-      locale: 'en-US',
-      viewport: { width: 1280, height: 800 },
+      userAgent: fp.user_agent,
+      locale: fp.locale,
+      timezoneId: fp.timezone,
+      viewport: { width: fp.screen_width, height: fp.screen_height },
       ignoreHTTPSErrors: true,
     }) as BrowserContext
 
@@ -222,11 +232,7 @@ export async function reconnectWithPersistentProfile(
     page.on('close', () => { pageClosed = true })
     page.on('crash', () => { pageClosed = true; console.warn(`[browser-pool] reconnect: page crashed for ${accountId}`) })
 
-    await page.addInitScript(() => {
-      Object.defineProperty(navigator, 'webdriver', { get: () => undefined })
-      // @ts-ignore
-      window.chrome = { runtime: {} }
-    })
+    await page.addInitScript({ content: buildFingerprintInitScript(fp) })
 
     await page.goto('https://www.linkedin.com/login', { waitUntil: 'domcontentloaded', timeout: 30_000 })
     await page.waitForTimeout(2000)
