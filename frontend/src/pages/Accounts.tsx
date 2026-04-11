@@ -969,7 +969,7 @@ function AddProxyModal({
 // ── Connect Modal ─────────────────────────────────────────────────────────────
 // Credentials-only login: email + password (+ optional TOTP secret)
 
-type ConnectStep = 'form' | 'connecting' | 'push' | 'verify' | 'done' | 'error' | 'manual'
+type ConnectStep = 'form' | 'connecting' | 'push' | 'verify' | 'done' | 'error' | 'manual' | 'paste'
 
 export function ConnectModal({
   accountId,
@@ -996,6 +996,8 @@ export function ConnectModal({
   const [error, setError]         = useState('')
   const [requestingCode, setRequestingCode] = useState(false)
   const [screenshotUrl, setScreenshotUrl]   = useState<string | null>(null)
+  const [liAt, setLiAt]                     = useState('')
+  const [pasteSaving, setPasteSaving]       = useState(false)
 
   const pollRef           = useRef<ReturnType<typeof setInterval> | null>(null)
   const screenshotPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -1048,6 +1050,29 @@ export function ConnectModal({
     }
     void fetchShot()
     screenshotPollRef.current = setInterval(fetchShot, 1500)
+  }
+
+  async function handlePasteCookie(e: React.FormEvent) {
+    e.preventDefault()
+    const val = liAt.trim()
+    if (!val) return
+    setPasteSaving(true); setError('')
+    try {
+      const storageState = {
+        cookies: [{
+          name: 'li_at', value: val,
+          domain: '.linkedin.com', path: '/',
+          expires: -1, httpOnly: true, secure: true, sameSite: 'None' as const,
+        }],
+        origins: [],
+      }
+      await updateAccount(accountId, { cookies: JSON.stringify(storageState), status: 'active' })
+      setStep('done'); setTimeout(onSaved, 1500)
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setPasteSaving(false)
+    }
   }
 
   async function handleManualLogin() {
@@ -1171,6 +1196,7 @@ export function ConnectModal({
               {step === 'push' ? 'Check your phone'
                : step === 'verify' ? 'Enter verification code'
                : step === 'manual' ? 'Log in to LinkedIn'
+               : step === 'paste' ? 'Paste session cookie'
                : 'Connect LinkedIn Account'}
             </h2>
             {step === 'form' && (
@@ -1234,9 +1260,13 @@ export function ConnectModal({
                   Sign in
                 </button>
               </div>
-              <div className="text-center pt-1">
+              <div className="border-t border-gray-100 pt-3 space-y-2 text-center">
+                <button type="button" onClick={() => setStep('paste')}
+                  className="block w-full text-xs text-gray-500 hover:text-blue-600 transition-colors hover:underline underline-offset-2">
+                  Already logged in on Chrome? Paste your li_at cookie →
+                </button>
                 <button type="button" onClick={handleManualLogin}
-                  className="text-xs text-gray-400 hover:text-blue-600 transition-colors hover:underline underline-offset-2">
+                  className="block w-full text-xs text-gray-400 hover:text-blue-600 transition-colors hover:underline underline-offset-2">
                   Or open a live browser window instead →
                 </button>
               </div>
@@ -1368,6 +1398,40 @@ export function ConnectModal({
                 Try Again
               </button>
             </div>
+          )}
+
+          {/* ── Paste li_at ── */}
+          {step === 'paste' && (
+            <form onSubmit={handlePasteCookie} className="space-y-4">
+              <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 space-y-2">
+                <p className="text-xs font-medium text-amber-900">Get your li_at cookie from Chrome:</p>
+                <ol className="text-xs text-amber-800 space-y-1 list-decimal list-inside">
+                  <li>Open LinkedIn in Chrome, press <kbd className="bg-amber-100 px-1 rounded font-mono">F12</kbd></li>
+                  <li>Go to <strong>Application</strong> → <strong>Cookies</strong> → <strong>https://www.linkedin.com</strong></li>
+                  <li>Find <strong>li_at</strong> → double-click its value → copy</li>
+                </ol>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">li_at value</label>
+                <textarea
+                  required autoFocus rows={4}
+                  value={liAt} onChange={e => setLiAt(e.target.value)}
+                  placeholder="AQEDATxxxxxxxx..."
+                  className="w-full px-3.5 py-2.5 border border-gray-300 rounded-xl text-xs font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                />
+              </div>
+              {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-xl p-3">{error}</p>}
+              <div className="flex gap-3">
+                <button type="button" onClick={() => { setStep('form'); setError('') }}
+                  className="flex-1 py-2.5 border border-gray-200 text-sm font-medium rounded-xl hover:bg-gray-50 transition-colors">
+                  Back
+                </button>
+                <button type="submit" disabled={pasteSaving}
+                  className="flex-1 py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-xl hover:bg-blue-700 transition-colors disabled:opacity-50">
+                  {pasteSaving ? 'Saving…' : 'Save Session'}
+                </button>
+              </div>
+            </form>
           )}
 
           {/* ── Manual browser ── */}
