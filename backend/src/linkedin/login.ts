@@ -679,61 +679,54 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       }, selector)
     }
 
-    // Dismiss GDPR / cookie consent banners using JS click (no pointer-event issues)
-    for (const selector of [
-      'button[action-type="ACCEPT"]',
-      'button[data-tracking-control-name="cookie_policy_banner_accept"]',
-      '#artdeco-global-alert-action--accept',
-      'button.artdeco-global-alert__action',
-    ]) {
-      try {
-        const exists = await page.$(selector)
-        if (exists) { await jsClick(selector); await DELAY(800); break }
-      } catch { /* ok */ }
-    }
-
-    // ── Full-page cookie consent redirect ─────────────────────────────────────
-    // When BrightData gives a non-UK IP LinkedIn sometimes redirects to a full-page
-    // cookie consent (URL contains /cookie or /consent, or the page text is the consent
-    // copy rather than the login form). Accept it and navigate back to /login.
+    // ── Cookie consent dismissal (banner OR full-page redirect) ─────────────────
+    // LinkedIn renders the consent banner asynchronously after the page loads.
+    // Wait up to 5s for it to appear, then try attribute selectors first,
+    // then fall back to a language-agnostic text search across all languages.
+    // If the URL also changed to a consent/cookie page, navigate back to /login.
     {
-      const consentUrl  = page.url()
-      const consentText = await page.evaluate(() => (document.body?.innerText ?? '').substring(0, 600)).catch(() => '')
-      const isCookiePage =
-        /\/cookie|\/consent|\/authwall/i.test(consentUrl) ||
-        /essentielle.*cookies|essential.*cookies|cookie.*policy|politique.*cookies/i.test(consentText) ||
-        // Danish / other-language cookie consent copy patterns
-        /tredjeparter bruger|Acceptér|vi og vores|cookies til at levere/i.test(consentText)
+      // Wait briefly for the banner to hydrate before querying
+      await page.waitForSelector(
+        'button[action-type="ACCEPT"], button[data-tracking-control-name="cookie_policy_banner_accept"], #artdeco-global-alert-action--accept, button.artdeco-global-alert__action',
+        { timeout: 5_000 }
+      ).catch(() => { /* banner may not appear — that's fine */ })
 
-      if (isCookiePage) {
-        console.log(`[LOGIN DEBUG] Full-page cookie consent at ${consentUrl} — accepting`)
+      // Strategy 1: attribute-based selectors
+      let dismissedViaAttr = false
+      for (const selector of [
+        'button[action-type="ACCEPT"]',
+        'button[data-tracking-control-name="cookie_policy_banner_accept"]',
+        '#artdeco-global-alert-action--accept',
+        'button.artdeco-global-alert__action',
+        'button[data-control-name="accept"]',
+        'button[data-tracking-control-name*="accept"]',
+      ]) {
+        try {
+          const exists = await page.$(selector)
+          if (exists) { await jsClick(selector); await DELAY(1000); dismissedViaAttr = true; break }
+        } catch { /* ok */ }
+      }
 
-        // Strategy 1: known attribute selectors
-        for (const sel of [
-          'button[action-type="ACCEPT"]',
-          'button[data-control-name="accept"]',
-          'button[data-tracking-control-name*="accept"]',
-          '#artdeco-global-alert-action--accept',
-        ]) {
-          try {
-            const el = await page.$(sel)
-            if (el) { await jsClick(sel); await DELAY(1200); break }
-          } catch { /* ok */ }
-        }
-
-        // Strategy 2: text-based search (works regardless of language)
-        await page.evaluate(() => {
+      // Strategy 2: language-agnostic text search — handles any locale
+      // Covers: English, Danish, Indonesian, French, German, Dutch, Spanish, Italian, Arabic, etc.
+      if (!dismissedViaAttr) {
+        const clicked = await page.evaluate(() => {
           const btns = Array.from(document.querySelectorAll('button, a[role="button"]'))
-          const accept = btns.find(b =>
-            /^(accept|allow|acceptér|accepter|akkoord|aceptar|accetta|akzeptieren|agree|continue|ok$)/i
-              .test((b.textContent ?? '').trim())
-          )
-          if (accept) (accept as HTMLElement).click()
-        }).catch(() => {})
-        await DELAY(1500)
+          const accept = btns.find(b => {
+            const t = (b.textContent ?? '').trim()
+            // Single-word accept tokens in many languages
+            return /^(accept|allow|terima|acceptér|accepter|akkoord|aceptar|accetta|akzeptieren|agree|ok|قبول|同意|허용|kabul)$/i.test(t)
+          })
+          if (accept) { (accept as HTMLElement).click(); return true }
+          return false
+        }).catch(() => false)
+        if (clicked) await DELAY(1000)
+      }
 
-        // Navigate back to login regardless of whether the click worked
-        console.log('[LOGIN DEBUG] Navigating back to /login after cookie consent')
+      // If the page URL changed to a consent/cookie/authwall page, navigate back
+      const postConsentUrl = page.url()
+      if (/\/cookie|\/consent|\/authwall/i.test(postConsentUrl)) {
+        console.log(`[LOGIN DEBUG] Consent page redirect at ${postConsentUrl} — navigating back to /login`)
         await page.goto('https://www.linkedin.com/login', { waitUntil: 'domcontentloaded', timeout: 30_000 })
         await DELAY(2000)
       }
