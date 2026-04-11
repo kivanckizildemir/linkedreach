@@ -1012,20 +1012,11 @@ export function ConnectModal({
     }
   }, [])
 
-  // Auto-detect proxy country from the user's IP
+  // Auto-start the manual browser session as soon as the modal mounts
   useEffect(() => {
-    const SUPPORTED = new Set(['us','gb','de','fr','nl','ca','au','sg','in','ae','tr'])
-    fetch('https://www.cloudflare.com/cdn-cgi/trace')
-      .then(r => r.text())
-      .then(text => {
-        const match = text.match(/^loc=([A-Z]{2})$/m)
-        if (!match) return
-        const c = match[1].toLowerCase()
-        if (!SUPPORTED.has(c)) return
-        void updateAccount(accountId, { proxy_country: c })
-      })
-      .catch(() => { /* non-critical */ })
-  }, [accountId])
+    void handleManualLogin()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   function stopPolling() {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
@@ -1193,17 +1184,14 @@ export function ConnectModal({
         <div className="flex items-start justify-between px-6 py-4 border-b border-gray-100">
           <div>
             <h2 className="text-lg font-semibold text-gray-900">
-              {step === 'push' ? 'Check your phone'
+              {step === 'push'    ? 'Check your phone'
                : step === 'verify' ? 'Enter verification code'
-               : step === 'manual' ? 'Log in to LinkedIn'
-               : step === 'paste' ? 'Paste session cookie'
+               : step === 'paste'  ? 'Paste session cookie'
+               : step === 'form'   ? 'Sign in with credentials'
                : 'Connect LinkedIn Account'}
             </h2>
-            {step === 'form' && (
-              <p className="text-xs text-gray-400 mt-0.5">Sign in with your LinkedIn credentials</p>
-            )}
-            {step === 'manual' && (
-              <p className="text-xs text-gray-400 mt-0.5">Click and type directly in the browser below</p>
+            {(step === 'manual' || step === 'connecting') && (
+              <p className="text-xs text-gray-400 mt-0.5">Click the password field, then type — we detect login automatically</p>
             )}
           </div>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors mt-0.5">
@@ -1281,8 +1269,8 @@ export function ConnectModal({
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
               </svg>
               <div className="text-center">
-                <p className="text-sm font-medium text-gray-700">Signing in to LinkedIn…</p>
-                <p className="text-xs text-gray-400 mt-1">This usually takes 15–30 seconds</p>
+                <p className="text-sm font-medium text-gray-700">Opening LinkedIn…</p>
+                <p className="text-xs text-gray-400 mt-1">Loading the login page, usually takes 5–10 seconds</p>
               </div>
             </div>
           )}
@@ -1434,20 +1422,14 @@ export function ConnectModal({
             </form>
           )}
 
-          {/* ── Manual browser ── */}
+          {/* ── Manual browser (primary connect flow) ── */}
           {step === 'manual' && (
             <div className="space-y-3">
-              <div className="bg-blue-50 border border-blue-100 rounded-xl px-4 py-2.5 flex items-center gap-2">
-                <svg className="w-3.5 h-3.5 text-blue-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                </svg>
-                <p className="text-xs text-blue-800">Click to focus a field, then type using your keyboard. We detect login automatically.</p>
-              </div>
-
               {screenshotUrl ? (
                 <div
                   className="relative rounded-xl overflow-hidden border border-gray-200 cursor-pointer select-none"
                   style={{ aspectRatio: '1280/800' }}
+                  tabIndex={0}
                 >
                   <img
                     src={screenshotUrl}
@@ -1464,15 +1446,27 @@ export function ConnectModal({
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
                     </svg>
-                    <p className="text-xs text-gray-400">Opening browser…</p>
+                    <p className="text-xs text-gray-400">Opening LinkedIn…</p>
                   </div>
                 </div>
               )}
 
-              <button type="button" onClick={() => { stopPolling(); stopScreenshotPolling(); setStep('form') }}
-                className="w-full py-1.5 text-xs text-gray-400 hover:text-gray-600 transition-colors">
-                Cancel
-              </button>
+              <div className="flex items-center justify-between pt-1">
+                <button type="button" onClick={onClose}
+                  className="text-xs text-gray-400 hover:text-gray-600 transition-colors">
+                  Cancel
+                </button>
+                <div className="flex items-center gap-3">
+                  <button type="button" onClick={() => { stopPolling(); stopScreenshotPolling(); setStep('paste') }}
+                    className="text-xs text-gray-400 hover:text-blue-600 transition-colors hover:underline underline-offset-2">
+                    Paste li_at cookie
+                  </button>
+                  <button type="button" onClick={() => { stopPolling(); stopScreenshotPolling(); setStep('form') }}
+                    className="text-xs text-gray-400 hover:text-blue-600 transition-colors hover:underline underline-offset-2">
+                    Use credentials form
+                  </button>
+                </div>
+              </div>
             </div>
           )}
 

@@ -60,6 +60,7 @@ interface LoginSession {
   debugScreenshot?: string   // base64 PNG captured just before login form interaction
   debugPageText?:  string    // visible text at time of capture
   debugUrl?:       string    // URL at time of capture
+  usingCDP?:       boolean   // true when connected via BrightData Scraping Browser CDP
 }
 
 const sessions = new Map<string, LoginSession>()
@@ -1981,13 +1982,66 @@ export async function interactWithPage(
 ): Promise<{ ok: boolean; error?: string }> {
   const session = sessions.get(sessionKey)
   if (!session?.page) return { ok: false, error: 'Session not found or no active page' }
+  const page = session.page
+  const cdp  = session.usingCDP ?? false
   try {
     if (action.type === 'click') {
-      await session.page.mouse.click(action.x, action.y)
+      // page.mouse.click() works on both BrightData and local Chromium
+      await page.mouse.click(action.x, action.y)
+
     } else if (action.type === 'type') {
-      await session.page.keyboard.type(action.text)
+      if (cdp) {
+        // BrightData blocks Input.dispatchKeyEvent (keyboard.type) on password fields.
+        // Append directly to activeElement.value using the native React-compatible setter.
+        await page.evaluate((char: string) => {
+          const el = document.activeElement as HTMLInputElement | null
+          if (!el || !['INPUT', 'TEXTAREA'].includes(el.tagName)) return
+          const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+          const next = el.value + char
+          if (nativeSetter) nativeSetter.call(el, next)
+          else el.value = next
+          el.dispatchEvent(new Event('input',  { bubbles: true }))
+          el.dispatchEvent(new Event('change', { bubbles: true }))
+        }, action.text)
+      } else {
+        await page.keyboard.type(action.text)
+      }
+
     } else if (action.type === 'key') {
-      await session.page.keyboard.press(action.key as Parameters<typeof session.page.keyboard.press>[0])
+      if (cdp) {
+        if (action.key === 'Backspace') {
+          await page.evaluate(() => {
+            const el = document.activeElement as HTMLInputElement | null
+            if (!el || !['INPUT', 'TEXTAREA'].includes(el.tagName)) return
+            const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+            const next = el.value.slice(0, -1)
+            if (nativeSetter) nativeSetter.call(el, next)
+            else el.value = next
+            el.dispatchEvent(new Event('input',  { bubbles: true }))
+            el.dispatchEvent(new Event('change', { bubbles: true }))
+          })
+        } else if (action.key === 'Enter') {
+          // Find & DOM-click the nearest submit button (avoids form.submit() which closes BrightData session)
+          await page.evaluate(() => {
+            const active = document.activeElement as HTMLElement | null
+            const form   = active?.closest('form')
+            const btn    = (form?.querySelector('button[type="submit"], [data-id="sign-in-form__submit-btn"]')
+                         ?? document.querySelector('button[type="submit"]')) as HTMLElement | null
+            if (btn) btn.click()
+          })
+        } else if (action.key === 'Tab') {
+          await page.evaluate(() => {
+            const focusable = Array.from(document.querySelectorAll(
+              'input:not([disabled]), button:not([disabled]), select, textarea, a[href], [tabindex]:not([tabindex="-1"])'
+            )) as HTMLElement[]
+            const idx = focusable.indexOf(document.activeElement as HTMLElement)
+            if (idx >= 0 && idx < focusable.length - 1) focusable[idx + 1].focus()
+          })
+        }
+        // Other special keys (Escape, arrows) are non-critical — silently ignore in CDP mode
+      } else {
+        await page.keyboard.press(action.key as Parameters<typeof page.keyboard.press>[0])
+      }
     }
     return { ok: true }
   } catch (err) {
@@ -2070,12 +2124,24 @@ async function runManualSession(key: string): Promise<void> {
 
   let browser: Browser | undefined
   try {
-    // BrightData Scraping Browser (CDP) blocks password typing, fetch(), and form.submit() navigation.
-    // For login, always use local Chromium + BrightData HTTP proxy (BRIGHTDATA_PROXY_URL) or the
-    // per-account proxy. The HTTP proxy gives us a residential IP without any of the Scraping Browser
-    // restrictions, so login works fully.
-    const browserEndpoint = null // Never use Scraping Browser for login
+    // Prefer BrightData Scraping Browser — it's the only thing that reliably loads
+    // LinkedIn's login form from Railway without triggering the bot-detection redirect.
+    // CDP restrictions (keyboard.type blocked on password fields) don't matter here
+    // because interactWithPage uses JS native-setter for typing in CDP mode.
+    const browserEndpoint = process.env.DISABLE_PROXY !== 'true'
+      ? (process.env.BRIGHTDATA_BROWSER_URL ?? null)
+      : null
+
+    // Fetch account email for pre-fill
+    const { data: accountRow } = await supabase
+      .from('linkedin_accounts')
+      .select('linkedin_email')
+      .eq('id', session.accountId)
+      .single()
+    const accountEmail = (accountRow as { linkedin_email?: string } | null)?.linkedin_email ?? ''
+
     let context: BrowserContext
+    let usingCDP = false
 
     if (browserEndpoint) {
       const { chromium: pw } = await import('playwright')
@@ -2084,24 +2150,22 @@ async function runManualSession(key: string): Promise<void> {
       context = existing.length > 0
         ? existing[0]
         : await browser.newContext({ locale: 'en-US', viewport: { width: 1280, height: 800 } })
+      usingCDP = true
+      console.log('[manual-session] Using BrightData Scraping Browser')
     } else {
+      // Fallback: local Chromium + account proxy (or no proxy in DISABLE_PROXY mode)
       const proxy = await resolveProxy(session.accountId)
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
       browser = await chromium.launch({
         headless: true,
         ...(proxy ? { proxy } : {}),
         args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage',
-          '--disable-blink-features=AutomationControlled',
+          '--no-sandbox', '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled',
         ],
       }) as Browser
       context = await browser.newContext({
         proxy:             proxy ?? undefined,
-        userAgent:
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
-          '(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        userAgent:         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         viewport:          { width: 1280, height: 800 },
         locale:            'en-US',
         ignoreHTTPSErrors: true,
@@ -2113,35 +2177,72 @@ async function runManualSession(key: string): Promise<void> {
         // @ts-ignore
         window.chrome = { runtime: {} }
       })
+      console.log('[manual-session] Using local Chromium' + (proxy ? ' + proxy' : ''))
     }
 
     const page = await context.newPage()
-    session.browser = browser
-    session.context = context
-    session.page    = page
+    session.browser  = browser
+    session.context  = context
+    session.page     = page
+    session.usingCDP = usingCDP
+
+    session.hint = 'Opening LinkedIn…'
 
     await page.goto('https://www.linkedin.com/login', { waitUntil: 'domcontentloaded', timeout: 45_000 })
-    await DELAY(1_500)
+    await DELAY(2_000)
 
-    session.status = 'pending_push'  // repurpose: means "browser is open, waiting for user"
-    session.hint   = 'Log in with your LinkedIn credentials in the browser below.'
+    // Pre-fill the email field so the user sees their email + avatar — just like HeyReach.
+    // Uses JS native-setter (works on BrightData; bypasses React synthetic events).
+    if (accountEmail) {
+      const filled = await page.evaluate((email: string) => {
+        const selectors = ['#username', 'input[name="session_key"]', 'input[type="email"]', 'input[autocomplete="username"]']
+        for (const sel of selectors) {
+          const el = document.querySelector(sel) as HTMLInputElement | null
+          if (!el) continue
+          el.focus()
+          const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+          if (nativeSetter) nativeSetter.call(el, email)
+          else el.value = email
+          el.dispatchEvent(new Event('input',  { bubbles: true }))
+          el.dispatchEvent(new Event('change', { bubbles: true }))
+          el.dispatchEvent(new Event('blur',   { bubbles: true }))
+          return true
+        }
+        return false
+      }, accountEmail).catch(() => false)
 
-    // Poll for li_at cookie — up to 5 minutes (time for user to log in + any 2FA)
+      if (filled) {
+        // Wait for LinkedIn to fetch and render the profile avatar
+        await DELAY(2_500)
+        console.log('[manual-session] Email pre-filled, avatar should load')
+      }
+    }
+
+    // Browser is ready — show the screenshot to the user
+    session.status = 'pending_push'
+    session.hint   = 'Enter your password to sign in.'
+
+    // Poll for li_at — up to 5 minutes for the user to log in + handle any 2FA
     const deadline = Date.now() + 5 * 60 * 1000
     while (Date.now() < deadline) {
       await DELAY(2_000)
-      const cookies = await context.cookies()
-      if (cookies.find(c => c.name === 'li_at')) {
-        await saveCookies(context, session.accountId)
-        session.status = 'success'
-        await browser.close()
-        return
+      try {
+        const cookies = await context.cookies()
+        if (cookies.find(c => c.name === 'li_at')) {
+          await saveCookies(context, session.accountId)
+          session.status = 'success'
+          await browser.close()
+          return
+        }
+      } catch {
+        // Context closed — browser navigated somewhere unexpected
+        break
       }
     }
 
     session.status = 'error'
     session.error  = 'Login timed out — no session detected after 5 minutes. Please try again.'
-    await browser.close()
+    await browser.close().catch(() => {})
   } catch (err) {
     if (session) {
       session.status = 'error'
