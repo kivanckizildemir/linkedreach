@@ -12,6 +12,8 @@ import {
   verifyConnectCode,
   testHealthCheck,
   requestVerificationCode,
+  startManualSession,
+  interactWithSession,
   type LinkedInAccount,
 } from '../api/accounts'
 import { apiFetch } from '../lib/fetchJson'
@@ -967,7 +969,7 @@ function AddProxyModal({
 // ── Connect Modal ─────────────────────────────────────────────────────────────
 // Credentials-only login: email + password (+ optional TOTP secret)
 
-type ConnectStep = 'form' | 'connecting' | 'push' | 'verify' | 'done' | 'error'
+type ConnectStep = 'form' | 'connecting' | 'push' | 'verify' | 'done' | 'error' | 'manual'
 
 export function ConnectModal({
   accountId,
@@ -993,13 +995,18 @@ export function ConnectModal({
   const [sessionKey, setSessionKey] = useState('')
   const [error, setError]         = useState('')
   const [requestingCode, setRequestingCode] = useState(false)
+  const [screenshotUrl, setScreenshotUrl]   = useState<string | null>(null)
 
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const pollRef           = useRef<ReturnType<typeof setInterval> | null>(null)
+  const screenshotPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const screenshotUrlRef  = useRef<string | null>(null)
 
   // Cleanup polling on unmount
   useEffect(() => {
     return () => {
-      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
+      if (pollRef.current)           { clearInterval(pollRef.current);           pollRef.current = null }
+      if (screenshotPollRef.current) { clearInterval(screenshotPollRef.current); screenshotPollRef.current = null }
+      if (screenshotUrlRef.current)  { URL.revokeObjectURL(screenshotUrlRef.current); screenshotUrlRef.current = null }
     }
   }, [])
 
@@ -1022,15 +1029,75 @@ export function ConnectModal({
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
   }
 
+  function stopScreenshotPolling() {
+    if (screenshotPollRef.current) { clearInterval(screenshotPollRef.current); screenshotPollRef.current = null }
+    if (screenshotUrlRef.current)  { URL.revokeObjectURL(screenshotUrlRef.current); screenshotUrlRef.current = null }
+  }
+
+  async function startScreenshotPolling(key: string) {
+    const fetchShot = async () => {
+      try {
+        const res = await apiFetch(`/api/accounts/${accountId}/connect-screenshot/${key}`)
+        if (!res.ok) return
+        const blob = await res.blob()
+        const url = URL.createObjectURL(blob)
+        if (screenshotUrlRef.current) URL.revokeObjectURL(screenshotUrlRef.current)
+        screenshotUrlRef.current = url
+        setScreenshotUrl(url)
+      } catch { /* ignore */ }
+    }
+    void fetchShot()
+    screenshotPollRef.current = setInterval(fetchShot, 1500)
+  }
+
+  async function handleManualLogin() {
+    setStep('connecting'); setError('')
+    try {
+      const result = await startManualSession(accountId)
+      setSessionKey(result.session_key)
+      setStep('manual')
+      void startScreenshotPolling(result.session_key)
+      startPolling(result.session_key)
+    } catch (err) {
+      setError((err as Error).message); setStep('error')
+    }
+  }
+
+  function handleManualClick(e: React.MouseEvent<HTMLImageElement>) {
+    if (!sessionKey) return
+    const img = e.currentTarget
+    const rect = img.getBoundingClientRect()
+    const x = Math.round((e.clientX - rect.left) * (1280 / rect.width))
+    const y = Math.round((e.clientY - rect.top)  * (800  / rect.height))
+    void interactWithSession(accountId, sessionKey, { type: 'click', x, y })
+  }
+
+  useEffect(() => {
+    if (step !== 'manual') return
+    const handleKey = (e: KeyboardEvent) => {
+      if (!sessionKey) return
+      const special = ['Enter','Tab','Backspace','Escape','ArrowUp','ArrowDown','ArrowLeft','ArrowRight']
+      if (special.includes(e.key)) {
+        if (e.key === 'Tab') e.preventDefault()
+        void interactWithSession(accountId, sessionKey, { type: 'key', key: e.key })
+      } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
+        void interactWithSession(accountId, sessionKey, { type: 'type', text: e.key })
+      }
+    }
+    window.addEventListener('keydown', handleKey)
+    return () => window.removeEventListener('keydown', handleKey)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, sessionKey])
+
   async function handleStatusResult(s: Awaited<ReturnType<typeof getConnectStatus>>) {
     if (s.status === 'success') {
-      stopPolling(); setStep('done'); setTimeout(onSaved, 1500)
+      stopPolling(); stopScreenshotPolling(); setStep('done'); setTimeout(onSaved, 1500)
     } else if (s.status === 'needs_verification') {
-      stopPolling(); setHint(s.hint); setStep('verify')
+      stopPolling(); stopScreenshotPolling(); setHint(s.hint); setStep('verify')
     } else if (s.status === 'error') {
-      stopPolling(); setError(s.message); setStep('error')
+      stopPolling(); stopScreenshotPolling(); setError(s.message); setStep('error')
     } else if (s.status === 'not_found') {
-      stopPolling(); setError('Session expired. Please try again.'); setStep('error')
+      stopPolling(); stopScreenshotPolling(); setError('Session expired. Please try again.'); setStep('error')
     } else if (s.status === 'pending_push') {
       setHint(s.hint); setStep('push')
     }
@@ -1095,16 +1162,22 @@ export function ConnectModal({
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md">
+      <div className={`bg-white rounded-2xl shadow-xl w-full ${step === 'manual' ? 'max-w-3xl' : 'max-w-md'}`}>
 
         {/* Header */}
         <div className="flex items-start justify-between px-6 py-4 border-b border-gray-100">
           <div>
             <h2 className="text-lg font-semibold text-gray-900">
-              {step === 'push' ? 'Check your phone' : step === 'verify' ? 'Enter verification code' : 'Connect LinkedIn Account'}
+              {step === 'push' ? 'Check your phone'
+               : step === 'verify' ? 'Enter verification code'
+               : step === 'manual' ? 'Log in to LinkedIn'
+               : 'Connect LinkedIn Account'}
             </h2>
             {step === 'form' && (
               <p className="text-xs text-gray-400 mt-0.5">Sign in with your LinkedIn credentials</p>
+            )}
+            {step === 'manual' && (
+              <p className="text-xs text-gray-400 mt-0.5">Click and type directly in the browser below</p>
             )}
           </div>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors mt-0.5">
@@ -1159,6 +1232,12 @@ export function ConnectModal({
                 <button type="submit"
                   className="flex-1 py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-xl hover:bg-blue-700 transition-colors">
                   Sign in
+                </button>
+              </div>
+              <div className="text-center pt-1">
+                <button type="button" onClick={handleManualLogin}
+                  className="text-xs text-gray-400 hover:text-blue-600 transition-colors hover:underline underline-offset-2">
+                  Or open a live browser window instead →
                 </button>
               </div>
             </form>
@@ -1287,6 +1366,48 @@ export function ConnectModal({
               <button type="button" onClick={() => { setStep('form'); setError('') }}
                 className="w-full py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-blue-700">
                 Try Again
+              </button>
+            </div>
+          )}
+
+          {/* ── Manual browser ── */}
+          {step === 'manual' && (
+            <div className="space-y-3">
+              <div className="bg-blue-50 border border-blue-100 rounded-xl px-4 py-2.5 flex items-center gap-2">
+                <svg className="w-3.5 h-3.5 text-blue-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                </svg>
+                <p className="text-xs text-blue-800">Click to focus a field, then type using your keyboard. We detect login automatically.</p>
+              </div>
+
+              {screenshotUrl ? (
+                <div
+                  className="relative rounded-xl overflow-hidden border border-gray-200 cursor-pointer select-none"
+                  style={{ aspectRatio: '1280/800' }}
+                >
+                  <img
+                    src={screenshotUrl}
+                    alt="LinkedIn login"
+                    className="w-full h-full block"
+                    onClick={handleManualClick}
+                    draggable={false}
+                  />
+                </div>
+              ) : (
+                <div className="flex items-center justify-center rounded-xl border border-gray-100 bg-gray-50" style={{ aspectRatio: '1280/800' }}>
+                  <div className="text-center space-y-2">
+                    <svg className="w-6 h-6 animate-spin text-blue-500 mx-auto" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                    </svg>
+                    <p className="text-xs text-gray-400">Opening browser…</p>
+                  </div>
+                </div>
+              )}
+
+              <button type="button" onClick={() => { stopPolling(); stopScreenshotPolling(); setStep('form') }}
+                className="w-full py-1.5 text-xs text-gray-400 hover:text-gray-600 transition-colors">
+                Cancel
               </button>
             </div>
           )}
