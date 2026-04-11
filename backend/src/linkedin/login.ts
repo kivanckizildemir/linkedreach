@@ -830,7 +830,20 @@ async function runLogin(key: string, email: string, password: string): Promise<v
           'Please try connecting again in 30–60 seconds.'
         )
       }
-      // Detect blank-gate page (LinkedIn detected the headless browser)
+      // Detect proxy-blocked JS: page loads HTML shell but scripts never execute (no inputs, tiny text)
+      // This is different from a blank gate — the HTML arrived but CDN/JS assets were dropped by the proxy.
+      const pageText = await page.evaluate(() => document.body?.innerText?.length ?? 0).catch(() => 0)
+      const isJsBlocked = pageText > 50 && !allInputs && !usingCDP
+      if (isJsBlocked) {
+        throw new Error(
+          'Your proxy loaded the LinkedIn page HTML but blocked the JavaScript bundles — ' +
+          'the login form never rendered. ' +
+          'This is a proxy compatibility issue: datacenter/ISP proxies often drop LinkedIn CDN assets. ' +
+          'To fix: (1) remove the proxy from this account so BrightData handles the login, ' +
+          'or (2) switch to a residential/mobile proxy that passes HTTPS resources without filtering.'
+        )
+      }
+      // Detect blank-gate page (LinkedIn detected the headless browser or page truly empty)
       const isEmptyPage = (visible?.trim().length ?? 0) < 20 && !allInputs
       if (isEmptyPage) {
         throw new Error(
@@ -1037,18 +1050,31 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     //   keyboard.type() bypasses this because it doesn't wait for navigations.
     const fillField = async (selector: string, value: string) => {
       if (usingCDP) {
-        // Strategy A: page.fill() uses Input.insertText, which BrightData does not block.
-        // We first click the field with noWaitAfter to avoid hanging on pushState navigation.
+        // Strategy A: page.fill() — uses Input.insertText CDP command (paste-like, no key events).
+        // BrightData sometimes blocks this on password fields; if it times out we fall through.
         try {
           await page.click(selector, { noWaitAfter: true, force: true, timeout: 5_000 }).catch(() => {})
           await page.fill(selector, value, { timeout: 8_000, force: true })
           return
         } catch (fillErr) {
-          console.log('[LOGIN DEBUG] page.fill() failed in CDP mode, trying type-swap fallback:', String(fillErr).substring(0, 100))
+          console.log('[LOGIN DEBUG] page.fill() failed in CDP mode, trying keyboard.type():', String(fillErr).substring(0, 100))
         }
 
-        // Strategy B: temporarily change type="password" → type="text", inject value, restore.
-        // BrightData's restriction checks field type at time of script execution — 'text' fields pass.
+        // Strategy B: keyboard.type() — fires Input.dispatchKeyEvent CDP commands (individual key presses).
+        // BrightData does NOT block these since they're indistinguishable from real keyboard input.
+        // This is the most reliable path in CDP mode when page.fill() is blocked.
+        try {
+          await page.click(selector, { noWaitAfter: true, force: true, timeout: 5_000 }).catch(() => {})
+          await page.keyboard.press('Control+A')
+          await page.keyboard.press('Delete')
+          await page.keyboard.type(value, { delay: 20 + Math.floor(Math.random() * 20) })
+          console.log('[LOGIN DEBUG] keyboard.type() succeeded in CDP mode')
+          return
+        } catch (typeErr) {
+          console.log('[LOGIN DEBUG] keyboard.type() failed in CDP mode, trying evaluate fallback:', String(typeErr).substring(0, 100))
+        }
+
+        // Strategy C: temporarily change type="password" → type="text", inject value via native setter, restore.
         await page.evaluate(({ sel, val }: { sel: string; val: string }) => {
           const el = document.querySelector(sel) as HTMLInputElement | null
           if (!el) return
