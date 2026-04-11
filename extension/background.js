@@ -208,10 +208,12 @@ let bgWindowId = null   // the hidden automation window
 // ── WebSocket lifecycle ───────────────────────────────────────────────────────
 
 async function connectWs() {
-  const { backend, token } = await getConfig()
+  const { token } = await getConfig()
   if (!token || isTokenExpired(token)) return  // not logged in
 
-  const wsUrl = backend
+  // Always connect WebSocket to production backend — the extension hub lives on
+  // Railway. lr_backend is only used for REST API calls (developer convenience).
+  const wsUrl = DEFAULT_BACKEND
     .replace(/^https:\/\//i, 'wss://')
     .replace(/^http:\/\//i,  'ws://')
     + '/ws/extension?token=' + encodeURIComponent(token)
@@ -583,12 +585,22 @@ async function actionReactPost(windowId, profileUrl, reaction) {
 
 // ── Auto-connect WebSocket on startup + after auth ────────────────────────────
 
+// Clear stale lr_backend=localhost on startup — regular users don't need it and
+// it causes "Failed to fetch" / WS connection errors when no local server runs.
+async function clearStaleLocalBackend() {
+  const { lr_backend } = await chrome.storage.local.get('lr_backend')
+  if (lr_backend && /localhost|127\.0\.0\.1/.test(lr_backend)) {
+    await chrome.storage.local.remove('lr_backend')
+    console.log('[LR] Cleared stale lr_backend (was pointing to localhost)')
+  }
+}
+
 chrome.runtime.onStartup.addListener(() => {
-  setTimeout(connectWs, 2000)  // give service worker a moment to settle
+  clearStaleLocalBackend().then(() => setTimeout(connectWs, 2000))
 })
 
 chrome.runtime.onInstalled.addListener(() => {
-  setTimeout(connectWs, 2000)
+  clearStaleLocalBackend().then(() => setTimeout(connectWs, 2000))
 })
 
 // Also connect whenever the token changes (user logs in/out)
