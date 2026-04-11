@@ -1229,13 +1229,15 @@ export function ConnectModal({
                         } else if (statusNow.status === 'success') {
                           stopPolling(); setStep('done'); setTimeout(onSaved, 1500)
                         } else {
-                          setTimeout(() => {
-                            setStep(prev => prev === 'push' ? 'verify' : prev)
-                          }, 4_000)
+                          // Move to code entry regardless — user may receive a code via any channel
+                          stopPolling(); setStep('verify')
                         }
-                      } catch { /* keep polling */ }
+                      } catch { stopPolling(); setStep('verify') }
                     } else {
-                      setHint(result.message)
+                      // Error — still show code entry so user can type a code if they received one
+                      stopPolling()
+                      setHint('Enter any verification code LinkedIn sent to your email or phone.')
+                      setStep('verify')
                     }
                   } catch {
                     stopPolling(); setStep('verify')
