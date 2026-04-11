@@ -14,6 +14,7 @@ import {
   requestVerificationCode,
   type LinkedInAccount,
 } from '../api/accounts'
+import { apiFetch } from '../lib/fetchJson'
 import {
   fetchProxies,
   addProxy,
@@ -97,7 +98,7 @@ function DailyCounter({ value, max, color }: { value: number; max: number; color
 type PageTab = 'accounts' | 'proxies' | 'activity'
 
 export function Accounts() {
-  const { user } = useAuth()
+  useAuth()
   const [tab, setTab] = useState<PageTab>('accounts')
   const [showAddAccount, setShowAddAccount] = useState(false)
   const [sessionAccount, setSessionAccount] = useState<LinkedInAccount | null>(null)
