@@ -997,36 +997,62 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     const passSelector = '#password, input[name="session_password"], input[type="password"]'
     const passExists = await page.waitForSelector(passSelector, { timeout: 10_000 }).catch(() => null)
     if (!passExists) {
-      // Email-only (2-step) login form: fill email → click Continue → wait for password field.
-      // This is LinkedIn's progressive login flow shown on certain proxy IPs.
+      // Email-only (2-step) login form: LinkedIn is serving a minimal form without a password field.
+      // This is common on certain BrightData IP geos (DK, etc.) with reduced-JS pages.
+      // Strategy: in CDP mode, navigate directly to the classic login URL first — this consistently
+      // produces a full form with both email and password fields, bypassing the 2-step flow entirely.
       console.log('[LOGIN DEBUG] Password field not visible — handling 2-step email-first flow')
-      try {
-        // Fill email field first
-        await page.click(emailSelector, { noWaitAfter: true, force: true, timeout: 5_000 }).catch(() => {})
-        await page.keyboard.press('Control+A')
-        await page.keyboard.press('Delete')
-        await page.keyboard.type(email, { delay: 30 + Math.floor(Math.random() * 30) })
-        await DELAY(500)
 
-        // Click the Continue/Next button (NOT the final sign-in button)
-        const continueBtn = await page.$(
-          'button[type="submit"], [data-litms-control-urn*="continue"], ' +
-          '.btn__primary--large, button.sign-in-form__submit-button'
-        ).catch(() => null)
-        if (continueBtn) {
-          console.log('[LOGIN DEBUG] Clicking Continue button for 2-step flow')
-          await continueBtn.click()
-        } else {
-          await page.keyboard.press('Enter')
+      let gotPassField = false
+
+      if (usingCDP) {
+        // CDP / BrightData path: navigate to classic login URL and look for password field there.
+        const classicLoginUrl = 'https://www.linkedin.com/login?fromSignIn=true&trk=guest_homepage-basic_nav-header-signin'
+        console.log('[LOGIN DEBUG] CDP mode: navigating to classic login URL to get full form')
+        try {
+          await page.goto(classicLoginUrl, { waitUntil: 'domcontentloaded', timeout: 20_000 })
+          await DELAY(1_500)
+          const textLen2 = await page.evaluate(() => document.body?.innerText?.length ?? 0).catch(() => 0)
+          console.log(`[LOGIN DEBUG] Classic URL text_len=${textLen2}`)
+          const passEl = await page.waitForSelector(passSelector, { timeout: 10_000 }).catch(() => null)
+          if (passEl) {
+            console.log('[LOGIN DEBUG] Password field found at classic login URL ✓')
+            gotPassField = true
+          } else {
+            console.log('[LOGIN DEBUG] Password field still missing at classic login URL')
+          }
+        } catch (e) {
+          console.log('[LOGIN DEBUG] Classic URL navigation failed:', String(e).substring(0, 100))
         }
+      }
 
-        // Wait for password field to appear
-        console.log('[LOGIN DEBUG] Waiting for password field after Continue…')
-        await page.waitForSelector(passSelector, { timeout: 12_000 }).catch(() => {
-          console.log('[LOGIN DEBUG] Password field still not visible after Continue')
-        })
-      } catch (e) {
-        console.log('[LOGIN DEBUG] 2-step flow error:', String(e).substring(0, 100))
+      if (!gotPassField) {
+        // Fallback: fill email → click Continue → wait for password field to appear.
+        try {
+          await page.click(emailSelector, { noWaitAfter: true, force: true, timeout: 5_000 }).catch(() => {})
+          await page.keyboard.press('Control+A')
+          await page.keyboard.press('Delete')
+          await page.keyboard.type(email, { delay: 30 + Math.floor(Math.random() * 30) })
+          await DELAY(500)
+
+          const continueBtn = await page.$(
+            'button[type="submit"], [data-litms-control-urn*="continue"], ' +
+            '.btn__primary--large, button.sign-in-form__submit-button'
+          ).catch(() => null)
+          if (continueBtn) {
+            console.log('[LOGIN DEBUG] Clicking Continue button for 2-step flow')
+            await continueBtn.click()
+          } else {
+            await page.keyboard.press('Enter')
+          }
+
+          console.log('[LOGIN DEBUG] Waiting for password field after Continue…')
+          await page.waitForSelector(passSelector, { timeout: 12_000 }).catch(() => {
+            console.log('[LOGIN DEBUG] Password field still not visible after Continue')
+          })
+        } catch (e) {
+          console.log('[LOGIN DEBUG] 2-step flow error:', String(e).substring(0, 100))
+        }
       }
     } else {
       console.log('[LOGIN DEBUG] Password field found ✓')
@@ -1074,10 +1100,12 @@ async function runLogin(key: string, email: string, password: string): Promise<v
           console.log('[LOGIN DEBUG] keyboard.type() failed in CDP mode, trying evaluate fallback:', String(typeErr).substring(0, 100))
         }
 
-        // Strategy C: temporarily change type="password" → type="text", inject value via native setter, restore.
-        await page.evaluate(({ sel, val }: { sel: string; val: string }) => {
+        // Strategy C: change type="password"→"text" (BrightData restriction lifted), inject via
+        // native value setter (bypasses React's synthetic state — LinkedIn classic form reads raw DOM
+        // values on server POST, so this is enough for form.submit()), fire events, restore type.
+        const stratCOk = await page.evaluate(({ sel, val }: { sel: string; val: string }) => {
           const el = document.querySelector(sel) as HTMLInputElement | null
-          if (!el) return
+          if (!el) return false
           const originalType = el.type
           if (originalType === 'password') el.setAttribute('type', 'text')
           el.focus()
@@ -1088,7 +1116,9 @@ async function runLogin(key: string, email: string, password: string): Promise<v
           el.dispatchEvent(new Event('change', { bubbles: true }))
           el.dispatchEvent(new Event('blur',   { bubbles: true }))
           if (originalType === 'password') el.setAttribute('type', originalType)
+          return el.value === val
         }, { sel: selector, val: value })
+        console.log(`[LOGIN DEBUG] evaluate fallback: value set=${stratCOk}`)
 
       } else {
         // Local Chromium: click first (noWaitAfter prevents blocking on pushState nav),
@@ -1137,29 +1167,51 @@ async function runLogin(key: string, email: string, password: string): Promise<v
 
     await captureSnap('pre-submit')
 
-    // Step 3: Click the submit button — LinkedIn's JS will encrypt credentials and submit.
-    const submitBtn = await page.$(
-      'button[type="submit"], .btn__primary--large, ' +
-      'button[data-litms-control-urn="guest|submit"], ' +
-      'button[data-id="sign-in-form__submit-btn"], ' +
-      'form .sign-in-form__submit-btn'
-    ).catch(() => null)
-
+    // Step 3: Submit the form.
+    // In CDP mode (BrightData), keyboard.press('Enter') is blocked on password fields.
+    // If we fell through to Strategy C (evaluate injection), the password value lives only in the
+    // raw DOM — LinkedIn's JS event handlers may not have seen it, so button.click() goes through
+    // their JS pipeline and submits with an empty password.
+    // form.submit() bypasses all JS handlers and POSTs raw DOM field values directly — exactly
+    // what we need when we've injected the value via the native setter.
     const preSubmitUrl = page.url()
-    if (submitBtn) {
-      console.log('[LOGIN DEBUG] Clicking submit button')
-      await submitBtn.click()
-    } else {
-      console.log('[LOGIN DEBUG] No submit button found — using JS click on form submit')
-      // Use JS click in CDP mode (keyboard.press may be restricted); works everywhere
-      const clicked = await page.evaluate(() => {
-        const btn = document.querySelector('button[type="submit"], form button') as HTMLElement | null
-        if (btn) { btn.click(); return true }
-        return false
+    if (usingCDP) {
+      console.log('[LOGIN DEBUG] CDP mode: submitting via form.submit() to send raw DOM values')
+      const formSubmitted = await page.evaluate(() => {
+        const form = document.querySelector('form') as HTMLFormElement | null
+        if (!form) return false
+        // Log what values the form has before submit (for debugging, non-sensitive)
+        const passEl = form.querySelector('#password, input[name="session_password"], input[type="password"]') as HTMLInputElement | null
+        const passLen = passEl?.value?.length ?? 0
+        const emailEl = form.querySelector('#username, input[name="session_key"]') as HTMLInputElement | null
+        const emailVal = emailEl?.value ?? ''
+        console.log(`[form.submit] email=${emailVal.substring(0,20)} pass_len=${passLen}`)
+        form.submit()
+        return true
       })
-      if (!clicked) {
-        console.log('[LOGIN DEBUG] JS click also found nothing — pressing Enter as last resort')
-        await page.keyboard.press('Enter')
+      console.log(`[LOGIN DEBUG] form.submit() dispatched=${formSubmitted}`)
+    } else {
+      const submitBtn = await page.$(
+        'button[type="submit"], .btn__primary--large, ' +
+        'button[data-litms-control-urn="guest|submit"], ' +
+        'button[data-id="sign-in-form__submit-btn"], ' +
+        'form .sign-in-form__submit-btn'
+      ).catch(() => null)
+
+      if (submitBtn) {
+        console.log('[LOGIN DEBUG] Clicking submit button')
+        await submitBtn.click()
+      } else {
+        console.log('[LOGIN DEBUG] No submit button found — using JS click on form submit')
+        const clicked = await page.evaluate(() => {
+          const btn = document.querySelector('button[type="submit"], form button') as HTMLElement | null
+          if (btn) { btn.click(); return true }
+          return false
+        })
+        if (!clicked) {
+          console.log('[LOGIN DEBUG] JS click also found nothing — pressing Enter as last resort')
+          await page.keyboard.press('Enter')
+        }
       }
     }
 
