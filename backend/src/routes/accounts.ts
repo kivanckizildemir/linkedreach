@@ -251,7 +251,8 @@ accountsRouter.post('/:id/health-check', async (req: Request, res: Response) => 
       return
     }
 
-    const cookieHeader = `li_at=${liAt}`
+    // Send ALL saved cookies (not just li_at) — LinkedIn may require bcookie, JSESSIONID, etc.
+    const cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join('; ')
 
     // Route through the residential proxy so LinkedIn doesn't block datacenter IPs
     const proxyUrl = process.env.PROXY_HOST && process.env.PROXY_USERNAME
@@ -260,42 +261,35 @@ accountsRouter.post('/:id/health-check', async (req: Request, res: Response) => 
 
     const agent = proxyUrl ? new ProxyAgent(proxyUrl) : undefined
 
-    // Hit the feed page and check if we get redirected to /login (expired) or stay on feed (valid)
-    const probe = await fetch('https://www.linkedin.com/feed/', {
+    // Use the Voyager API — returns clean 200 (valid) or 401 (expired), no redirect ambiguity.
+    // Much more reliable than hitting /feed/ which returns 999 from datacenter IPs.
+    const probe = await fetch('https://www.linkedin.com/voyager/api/me', {
       method: 'GET',
       headers: {
         Cookie: cookieHeader,
         'User-Agent':
           'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
           '(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        Accept: 'text/html,application/xhtml+xml',
-        'Accept-Language': 'en-US,en;q=0.9',
+        Accept: 'application/vnd.linkedin.normalized+json+2.1',
+        'x-li-lang': 'en_US',
+        'x-restli-protocol-version': '2.0.0',
+        'csrf-token': cookies.find(c => c.name === 'JSESSIONID')?.value?.replace(/"/g, '') ?? 'ajax:0',
       },
-      redirect: 'manual',
       ...(agent ? { dispatcher: agent } : {}),
       signal: AbortSignal.timeout(12_000),
     } as RequestInit)
 
-    const location = probe.headers.get('location') ?? ''
-    // 302 to the same /feed/ URL = LinkedIn setting cookies = li_at is valid
-    // 302 to /login or /uas/login = session expired
-    // 200 = fully loaded = valid
-    const isExpired = probe.status === 401 || probe.status === 403
-      || (probe.status >= 300 && probe.status < 400 && (location.includes('/login') || location.includes('/uas/')))
-
-    const isSelfRedirectOrOk = probe.status === 200
-      || (probe.status >= 300 && probe.status < 400 && !location.includes('/login') && !location.includes('/uas/'))
-
-    if (isSelfRedirectOrOk) {
+    if (probe.status === 200) {
       if (account.status === 'paused') {
         await supabase.from('linkedin_accounts').update({ status: 'active' }).eq('id', req.params.id)
       }
       res.json({ ok: true, message: 'Session is active ✓' })
-    } else if (isExpired) {
+    } else if (probe.status === 401 || probe.status === 403) {
       await supabase.from('linkedin_accounts').update({ status: 'paused' }).eq('id', req.params.id)
       res.json({ ok: false, message: 'Session expired — please reconnect.' })
     } else {
-      res.json({ ok: false, message: `LinkedIn returned ${probe.status} — session may be invalid.` })
+      // Non-200/401 (e.g. 429 rate limit, 999 bot block) — don't mark as expired, just warn
+      res.json({ ok: false, message: `LinkedIn returned ${probe.status} — try again in a moment.` })
     }
   } catch (err) {
     res.json({ ok: false, message: `Health check failed: ${(err as Error).message}` })
