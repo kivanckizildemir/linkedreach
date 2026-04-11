@@ -589,68 +589,9 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     // as a security measure. We use page.evaluate() with the native value setter instead.
     const usingCDP = !!browserEndpoint
 
-    // ── CDP mode: consent-first flow ─────────────────────────────────────────
-    // BrightData gives us a fresh browser session with no cookies.
-    // Pre-injecting li_gc doesn't work because LinkedIn's server validates it
-    // server-side and ignores values it didn't generate itself.
-    // Fix: navigate to the LinkedIn homepage FIRST, click Accept on the consent
-    // banner, and wait until the banner is gone. LinkedIn then sets its own
-    // valid li_gc cookie in the browser. Only then navigate to /login —
-    // the login page won't show the banner and the fetch POST will succeed.
-    if (usingCDP) {
-      console.log('[LOGIN DEBUG] CDP consent-first flow: navigating to homepage')
-      try {
-        await page.goto('https://www.linkedin.com', { waitUntil: 'domcontentloaded', timeout: 45_000 })
-        await DELAY(2_000)
-
-        // Accept the consent banner — wait up to 6s for ANY accept button to appear.
-        // Use a single combined selector so all candidates race in parallel (no sequential timeouts).
-        const CONSENT_COMBINED = [
-          'button[action-type="ACCEPT"]',
-          'button[data-tracking-control-name="cookie_policy_banner_accept"]',
-          '#artdeco-global-alert-action--accept',
-          'button.artdeco-global-alert__action',
-          'button[data-control-name="accept"]',
-        ].join(', ')
-        let consentClicked = false
-        const consentBtn = await page.waitForSelector(CONSENT_COMBINED, { timeout: 6_000 }).catch(() => null)
-        if (consentBtn) {
-          console.log('[LOGIN DEBUG] Clicking consent Accept button')
-          await consentBtn.click().catch(() => {})
-          consentClicked = true
-        }
-
-        // Fallback: language-agnostic text search
-        if (!consentClicked) {
-          consentClicked = await page.evaluate(() => {
-            const btns = Array.from(document.querySelectorAll('button, a[role="button"]'))
-            const accept = btns.find(b => /^(accept|allow|terima|acceptér|accepter|akkoord|aceptar|accetta|akzeptieren|agree|ok|قبول|同意|허용|kabul)$/i.test((b.textContent ?? '').trim()))
-            if (accept) { (accept as HTMLElement).click(); return true }
-            return false
-          }).catch(() => false)
-          if (consentClicked) console.log('[LOGIN DEBUG] Consent Accept clicked via text search')
-        }
-
-        if (consentClicked) {
-          // Wait for the Accept button to disappear — confirms LinkedIn accepted the click
-          // and has set its own li_gc cookie in the browser context.
-          await page.waitForSelector(
-            'button[action-type="ACCEPT"], button[data-tracking-control-name="cookie_policy_banner_accept"]',
-            { state: 'detached', timeout: 5_000 }
-          ).catch(() => { /* timeout is fine — banner may have already been removed */ })
-          await DELAY(500) // brief pause for LinkedIn to write consent cookies
-          console.log('[LOGIN DEBUG] Consent banner dismissed — li_gc should now be set by LinkedIn')
-        } else {
-          console.log('[LOGIN DEBUG] No consent banner found on homepage (already accepted or not shown)')
-        }
-      } catch (homepageErr) {
-        console.log('[LOGIN DEBUG] Homepage consent-first navigation error (continuing):', String(homepageErr).substring(0, 100))
-      }
-    }
-
-    // Navigate to LinkedIn login — retry up to 3× on proxy 502/no_peer errors.
-    // Static residential proxies occasionally return 502 when the tunnel peer is
-    // temporarily unavailable; a fresh attempt usually succeeds within seconds.
+    // Navigate to LinkedIn login — retry up to 3× on proxy/timeout errors.
+    // BrightData CDP sessions occasionally time out on first navigation (session warm-up);
+    // a second attempt typically succeeds within a few seconds.
     const LOGIN_URLS = [
       'https://www.linkedin.com/login',
       'https://www.linkedin.com/uas/login',
@@ -664,27 +605,26 @@ async function runLogin(key: string, email: string, password: string): Promise<v
           break
         } catch (gotoErr) {
           const msg = String(gotoErr)
-          const isProxyError = msg.includes('502') || msg.includes('no_peer') || msg.includes('no_peers') ||
+          const isRetryable = msg.includes('502') || msg.includes('no_peer') || msg.includes('no_peers') ||
             msg.includes('ERR_TUNNEL_CONNECTION_FAILED') || msg.includes('ERR_PROXY_CONNECTION_FAILED') ||
-            msg.includes('net::ERR_')
-          if (isProxyError && (attempt < 3 || loginUrl !== LOGIN_URLS[LOGIN_URLS.length - 1])) {
-            console.log(`[LOGIN DEBUG] Proxy error on attempt ${attempt} (${loginUrl}): ${msg.substring(0, 120)} — retrying in ${attempt * 4}s`)
-            await DELAY(attempt * 4_000)
+            msg.includes('net::ERR_') || msg.includes('Timeout') || msg.includes('timeout')
+          if (isRetryable && (attempt < 3 || loginUrl !== LOGIN_URLS[LOGIN_URLS.length - 1])) {
+            console.log(`[LOGIN DEBUG] Navigation error on attempt ${attempt} (${loginUrl}): ${msg.substring(0, 120)} — retrying in ${attempt * 3}s`)
+            await DELAY(attempt * 3_000)
             continue
           }
-          // Non-proxy error or final attempt — bubble up with clear message
-          if (isProxyError) {
+          // Final attempt failed — throw with actionable message
+          if (isRetryable) {
             throw new Error(
-              `Proxy cannot reach LinkedIn after 3 attempts (${msg.substring(0, 200)}). ` +
-              `Check that a proxy is assigned to this account under Accounts & Proxies and the credentials are valid. ` +
-              `If using env-var proxy, verify PROXY_HOST / PROXY_USERNAME / PROXY_PASSWORD in Railway.`
+              `LinkedIn login page timed out after 3 attempts (${msg.substring(0, 200)}). ` +
+              `BrightData may be experiencing slowness — please try reconnecting in 30 seconds.`
             )
           }
           throw gotoErr
         }
       }
     }
-    await DELAY(2000 + Math.random() * 500)
+    await DELAY(1500 + Math.random() * 500)
 
     // If we got a 404 or "page not found" from LinkedIn (bot-detection or regional issue),
     // try the global login URL with explicit locale as fallback.
