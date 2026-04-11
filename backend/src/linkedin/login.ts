@@ -658,27 +658,23 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     }
 
     // ── Snapshot immediately after first navigation ───────────────────────────
-    // Writes to Supabase so it survives across Railway instances and restarts.
-    const captureSnap = async (label: string) => {
+    // Fire-and-forget: does NOT block the login flow. Supabase write runs in
+    // the background so snapshotting never adds latency to the critical path.
+    const captureSnap = (label: string) => {
       const url = page.url()
       console.log(`[LOGIN DEBUG ${label}] url=${url}`)
+      // Run async without awaiting — login flow continues immediately
+      ;(async () => {
       try {
         let text = '(evaluate failed)'
         let html = '(evaluate failed)'
         try { text = await page.evaluate(() => (document.body?.innerText ?? '').substring(0, 2000)) } catch { /* ok */ }
         try { html = await page.evaluate(() => document.documentElement.outerHTML.substring(0, 10000)) } catch { /* ok */ }
 
-        let screenshot: string | undefined
-        try {
-          const buf = await page.screenshot({ type: 'png', fullPage: false })
-          screenshot = buf.toString('base64')
-        } catch { /* BrightData may not support CDP screenshots */ }
-
-        const snap = { url, text, html, screenshot, capturedAt: new Date().toISOString(), label }
+        const snap = { url, text, html, capturedAt: new Date().toISOString(), label }
         lastErrorSnapshot = snap
         session.debugUrl        = url
         session.debugPageText   = text
-        session.debugScreenshot = screenshot
 
         console.log(`[LOGIN DEBUG ${label}] text_len=${text.length} has_username_id=${html.includes('id="username"')}`)
 
@@ -689,9 +685,10 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       } catch (snapErr) {
         console.error('[LOGIN DEBUG] snapshot failed:', snapErr)
       }
+      })() // end fire-and-forget IIFE
     }
 
-    await captureSnap('after-goto')
+    captureSnap('after-goto')
 
     // JS-based click helper — bypasses header/overlay pointer-event interception
     const jsClick = async (selector: string) => {
@@ -707,10 +704,11 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     // then fall back to a language-agnostic text search across all languages.
     // If the URL also changed to a consent/cookie page, navigate back to /login.
     {
-      // Wait briefly for the banner to hydrate before querying
+      // Wait briefly for the banner to hydrate before querying.
+      // With li_gc pre-injected the banner rarely appears — keep this short.
       await page.waitForSelector(
         'button[action-type="ACCEPT"], button[data-tracking-control-name="cookie_policy_banner_accept"], #artdeco-global-alert-action--accept, button.artdeco-global-alert__action',
-        { timeout: 5_000 }
+        { timeout: 2_000 }
       ).catch(() => { /* banner may not appear — that's fine */ })
 
       // Strategy 1: attribute-based selectors
@@ -789,7 +787,7 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       await DELAY(2000)
     }
 
-    await captureSnap('pre-fill')
+    captureSnap('pre-fill')
 
     // LinkedIn's login form selector — try the classic #username first, then broader fallbacks.
     // The SPA may render inputs without IDs on some regions/A-B tests.
@@ -892,7 +890,7 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     }
 
     if (!foundEmailInput) {
-      await captureSnap('waitForSelector-timeout')
+      captureSnap('waitForSelector-timeout')
       const url   = page.url()
       const title = await page.title().catch(() => '?')
       let visible = ''
@@ -1288,7 +1286,7 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     await fillField(passSelector, password)
     await DELAY(150 + Math.random() * 150)
 
-    await captureSnap('pre-submit')
+    captureSnap('pre-submit')
 
     // Step 3: Submit the form.
     const preSubmitUrl = page.url()
@@ -1368,7 +1366,7 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       }
     }
     await DELAY(500)
-    await captureSnap('post-submit')
+    captureSnap('post-submit')
 
     // Map browser state into the variable names used by the rest of this function
     const redirectLocation = page.url()
