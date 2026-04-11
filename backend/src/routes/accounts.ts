@@ -739,8 +739,9 @@ accountsRouter.post('/:id/start-manual-session', async (req: Request, res: Respo
 // DELETE /api/accounts/:id/lock — force-release the Redis account lock
 accountsRouter.delete('/:id/lock', async (req: Request, res: Response) => {
   const IORedis = (await import('ioredis')).default
-  const r = new IORedis(process.env.REDIS_URL || 'redis://localhost:6379', { maxRetriesPerRequest: 1, enableOfflineQueue: false })
+  const r = new IORedis(process.env.REDIS_URL || 'redis://localhost:6379', { maxRetriesPerRequest: 3, lazyConnect: true })
   try {
+    await r.connect()
     const key = `account_lock:${req.params.id}`
     await r.del(key)
     res.json({ ok: true, key })
