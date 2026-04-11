@@ -387,7 +387,11 @@ async function runLogin(key: string, email: string, password: string): Promise<v
 
   let browser: Browser | undefined
   try {
-    const browserEndpoint = await resolveBrowserEndpoint(session.accountId)
+    // BrightData Scraping Browser (CDP) blocks password typing, fetch(), and form.submit()
+    // navigation — it is read-only scraping infrastructure, not an interactive browser.
+    // For login, always use local Chromium + BrightData HTTP proxy (BRIGHTDATA_PROXY_URL)
+    // which gives a residential IP without any of the Scraping Browser restrictions.
+    const browserEndpoint = null // Never use Scraping Browser for login
 
     let context: BrowserContext
 
