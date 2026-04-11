@@ -266,8 +266,13 @@ async function resolveBrowserEndpoint(accountId: string): Promise<string | null>
 
     if (country) {
       const baseUser = decodeURIComponent(url.username)
-      url.username = encodeURIComponent(`${baseUser}-country-${country.toLowerCase()}`)
-      console.log(`[LOGIN DEBUG] BrightData country targeting: ${country} (from proxy record)`)
+      // Don't double-append if country is already in the URL (e.g. set directly in env var)
+      if (!baseUser.includes('-country-')) {
+        url.username = encodeURIComponent(`${baseUser}-country-${country.toLowerCase()}`)
+        console.log(`[LOGIN DEBUG] BrightData country targeting: ${country} (from proxy record)`)
+      } else {
+        console.log(`[LOGIN DEBUG] BrightData country already set in URL: ${baseUser.match(/-country-(\w+)/)?.[1]}`)
+      }
     }
 
     return url.toString()
