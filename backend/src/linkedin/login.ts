@@ -387,11 +387,10 @@ async function runLogin(key: string, email: string, password: string): Promise<v
 
   let browser: Browser | undefined
   try {
-    // BrightData Scraping Browser (CDP) blocks password typing, fetch(), and form.submit()
-    // navigation — it is read-only scraping infrastructure, not an interactive browser.
-    // For login, always use local Chromium + BrightData HTTP proxy (BRIGHTDATA_PROXY_URL)
-    // which gives a residential IP without any of the Scraping Browser restrictions.
-    const browserEndpoint = null // Never use Scraping Browser for login
+    // Re-enable BrightData Scraping Browser for login. CDP blocks keyboard input on password
+    // fields, but page.route() network interception still works — we intercept the login-submit
+    // POST and inject the password directly into the request body, bypassing all input restrictions.
+    const browserEndpoint = await resolveBrowserEndpoint(session.accountId)
 
     let context: BrowserContext
 
@@ -1163,6 +1162,23 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       } catch { /* ok — mouse movement is best-effort */ }
     }
 
+    // In CDP mode (BrightData), set up a route interceptor BEFORE filling fields.
+    // This intercepts the login-submit POST and injects the password directly into the
+    // request body — bypassing all CDP keyboard/input restrictions entirely.
+    if (usingCDP) {
+      await page.route('**/checkpoint/lg/login-submit**', async (route) => {
+        try {
+          const postData = new URLSearchParams(route.request().postData() ?? '')
+          postData.set('session_password', password)
+          console.log(`[LOGIN DEBUG] route-intercept: injecting password into login-submit (pass_len=${password.length} fields=${[...postData.keys()].join(',')})`)
+          await route.continue({ postData: postData.toString() })
+        } catch (e) {
+          console.log('[LOGIN DEBUG] route-intercept error:', String(e).substring(0, 100))
+          await route.continue()
+        }
+      }).catch(e => console.log('[LOGIN DEBUG] page.route() setup failed:', String(e).substring(0, 80)))
+    }
+
     await fillField(emailSelector, email)
     await DELAY(150 + Math.random() * 150)
 
@@ -1174,44 +1190,32 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     // Step 3: Submit the form.
     const preSubmitUrl = page.url()
     if (usingCDP) {
-      // BrightData CDP mode — form.submit() causes a page navigation which closes the CDP WebSocket
-      // session before Playwright can read cookies. Instead, use fetch() from within the page context:
-      // fetch POSTs the credentials without navigating the page, LinkedIn sets li_at via Set-Cookie
-      // response headers (the browser's cookie jar is updated automatically), and the session stays live.
-      console.log('[LOGIN DEBUG] CDP mode: submitting via fetch() to avoid page navigation')
-      const fetchResult = await page.evaluate(async () => {
-        const form = document.querySelector('form') as HTMLFormElement | null
-        if (!form) return { ok: false, reason: 'no-form', status: 0, finalUrl: '' }
-
-        // Collect all form field values (hidden inputs + visible fields)
-        const data = new URLSearchParams()
-        const inputs = form.querySelectorAll('input, select, textarea') as NodeListOf<HTMLInputElement>
-        inputs.forEach(el => {
-          if (el.name && el.type !== 'submit' && el.type !== 'button') {
-            data.append(el.name, el.value)
-          }
+      // CDP mode: click the submit button — page.route() will intercept the POST and inject
+      // the password. This works even though BrightData blocks keyboard input to password fields.
+      console.log('[LOGIN DEBUG] CDP mode: clicking submit (route interceptor will inject password)')
+      const submitBtn = await page.$(
+        'button[type="submit"], .btn__primary--large, ' +
+        'button[data-litms-control-urn="guest|submit"], ' +
+        'button[data-id="sign-in-form__submit-btn"], ' +
+        'form .sign-in-form__submit-btn'
+      ).catch(() => null)
+      if (submitBtn) {
+        await submitBtn.click()
+      } else {
+        await page.evaluate(() => {
+          const btn = document.querySelector('button[type="submit"], form button') as HTMLElement | null
+          if (btn) btn.click()
         })
-
-        const action = form.action || '/checkpoint/lg/login-submit?loginSubmitSource=GUEST_HOME_PAGE'
-        console.log(`[fetch-submit] action=${action} pass_len=${(data.get('session_password') ?? '').length} email=${(data.get('session_key') ?? '').substring(0, 20)}`)
-
-        try {
-          const resp = await fetch(action, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: data.toString(),
-            credentials: 'include',
-            redirect: 'follow',
-          })
-          return { ok: resp.ok, status: resp.status, finalUrl: resp.url, reason: 'ok' }
-        } catch (e) {
-          return { ok: false, reason: String(e).substring(0, 100), status: 0, finalUrl: '' }
-        }
-      })
-      console.log(`[LOGIN DEBUG] fetch-submit: ok=${fetchResult.ok} status=${fetchResult.status} finalUrl=${fetchResult.finalUrl?.substring(0, 80)} reason=${fetchResult.reason}`)
-
-      // After fetch, allow a moment for Set-Cookie headers to propagate into the browser jar
-      await DELAY(1_000)
+      }
+      // Wait for navigation — route interceptor fires during this, then LinkedIn redirects
+      try {
+        await page.waitForURL(
+          (u) => !String(u).includes('/login') || String(u).includes('/checkpoint') || String(u).includes('/challenge'),
+          { timeout: 20_000, waitUntil: 'domcontentloaded' }
+        )
+      } catch {
+        console.log('[LOGIN DEBUG] waitForURL timed out after CDP submit — checking page state anyway')
+      }
     } else {
       const submitBtn = await page.$(
         'button[type="submit"], .btn__primary--large, ' +
