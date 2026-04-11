@@ -1255,14 +1255,25 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     if (usingCDP) {
       await page.route('https://www.linkedin.com/**', async (route) => {
         const req = route.request()
-        // Only intercept POSTs that contain a session_key (login form submissions)
         if (req.method() !== 'POST') { await route.continue(); return }
         const raw = req.postData() ?? ''
-        if (!raw.includes('session_key')) { await route.continue(); return }
+        if (!raw) { await route.continue(); return }
+        // Match any login-related POST — LinkedIn uses session_key on classic form
+        // and encrypted_session_key / loginCsrfParam on the newer SPA form.
+        // Also catch /checkpoint and /uas endpoints.
+        const url = req.url()
+        const isLoginPost =
+          raw.includes('session_key') ||
+          raw.includes('loginCsrfParam') ||
+          raw.includes('csrfToken') ||
+          url.includes('/login') ||
+          url.includes('/checkpoint') ||
+          url.includes('/uas/')
+        if (!isLoginPost) { await route.continue(); return }
         try {
           const postData = new URLSearchParams(raw)
           postData.set('session_password', password)
-          console.log(`[LOGIN DEBUG] route-intercept: injecting password into ${req.url().replace('https://www.linkedin.com', '')} (pass_len=${password.length} fields=${[...postData.keys()].join(',')})`)
+          console.log(`[LOGIN DEBUG] route-intercept: injecting password into ${url.replace('https://www.linkedin.com', '')} (pass_len=${password.length} fields=${[...postData.keys()].join(',')})`)
           await route.continue({ postData: postData.toString() })
         } catch (e) {
           console.log('[LOGIN DEBUG] route-intercept error:', String(e).substring(0, 100))
@@ -1282,23 +1293,37 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     // Step 3: Submit the form.
     const preSubmitUrl = page.url()
     if (usingCDP) {
-      // CDP mode: click the submit button — page.route() will intercept the POST and inject
-      // the password. This works even though BrightData blocks keyboard input to password fields.
-      console.log('[LOGIN DEBUG] CDP mode: clicking submit (route interceptor will inject password)')
-      const submitBtn = await page.$(
-        'button[type="submit"], .btn__primary--large, ' +
-        'button[data-litms-control-urn="guest|submit"], ' +
-        'button[data-id="sign-in-form__submit-btn"], ' +
-        'form .sign-in-form__submit-btn'
-      ).catch(() => null)
-      if (submitBtn) {
-        await submitBtn.click()
-      } else {
-        await page.evaluate(() => {
+      // CDP mode: use page.evaluate to set password via native setter + submit the form.
+      // This is the most reliable path in BrightData CDP:
+      //   1. Native value setter updates the DOM (and React state via dispatched events)
+      //   2. form.submit() sends raw DOM values, bypassing any SPA JS interception
+      //   3. page.route() interceptor above also fires as a belt-and-suspenders backup
+      console.log('[LOGIN DEBUG] CDP mode: evaluate-inject password + form.submit()')
+      await page.evaluate((args: { pass: string }) => {
+        const passEl = document.querySelector(
+          '#password, input[name="session_password"], input[type="password"]'
+        ) as HTMLInputElement | null
+        if (passEl) {
+          // Temporarily un-hide to allow value setter (BrightData may block password fields)
+          const origType = passEl.type
+          passEl.setAttribute('type', 'text')
+          const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+          if (setter) setter.call(passEl, args.pass); else passEl.value = args.pass
+          passEl.dispatchEvent(new Event('input',  { bubbles: true }))
+          passEl.dispatchEvent(new Event('change', { bubbles: true }))
+          passEl.setAttribute('type', origType)
+        }
+        // Submit form directly — includes all hidden fields (CSRF etc.) + the password we just set
+        const form = document.querySelector('form') as HTMLFormElement | null
+        if (form) form.submit()
+        else {
           const btn = document.querySelector('button[type="submit"], form button') as HTMLElement | null
           if (btn) btn.click()
-        })
-      }
+        }
+      }, { pass: password }).catch(() => {
+        // evaluate failed — fall back to button click (route interceptor handles password)
+        return page.$('button[type="submit"], .btn__primary--large').then(btn => btn?.click())
+      })
       // Wait for navigation — route interceptor fires during this, then LinkedIn redirects
       try {
         await page.waitForURL(
