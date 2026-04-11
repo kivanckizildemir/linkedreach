@@ -241,9 +241,17 @@ async function resolveBrowserEndpoint(accountId: string): Promise<string | null>
   try {
     const { data: account } = await supabase
       .from('linkedin_accounts')
-      .select('proxy_country')
+      .select('proxy_country, proxy_id')
       .eq('id', accountId)
       .single()
+
+    // If the account has its own proxy configured, skip BrightData Scraping Browser
+    // and let the local Chromium use the account proxy instead. BrightData's browser
+    // uses its own rotating residential IPs and ignores any per-account proxy.
+    if ((account as { proxy_id?: string } | null)?.proxy_id) {
+      console.log('[LOGIN DEBUG] Account has proxy_id — bypassing BrightData, using local Chromium + account proxy')
+      return null
+    }
 
     const country = (account as { proxy_country?: string } | null)?.proxy_country
     const url = new URL(browserUrl)
