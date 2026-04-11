@@ -108,9 +108,17 @@ export const salesNavScraperWorker = new Worker<SalesNavJob>(
       console.log('[sales-nav] Connecting to BrightData Scraping Browser via CDP…')
       const { chromium: pw } = await import('playwright')
 
-      // Apply account-level country targeting if set
+      // Apply country targeting from the account's assigned proxy record
       let cdpUrl = brightDataUrl
-      const country = (acc as { proxy_country?: string }).proxy_country
+      let country: string | null = null
+      if ((acc as { proxy_id?: string | null }).proxy_id) {
+        const { data: proxyRow } = await supabase
+          .from('proxies')
+          .select('country')
+          .eq('id', (acc as { proxy_id: string }).proxy_id)
+          .single()
+        country = (proxyRow as { country?: string | null } | null)?.country ?? null
+      }
       if (country) {
         try {
           const u = new URL(brightDataUrl)

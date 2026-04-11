@@ -7,6 +7,7 @@ export interface Proxy {
   assigned_account_id: string | null
   is_available: boolean
   created_at: string
+  country: string | null     // ISO 3166-1 alpha-2 (e.g. 'gb') for BrightData geo-targeting
 }
 
 export interface BulkImportResult {
@@ -23,11 +24,22 @@ export async function fetchProxies(): Promise<Proxy[]> {
   return data
 }
 
-export async function addProxy(proxy_url: string, label?: string): Promise<Proxy> {
+export async function addProxy(proxy_url: string, label?: string, country?: string): Promise<Proxy> {
   const res = await apiFetch('/api/proxies', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ proxy_url, label: label || undefined }),
+    body: JSON.stringify({ proxy_url, label: label || undefined, country: country?.toLowerCase() || undefined }),
+  })
+  if (!res.ok) throw new Error(await parseErrorResponse(res))
+  const { data } = await res.json() as { data: Proxy }
+  return data
+}
+
+export async function updateProxyCountry(id: string, country: string | null): Promise<Proxy> {
+  const res = await apiFetch(`/api/proxies/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ country: country?.toLowerCase() || null }),
   })
   if (!res.ok) throw new Error(await parseErrorResponse(res))
   const { data } = await res.json() as { data: Proxy }

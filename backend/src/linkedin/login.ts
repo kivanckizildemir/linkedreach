@@ -242,7 +242,7 @@ async function resolveBrowserEndpoint(accountId: string): Promise<string | null>
   try {
     const { data: account } = await supabase
       .from('linkedin_accounts')
-      .select('proxy_country, proxy_id')
+      .select('proxy_id')
       .eq('id', accountId)
       .single()
 
@@ -250,17 +250,24 @@ async function resolveBrowserEndpoint(accountId: string): Promise<string | null>
     // from Railway without bot detection. The account's proxy_id is used by workers
     // for automation (scraping, messaging) but NOT for the initial login session.
 
-    const country = (account as { proxy_country?: string } | null)?.proxy_country
+    // Country targeting: read from the assigned proxy record (proxies.country),
+    // not from linkedin_accounts.proxy_country (deprecated).
+    let country: string | null = null
+    if ((account as { proxy_id?: string | null })?.proxy_id) {
+      const { data: proxy } = await supabase
+        .from('proxies')
+        .select('country')
+        .eq('id', (account as { proxy_id: string }).proxy_id)
+        .single()
+      country = (proxy as { country?: string | null } | null)?.country ?? null
+    }
+
     const url = new URL(browserUrl)
 
-    // BrightData Scraping Browser: each new connectOverCDP() call automatically
-    // gets a fresh browser session on a new residential IP — no session ID needed.
-    // Country targeting (-country-XX) can be appended to the username to prefer
-    // IPs from a specific country (set proxy_country on the account to enable).
     if (country) {
       const baseUser = decodeURIComponent(url.username)
       url.username = encodeURIComponent(`${baseUser}-country-${country.toLowerCase()}`)
-      console.log(`[LOGIN DEBUG] BrightData country targeting: ${country}`)
+      console.log(`[LOGIN DEBUG] BrightData country targeting: ${country} (from proxy record)`)
     }
 
     return url.toString()
@@ -316,9 +323,17 @@ async function resolveProxy(accountId: string): Promise<
     const url = new URL(BD_PROXY_URL)
     const host = url.hostname
     const port = url.port
-    // Append country targeting to BrightData username if set (e.g. -country-us)
+    // Country targeting: read from the assigned proxy record (proxies.country)
     const baseUsername = decodeURIComponent(url.username) || undefined
-    const country = (account as { proxy_country?: string } | null)?.proxy_country
+    let country: string | null = null
+    if ((account as { proxy_id?: string | null })?.proxy_id) {
+      const { data: proxyRow } = await supabase
+        .from('proxies')
+        .select('country')
+        .eq('id', (account as { proxy_id: string }).proxy_id)
+        .single()
+      country = (proxyRow as { country?: string | null } | null)?.country ?? null
+    }
     const username = baseUsername && country
       ? `${baseUsername}-country-${country.toLowerCase()}`
       : baseUsername

@@ -20,6 +20,7 @@ import {
   addProxy,
   bulkImportProxies,
   updateProxyLabel,
+  updateProxyCountry,
   assignProxy,
   testProxy,
   deleteProxy,
@@ -322,7 +323,7 @@ export function Accounts() {
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Connections Today</th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Messages Today</th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Warmup Day</th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Proxy Country</th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Proxy</th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Sender Profile</th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
                   </tr>
@@ -383,25 +384,14 @@ export function Accounts() {
                               <span className="text-gray-400 text-sm">—</span>
                             )}
                           </td>
-                          <td className="px-4 py-3">
-                            <select
-                              value={account.proxy_country ?? ''}
-                              onChange={e => updateMutation.mutate({ id: account.id, updates: { proxy_country: e.target.value || null } })}
-                              className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                            >
-                              <option value="">🌍 Any</option>
-                              <option value="us">🇺🇸 US</option>
-                              <option value="gb">🇬🇧 UK</option>
-                              <option value="de">🇩🇪 Germany</option>
-                              <option value="fr">🇫🇷 France</option>
-                              <option value="nl">🇳🇱 Netherlands</option>
-                              <option value="ca">🇨🇦 Canada</option>
-                              <option value="au">🇦🇺 Australia</option>
-                              <option value="sg">🇸🇬 Singapore</option>
-                              <option value="in">🇮🇳 India</option>
-                              <option value="ae">🇦🇪 UAE</option>
-                              <option value="tr">🇹🇷 Turkey</option>
-                            </select>
+                          <td className="px-4 py-3 text-xs text-gray-500">
+                            {(() => {
+                              const proxy = proxies.find(p => p.id === account.proxy_id)
+                              if (!proxy) return <span className="text-gray-300">—</span>
+                              const countryFlag: Record<string, string> = { us:'🇺🇸', gb:'🇬🇧', de:'🇩🇪', fr:'🇫🇷', nl:'🇳🇱', ca:'🇨🇦', au:'🇦🇺', sg:'🇸🇬', in:'🇮🇳', ae:'🇦🇪', tr:'🇹🇷' }
+                              const flag = proxy.country ? (countryFlag[proxy.country] ?? proxy.country.toUpperCase()) : '🌍'
+                              return <span title={proxy.label ?? proxy.proxy_url}>{flag} {proxy.label ?? 'proxy'}</span>
+                            })()}
                           </td>
                           <td className="px-4 py-3">
                             <button
@@ -636,7 +626,7 @@ function ProxiesPanel({ accounts }: { accounts: LinkedInAccount[] }) {
   })
 
   const addMutation = useMutation({
-    mutationFn: ({ proxy_url, label }: { proxy_url: string; label?: string }) => addProxy(proxy_url, label),
+    mutationFn: ({ proxy_url, label, country }: { proxy_url: string; label?: string; country?: string }) => addProxy(proxy_url, label, country),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['proxies'] })
       setShowAdd(false)
@@ -671,6 +661,11 @@ function ProxiesPanel({ accounts }: { accounts: LinkedInAccount[] }) {
 
   const labelMutation = useMutation({
     mutationFn: ({ id, label }: { id: string; label: string }) => updateProxyLabel(id, label),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['proxies'] }),
+  })
+
+  const countryMutation = useMutation({
+    mutationFn: ({ id, country }: { id: string; country: string | null }) => updateProxyCountry(id, country),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['proxies'] }),
   })
 
@@ -712,6 +707,7 @@ function ProxiesPanel({ accounts }: { accounts: LinkedInAccount[] }) {
           <thead className="bg-gray-50 border-b border-gray-200">
             <tr>
               <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Label / URL</th>
+              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Country</th>
               <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
               <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Assigned Account</th>
               <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Test</th>
@@ -752,6 +748,26 @@ function ProxiesPanel({ accounts }: { accounts: LinkedInAccount[] }) {
                         className="text-xs font-medium text-gray-800 bg-transparent border-b border-transparent hover:border-gray-300 focus:border-blue-500 focus:outline-none w-full pb-0.5 mb-1"
                       />
                       <p className="font-mono text-[10px] text-gray-400 truncate">{proxy.proxy_url}</p>
+                    </td>
+                    <td className="px-4 py-3">
+                      <select
+                        value={proxy.country ?? ''}
+                        onChange={e => countryMutation.mutate({ id: proxy.id, country: e.target.value || null })}
+                        className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      >
+                        <option value="">🌍 Any</option>
+                        <option value="gb">🇬🇧 UK</option>
+                        <option value="us">🇺🇸 US</option>
+                        <option value="de">🇩🇪 Germany</option>
+                        <option value="fr">🇫🇷 France</option>
+                        <option value="nl">🇳🇱 Netherlands</option>
+                        <option value="ca">🇨🇦 Canada</option>
+                        <option value="au">🇦🇺 Australia</option>
+                        <option value="sg">🇸🇬 Singapore</option>
+                        <option value="ae">🇦🇪 UAE</option>
+                        <option value="tr">🇹🇷 Turkey</option>
+                        <option value="in">🇮🇳 India</option>
+                      </select>
                     </td>
                     <td className="px-4 py-3">
                       <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${proxy.is_available ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'}`}>
@@ -820,7 +836,7 @@ function ProxiesPanel({ accounts }: { accounts: LinkedInAccount[] }) {
       {showAdd && (
         <AddProxyModal
           onClose={() => setShowAdd(false)}
-          onAdd={(proxy_url, label) => addMutation.mutate({ proxy_url, label })}
+          onAdd={(proxy_url, label, country) => addMutation.mutate({ proxy_url, label, country })}
           onBulk={(lines, label_prefix) => bulkMutation.mutate({ lines, label_prefix })}
           isLoading={addMutation.isPending || bulkMutation.isPending}
           error={addMutation.error?.message ?? bulkMutation.error?.message ?? null}
@@ -840,7 +856,7 @@ function AddProxyModal({
   bulkResult,
 }: {
   onClose: () => void
-  onAdd: (proxy_url: string, label?: string) => void
+  onAdd: (proxy_url: string, label?: string, country?: string) => void
   onBulk: (lines: string, label_prefix?: string) => void
   isLoading: boolean
   error: string | null
@@ -849,13 +865,14 @@ function AddProxyModal({
   const [mode, setMode] = useState<'single' | 'bulk'>('single')
   const [proxyUrl, setProxyUrl] = useState('')
   const [label, setLabel] = useState('')
+  const [country, setCountry] = useState('')
   const [bulkLines, setBulkLines] = useState('')
   const [labelPrefix, setLabelPrefix] = useState('')
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (mode === 'single') {
-      if (proxyUrl.trim()) onAdd(proxyUrl.trim(), label.trim() || undefined)
+      if (proxyUrl.trim()) onAdd(proxyUrl.trim(), label.trim() || undefined, country || undefined)
     } else {
       if (bulkLines.trim()) onBulk(bulkLines.trim(), labelPrefix.trim() || undefined)
     }
@@ -888,14 +905,37 @@ function AddProxyModal({
         <form onSubmit={handleSubmit} className="space-y-3">
           {mode === 'single' ? (
             <>
-              <div>
-                <label className="block text-xs font-medium text-gray-700 mb-1">Label (optional)</label>
-                <input
-                  value={label}
-                  onChange={e => setLabel(e.target.value)}
-                  placeholder="e.g. US East 1"
-                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
+              <div className="flex gap-3">
+                <div className="flex-1">
+                  <label className="block text-xs font-medium text-gray-700 mb-1">Label (optional)</label>
+                  <input
+                    value={label}
+                    onChange={e => setLabel(e.target.value)}
+                    placeholder="e.g. UK Residential 1"
+                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div className="w-40">
+                  <label className="block text-xs font-medium text-gray-700 mb-1">Country</label>
+                  <select
+                    value={country}
+                    onChange={e => setCountry(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="">🌍 Any</option>
+                    <option value="gb">🇬🇧 UK</option>
+                    <option value="us">🇺🇸 US</option>
+                    <option value="de">🇩🇪 Germany</option>
+                    <option value="fr">🇫🇷 France</option>
+                    <option value="nl">🇳🇱 Netherlands</option>
+                    <option value="ca">🇨🇦 Canada</option>
+                    <option value="au">🇦🇺 Australia</option>
+                    <option value="sg">🇸🇬 Singapore</option>
+                    <option value="ae">🇦🇪 UAE</option>
+                    <option value="tr">🇹🇷 Turkey</option>
+                    <option value="in">🇮🇳 India</option>
+                  </select>
+                </div>
               </div>
               <div>
                 <label className="block text-xs font-medium text-gray-700 mb-1">Proxy URL</label>

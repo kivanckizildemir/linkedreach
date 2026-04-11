@@ -62,7 +62,7 @@ async function testProxyUrl(rawUrl: string): Promise<{ ok: boolean; result: stri
 proxiesRouter.get('/', async (req: Request, res: Response) => {
   const { data, error } = await supabase
     .from('proxies')
-    .select('id, label, proxy_url, assigned_account_id, is_available, created_at')
+    .select('id, label, proxy_url, assigned_account_id, is_available, created_at, country')
     .eq('user_id', req.user.id)
     .order('created_at', { ascending: false })
 
@@ -75,7 +75,7 @@ proxiesRouter.get('/', async (req: Request, res: Response) => {
 
 // POST /api/proxies — add a single proxy
 proxiesRouter.post('/', async (req: Request, res: Response) => {
-  const { proxy_url, label } = req.body as { proxy_url?: string; label?: string }
+  const { proxy_url, label, country } = req.body as { proxy_url?: string; label?: string; country?: string }
 
   if (!proxy_url) { res.status(400).json({ error: 'proxy_url is required' }); return }
 
@@ -88,8 +88,14 @@ proxiesRouter.post('/', async (req: Request, res: Response) => {
 
   const { data, error } = await supabase
     .from('proxies')
-    .insert({ proxy_url: normalizedUrl, label: label?.trim() || null, user_id: req.user.id, is_available: true })
-    .select('id, label, proxy_url, assigned_account_id, is_available, created_at')
+    .insert({
+      proxy_url: normalizedUrl,
+      label: label?.trim() || null,
+      country: country?.toLowerCase().trim() || null,
+      user_id: req.user.id,
+      is_available: true,
+    })
+    .select('id, label, proxy_url, assigned_account_id, is_available, created_at, country')
     .single()
 
   if (error) { res.status(500).json({ error: error.message }); return }
@@ -144,16 +150,20 @@ proxiesRouter.post('/bulk', async (req: Request, res: Response) => {
   })
 })
 
-// PATCH /api/proxies/:id — update label
+// PATCH /api/proxies/:id — update label and/or country
 proxiesRouter.patch('/:id', async (req: Request, res: Response) => {
-  const { label } = req.body as { label?: string }
+  const { label, country } = req.body as { label?: string; country?: string | null }
+
+  const updates: Record<string, unknown> = {}
+  if ('label'   in req.body) updates.label   = label?.trim() || null
+  if ('country' in req.body) updates.country = typeof country === 'string' ? country.toLowerCase().trim() || null : null
 
   const { data, error } = await supabase
     .from('proxies')
-    .update({ label: label?.trim() || null })
+    .update(updates)
     .eq('id', req.params.id)
     .eq('user_id', req.user.id)
-    .select('id, label, proxy_url, assigned_account_id, is_available, created_at')
+    .select('id, label, proxy_url, assigned_account_id, is_available, created_at, country')
     .single()
 
   if (error) { res.status(500).json({ error: error.message }); return }
