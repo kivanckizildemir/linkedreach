@@ -2062,7 +2062,11 @@ async function runManualSession(key: string): Promise<void> {
 
   let browser: Browser | undefined
   try {
-    const browserEndpoint = await resolveBrowserEndpoint(session.accountId)
+    // BrightData Scraping Browser (CDP) blocks password typing, fetch(), and form.submit() navigation.
+    // For login, always use local Chromium + BrightData HTTP proxy (BRIGHTDATA_PROXY_URL) or the
+    // per-account proxy. The HTTP proxy gives us a residential IP without any of the Scraping Browser
+    // restrictions, so login works fully.
+    const browserEndpoint = null // Never use Scraping Browser for login
     let context: BrowserContext
 
     if (browserEndpoint) {
