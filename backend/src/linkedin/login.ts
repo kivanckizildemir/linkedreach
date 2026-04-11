@@ -703,53 +703,49 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     // Strategy: wait for the Accept button, click it, then wait for it to disappear
     // (confirms LinkedIn processed the click and set its own consent cookie).
     {
-      const CONSENT_ACCEPT_SELECTORS = [
-        'button[action-type="ACCEPT"]',
-        'button[data-tracking-control-name="cookie_policy_banner_accept"]',
-        '#artdeco-global-alert-action--accept',
-        'button.artdeco-global-alert__action',
-        'button[data-control-name="accept"]',
-        'button[data-tracking-control-name*="accept"]',
-      ]
+      const CONSENT_COMBINED =
+        'button[action-type="ACCEPT"], ' +
+        'button[data-tracking-control-name="cookie_policy_banner_accept"], ' +
+        '#artdeco-global-alert-action--accept, ' +
+        'button.artdeco-global-alert__action, ' +
+        'button[data-control-name="accept"], ' +
+        'button[data-tracking-control-name*="accept"]'
 
-      // Wait up to 3s for any consent button to appear
-      await page.waitForSelector(CONSENT_ACCEPT_SELECTORS.join(', '), { timeout: 3_000 })
-        .catch(() => { /* fine — banner not present */ })
+      // Wait up to 5s for any accept button to appear (banner loads async after page)
+      const consentEl = await page.waitForSelector(CONSENT_COMBINED, { timeout: 5_000 }).catch(() => null)
 
-      // Strategy 1: attribute-based selectors — click and wait for banner to vanish
-      let dismissedViaAttr = false
-      for (const selector of CONSENT_ACCEPT_SELECTORS) {
-        try {
-          const exists = await page.$(selector)
-          if (exists) {
-            await jsClick(selector)
-            console.log(`[LOGIN DEBUG] Consent banner clicked via: ${selector}`)
-            // Wait for the button to be removed from DOM — confirms LinkedIn accepted it
-            await page.waitForSelector(selector, { state: 'detached', timeout: 4_000 }).catch(() => {})
-            dismissedViaAttr = true
-            break
-          }
-        } catch { /* ok */ }
-      }
-
-      // Strategy 2: language-agnostic text search — handles any locale
-      if (!dismissedViaAttr) {
+      if (consentEl) {
+        // Use Playwright's native elementHandle.click() — fires real pointer events,
+        // handles BrightData CDP better than jsClick (page.evaluate el.click()).
+        console.log('[LOGIN DEBUG] Consent banner found — clicking via native Playwright click')
+        await consentEl.click({ force: true }).catch(() => {})
+        // Wait for it to become hidden OR detached (LinkedIn uses display:none on dismiss)
+        await Promise.race([
+          page.waitForSelector(CONSENT_COMBINED, { state: 'hidden',   timeout: 5_000 }).catch(() => {}),
+          page.waitForSelector(CONSENT_COMBINED, { state: 'detached', timeout: 5_000 }).catch(() => {}),
+        ])
+        await DELAY(300)
+        console.log('[LOGIN DEBUG] Consent banner dismissed')
+      } else {
+        // Fallback: language-agnostic text search (catches banners with no matching attributes)
         const clicked = await page.evaluate(() => {
           const btns = Array.from(document.querySelectorAll('button, a[role="button"]'))
-          const accept = btns.find(b => {
-            const t = (b.textContent ?? '').trim()
-            return /^(accept|allow|terima|acceptér|accepter|akkoord|aceptar|accetta|akzeptieren|agree|ok|قبول|同意|허용|kabul)$/i.test(t)
-          })
+          const accept = btns.find(b =>
+            /^(accept|allow|terima|acceptér|accepter|akkoord|aceptar|accetta|akzeptieren|agree|ok|قبول|同意|허용|kabul)$/i
+              .test((b.textContent ?? '').trim())
+          )
           if (accept) { (accept as HTMLElement).click(); return true }
           return false
         }).catch(() => false)
         if (clicked) {
-          console.log('[LOGIN DEBUG] Consent banner clicked via text search')
-          await DELAY(1_500) // give LinkedIn time to process and remove banner
+          console.log('[LOGIN DEBUG] Consent clicked via text fallback')
+          await DELAY(1_500)
+        } else {
+          console.log('[LOGIN DEBUG] No consent banner found — continuing')
         }
       }
 
-      // If URL changed to a consent/cookie/authwall page, navigate back to login
+      // If URL redirected to a full consent/authwall page, navigate back to /login
       const postConsentUrl = page.url()
       if (/\/cookie|\/consent|\/authwall/i.test(postConsentUrl)) {
         console.log(`[LOGIN DEBUG] Consent page redirect at ${postConsentUrl} — navigating back to /login`)
