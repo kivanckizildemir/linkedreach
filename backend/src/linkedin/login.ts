@@ -1026,7 +1026,7 @@ async function runLogin(key: string, email: string, password: string): Promise<v
         // We first click the field with noWaitAfter to avoid hanging on pushState navigation.
         try {
           await page.click(selector, { noWaitAfter: true, force: true, timeout: 5_000 }).catch(() => {})
-          await page.fill(selector, value, { timeout: 8_000 })
+          await page.fill(selector, value, { timeout: 8_000, force: true })
           return
         } catch (fillErr) {
           console.log('[LOGIN DEBUG] page.fill() failed in CDP mode, trying type-swap fallback:', String(fillErr).substring(0, 100))
