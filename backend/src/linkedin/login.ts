@@ -1243,14 +1243,21 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     }
 
     // In CDP mode (BrightData), set up a route interceptor BEFORE filling fields.
-    // This intercepts the login-submit POST and injects the password directly into the
-    // request body — bypassing all CDP keyboard/input restrictions entirely.
+    // BrightData blocks keyboard input to password fields, so we intercept the
+    // login-submit POST and inject the password directly into the request body.
+    // We catch ALL POST requests to linkedin.com during login (not just one URL)
+    // because LinkedIn has multiple submit endpoints and rotates between them.
     if (usingCDP) {
-      await page.route('**/checkpoint/lg/login-submit**', async (route) => {
+      await page.route('https://www.linkedin.com/**', async (route) => {
+        const req = route.request()
+        // Only intercept POSTs that contain a session_key (login form submissions)
+        if (req.method() !== 'POST') { await route.continue(); return }
+        const raw = req.postData() ?? ''
+        if (!raw.includes('session_key')) { await route.continue(); return }
         try {
-          const postData = new URLSearchParams(route.request().postData() ?? '')
+          const postData = new URLSearchParams(raw)
           postData.set('session_password', password)
-          console.log(`[LOGIN DEBUG] route-intercept: injecting password into login-submit (pass_len=${password.length} fields=${[...postData.keys()].join(',')})`)
+          console.log(`[LOGIN DEBUG] route-intercept: injecting password into ${req.url().replace('https://www.linkedin.com', '')} (pass_len=${password.length} fields=${[...postData.keys()].join(',')})`)
           await route.continue({ postData: postData.toString() })
         } catch (e) {
           console.log('[LOGIN DEBUG] route-intercept error:', String(e).substring(0, 100))
