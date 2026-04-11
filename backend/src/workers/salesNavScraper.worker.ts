@@ -15,7 +15,7 @@
 import { Worker } from 'bullmq'
 import { connection } from '../lib/queue'
 import { supabase } from '../lib/supabase'
-import { persistCookies } from '../linkedin/session'
+import { persistCookies, extractCookies } from '../linkedin/session'
 import type { AccountRecord } from '../linkedin/session'
 import { acquireAccountLock } from '../lib/accountLock'
 import { getOrCreateBrowserSession, invalidateBrowserSession } from '../lib/browserPool'
@@ -80,7 +80,7 @@ export const salesNavScraperWorker = new Worker<SalesNavJob>(
     // ── Sales Navigator — use Playwright browser (Cloudflare requires JS) ────
     const { data: acc, error: accErr } = await supabase
       .from('linkedin_accounts')
-      .select('id, cookies, proxy_id, status')
+      .select('id, cookies, proxy_id, proxy_country, status')
       .eq('id', account_id)
       .single()
 
@@ -89,7 +89,82 @@ export const salesNavScraperWorker = new Worker<SalesNavJob>(
     const release = await acquireAccountLock(account_id)
     if (!release) throw new Error(`Account ${account_id} is currently in use — job will retry`)
 
-    const { context, page } = await getOrCreateBrowserSession(acc as AccountRecord)
+    // ── Browser strategy: prefer BrightData Scraping Browser (CDP) when configured ──
+    // BrightData runs Chromium on a fresh residential IP, bypassing Cloudflare/bot blocks.
+    // Falls back to the persistent pool session (account's nsocks proxy) if unavailable.
+    const brightDataUrl = process.env.DISABLE_PROXY !== 'true'
+      ? (process.env.BRIGHTDATA_BROWSER_URL ?? null)
+      : null
+
+    let brightDataBrowser: import('playwright').Browser | null = null
+    // eslint-disable-next-line prefer-const
+    let context!: import('playwright').BrowserContext
+    // eslint-disable-next-line prefer-const
+    let page!: import('playwright').Page
+
+    if (brightDataUrl) {
+      // BrightData Scraping Browser: connect via CDP WebSocket, inject stored cookies.
+      // Each connectOverCDP() call creates a brand-new session on a fresh residential IP.
+      console.log('[sales-nav] Connecting to BrightData Scraping Browser via CDP…')
+      const { chromium: pw } = await import('playwright')
+
+      // Apply account-level country targeting if set
+      let cdpUrl = brightDataUrl
+      const country = (acc as { proxy_country?: string }).proxy_country
+      if (country) {
+        try {
+          const u = new URL(brightDataUrl)
+          const base = decodeURIComponent(u.username)
+          if (!base.includes('-country-')) {
+            u.username = encodeURIComponent(`${base}-country-${country}`)
+            cdpUrl = u.toString()
+          }
+        } catch { /* use as-is */ }
+      }
+
+      brightDataBrowser = await pw.connectOverCDP(cdpUrl)
+      const existing = brightDataBrowser.contexts()
+      context = existing.length > 0
+        ? existing[0]
+        : await brightDataBrowser.newContext({
+            locale: 'en-US',
+            viewport: { width: 1280, height: 800 },
+            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+          })
+
+      // Inject the account's stored LinkedIn cookies into the clean BrightData browser
+      if (acc.cookies) {
+        const rawCookies = extractCookies(acc.cookies as string)
+        if (rawCookies.length > 0) {
+          await context.addCookies(
+            rawCookies.map(c => ({
+              name:     c.name,
+              value:    c.value,
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              domain:   (c as any).domain   || '.linkedin.com',
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              path:     (c as any).path     || '/',
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              expires:  (c as any).expires  ?? -1,
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              httpOnly: (c as any).httpOnly ?? false,
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              secure:   (c as any).secure   ?? true,
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              sameSite: ((c as any).sameSite ?? 'None') as 'Strict' | 'Lax' | 'None',
+            }))
+          )
+          console.log(`[sales-nav] Injected ${rawCookies.length} cookies into BrightData browser`)
+        }
+      }
+
+      page = context.pages()[0] ?? await context.newPage()
+      console.log('[sales-nav] BrightData CDP session ready ✓')
+    } else {
+      // Persistent pool session via account's assigned proxy
+      const session = await getOrCreateBrowserSession(acc as AccountRecord)
+      ;({ context: (context as import('playwright').BrowserContext), page: (page as import('playwright').Page) } = session as { context: import('playwright').BrowserContext; page: import('playwright').Page })
+    }
 
     // Set up API intercept BEFORE any navigation so we catch all Sales Nav
     // API responses, including the initial search results page load.
@@ -526,13 +601,19 @@ export const salesNavScraperWorker = new Worker<SalesNavJob>(
     } catch (err) {
       const msg = (err as Error).message ?? ''
       if (msg.includes('SESSION_EXPIRED') || msg.includes('session') || msg.includes('login')) {
-        // Mark paused immediately so the UI reflects the broken state.
         try { await supabase.from('linkedin_accounts').update({ status: 'paused' }).eq('id', account_id) } catch {}
-        invalidateBrowserSession(account_id)
+        // Only invalidate pool session — BrightData sessions are per-job, not pooled
+        if (!brightDataBrowser) invalidateBrowserSession(account_id)
       }
       throw err
     } finally {
       page.off('response', apiHandler)
+      // BrightData sessions are ephemeral — close after each job
+      if (brightDataBrowser) {
+        try { await persistCookies(context, account_id) } catch { /* non-fatal */ }
+        await brightDataBrowser.close().catch(() => {})
+        console.log('[sales-nav] BrightData browser closed')
+      }
       await release()
     }
   },
