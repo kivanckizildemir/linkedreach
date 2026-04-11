@@ -246,13 +246,9 @@ async function resolveBrowserEndpoint(accountId: string): Promise<string | null>
       .eq('id', accountId)
       .single()
 
-    // If the account has its own proxy configured, skip BrightData Scraping Browser
-    // and let the local Chromium use the account proxy instead. BrightData's browser
-    // uses its own rotating residential IPs and ignores any per-account proxy.
-    if ((account as { proxy_id?: string } | null)?.proxy_id) {
-      console.log('[LOGIN DEBUG] Account has proxy_id — bypassing BrightData, using local Chromium + account proxy')
-      return null
-    }
+    // Always use BrightData Scraping Browser for login — it reliably loads LinkedIn
+    // from Railway without bot detection. The account's proxy_id is used by workers
+    // for automation (scraping, messaging) but NOT for the initial login session.
 
     const country = (account as { proxy_country?: string } | null)?.proxy_country
     const url = new URL(browserUrl)
