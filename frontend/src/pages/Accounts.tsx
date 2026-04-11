@@ -27,9 +27,6 @@ import {
 } from '../api/proxies'
 import { fetchActivity, ACTION_LABELS, ACTION_COLORS } from '../api/activity'
 
-// True when the frontend is talking to a remote backend (Railway) — features
-// that require a visible browser window on the server are disabled.
-const IS_REMOTE_BACKEND = !!(import.meta.env.VITE_API_BASE_URL as string | undefined)
 
 const STATUS_COLORS: Record<LinkedInAccount['status'], string> = {
   active:     'bg-green-100 text-green-700',
@@ -203,7 +200,6 @@ export function Accounts() {
         const activeJobs   = seq.active  ?? 0
         const waitingJobs  = seq.waiting ?? 0
         const failedJobs   = seq.failed  ?? 0
-        const totalRunning = activeJobs + waitingJobs
         const lastAct      = systemStatus.last_activity
 
         const seqStatus =

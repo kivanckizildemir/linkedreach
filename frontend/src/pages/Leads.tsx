@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, useMemo, Fragment, type FormEvent } from 'react'
+import React, { useState, useRef, useEffect, useCallback, useMemo, Fragment, type FormEvent } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { fetchLeads, requalifyLead, qualifyAllLeads, importLeads, startSalesNavImport, getScrapeStatus, fetchLeadNotes, addLeadNote, deleteLeadNote, personaliseOpeningLine, fetchLeadCampaigns, bulkDeleteLeads, createManualLead, enrichProfiles, getEnrichStatus, cancelEnrichJob, cancelQualify } from '../api/leads'
@@ -1011,7 +1011,7 @@ export function Leads() {
       {showAddToList && listId && (() => {
         const activeAccts = accounts.filter((a: { status: string }) => a.status === 'active' || a.status === 'warming_up')
 
-        type SourceDef = { id: AddLeadsSource; label: string; description: string; badge?: string; soon?: boolean; color: string; bgColor: string; borderColor: string; icon: JSX.Element }
+        type SourceDef = { id: AddLeadsSource; label: string; description: string; badge?: string; soon?: boolean; color: string; bgColor: string; borderColor: string; icon: React.ReactElement }
         const SOURCE_GROUPS: Array<{ heading: string; items: SourceDef[] }> = [
           {
             heading: 'People',
@@ -1042,7 +1042,7 @@ export function Leads() {
           try {
             if (addLeadsSource === 'csv') {
               if (!addLeadsCsvFile) return
-              const result = await importExcelIntoList(listId, addLeadsCsvFile)
+              const result = await importExcelIntoList(listId!, addLeadsCsvFile)
               setShowAddToList(false)
               setAddLeadsCsvFile(null)
               void queryClient.invalidateQueries({ queryKey: ['leads'] })
@@ -1050,7 +1050,7 @@ export function Leads() {
               // brief toast via console; UI will refresh
               console.log(`Imported: ${result.saved} saved, ${result.skipped} skipped`)
             } else {
-              const { job_id } = await scrapeIntoList(listId, { search_url: addLeadsUrl, account_id: addLeadsAccountId, max_leads: addLeadsMax, source_type: addLeadsSource })
+              const { job_id } = await scrapeIntoList(listId!, { search_url: addLeadsUrl, account_id: addLeadsAccountId, max_leads: addLeadsMax, source_type: addLeadsSource! })
               setAddLeadsJobId(job_id)
               setAddLeadsProgress(0)
               setShowAddToList(false)
@@ -1199,7 +1199,7 @@ export function Leads() {
                           className="w-full px-3 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                         >
                           <option value="">Select account…</option>
-                          {activeAccts.map((a: { id: string; sender_name?: string; linkedin_email: string }) => (
+                          {activeAccts.map((a: { id: string; sender_name?: string | null; linkedin_email: string }) => (
                             <option key={a.id} value={a.id}>{a.sender_name ? `${a.sender_name} (${a.linkedin_email})` : a.linkedin_email}</option>
                           ))}
                         </select>
@@ -1565,23 +1565,6 @@ function ManualAddLeadModal({ onClose, onAdded, listId, inline }: { onClose: () 
   )
 }
 
-// ── Account selector helper ──────────────────────────────────────────────────
-
-function AccountSelector({ value, onChange }: { value: string; onChange: (id: string) => void }) {
-  const { data: accounts = [] } = useQuery({ queryKey: ['accounts'], queryFn: fetchAccounts })
-  return (
-    <select
-      value={value}
-      onChange={e => onChange(e.target.value)}
-      className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-    >
-      <option value="">Select account…</option>
-      {accounts.filter(a => a.status === 'active').map(a => (
-        <option key={a.id} value={a.id}>{a.linkedin_email}</option>
-      ))}
-    </select>
-  )
-}
 
 // ── Column name normalizer ───────────────────────────────────────────────────
 // Handles various column names from Sales Navigator exports, LinkedIn exports,

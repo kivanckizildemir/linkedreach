@@ -223,7 +223,7 @@ export function CampaignDetail() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [scoreEngStatus, setScoreEngStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle')
   const [scoreEngProgress, setScoreEngProgress] = useState(0)
-  const [scoreEngTotal, setScoreEngTotal] = useState(0)
+  const [, setScoreEngTotal] = useState(0)
   const scoreEngCancelRef = useRef(false)
 
   const { data: campaign, isLoading: campaignLoading } = useQuery({
@@ -1217,9 +1217,6 @@ const WEIGHT_OPTIONS: { value: CustomCriterion['weight']; label: string; color: 
   { value: 'disqualifier', label: 'Disqualifier', color: 'bg-red-100 text-red-800 border-red-200' },
 ]
 
-function uid() {
-  return Math.random().toString(36).slice(2, 10)
-}
 
 export function CriterionRow({
   criterion,

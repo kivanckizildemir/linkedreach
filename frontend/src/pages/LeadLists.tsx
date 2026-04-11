@@ -392,7 +392,7 @@ export function LeadLists() {
               {!setOpResult && (
                 <button
                   onClick={() => void handleSetOp()}
-                  disabled={setSetOpLoading || !setOpSourceId}
+                  disabled={setOpLoading || !setOpSourceId}
                   className="flex-1 py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-blue-700 disabled:opacity-60"
                 >
                   {setOpLoading ? 'Working…' : 'Apply'}

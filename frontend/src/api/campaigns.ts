@@ -14,6 +14,7 @@ export interface Campaign {
   schedule_days: number[]
   schedule_timezone: string
   account_id: string | null
+  lead_priority: 'high_icp' | 'low_icp' | 'fifo' | null
   min_icp_score: number
   connection_note: string | null
   target_audience: string | null
