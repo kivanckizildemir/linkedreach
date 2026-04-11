@@ -251,7 +251,9 @@ async function resolveBrowserEndpoint(accountId: string): Promise<string | null>
     // for automation (scraping, messaging) but NOT for the initial login session.
 
     // Country targeting: read from the assigned proxy record (proxies.country),
-    // not from linkedin_accounts.proxy_country (deprecated).
+    // falling back to BRIGHTDATA_DEFAULT_COUNTRY env var (default: gb).
+    // Without a country, BrightData assigns a random IP — often non-UK — which
+    // causes LinkedIn to redirect to a country subdomain (e.g. no.linkedin.com).
     let country: string | null = null
     if ((account as { proxy_id?: string | null })?.proxy_id) {
       const { data: proxy } = await supabase
@@ -261,20 +263,25 @@ async function resolveBrowserEndpoint(accountId: string): Promise<string | null>
         .single()
       country = (proxy as { country?: string | null } | null)?.country ?? null
     }
-
-    const url = new URL(browserUrl)
-
-    if (country) {
-      const baseUser = decodeURIComponent(url.username)
-      // Don't double-append if country is already in the URL (e.g. set directly in env var)
-      if (!baseUser.includes('-country-')) {
-        url.username = encodeURIComponent(`${baseUser}-country-${country.toLowerCase()}`)
-        console.log(`[LOGIN DEBUG] BrightData country targeting: ${country} (from proxy record)`)
-      } else {
-        console.log(`[LOGIN DEBUG] BrightData country already set in URL: ${baseUser.match(/-country-(\w+)/)?.[1]}`)
-      }
+    // Fallback: BRIGHTDATA_DEFAULT_COUNTRY env var, then hardcoded 'gb'
+    if (!country) {
+      country = process.env.BRIGHTDATA_DEFAULT_COUNTRY ?? 'gb'
+      console.log(`[LOGIN DEBUG] No proxy country in DB — using fallback country: ${country}`)
     }
 
+    const url = new URL(browserUrl)
+    const baseUser = decodeURIComponent(url.username)
+
+    // Don't double-append if country is already in the URL (e.g. set directly in env var)
+    if (!baseUser.includes('-country-')) {
+      url.username = encodeURIComponent(`${baseUser}-country-${country.toLowerCase()}`)
+      console.log(`[LOGIN DEBUG] BrightData country targeting applied: ${country}`)
+    } else {
+      const existingCountry = baseUser.match(/-country-(\w+)/)?.[1]
+      console.log(`[LOGIN DEBUG] BrightData country already in URL: ${existingCountry}`)
+    }
+
+    console.log(`[LOGIN DEBUG] BrightData endpoint username: ${decodeURIComponent(url.username).replace(/:.*/, '')}`)
     return url.toString()
   } catch {
     return null
@@ -626,18 +633,32 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     }
     await DELAY(1500 + Math.random() * 500)
 
+    // If LinkedIn redirected to a country-specific subdomain (e.g. no.linkedin.com, de.linkedin.com),
+    // force-navigate to www.linkedin.com with explicit English locale.
+    // This happens when BrightData country targeting isn't applied and a non-UK IP is assigned.
+    const afterGotoUrl  = page.url()
+    const isCountrySubdomain = /^https?:\/\/(?!www\.)[a-z]{2}\.linkedin\.com/i.test(afterGotoUrl)
+    if (isCountrySubdomain) {
+      console.log(`[LOGIN DEBUG] Country subdomain detected: ${afterGotoUrl} — forcing www.linkedin.com/login`)
+      await page.goto('https://www.linkedin.com/login?trk=guest_homepage-basic_nav-header-signin', { waitUntil: 'domcontentloaded', timeout: 30_000 })
+      await DELAY(2000)
+    }
+
     // If we got a 404 or "page not found" from LinkedIn (bot-detection or regional issue),
     // try the global login URL with explicit locale as fallback.
-    const afterGotoUrl  = page.url()
     const afterGotoText = await page.evaluate(() => (document.body?.innerText ?? '').substring(0, 500)).catch(() => '')
     const is404 = afterGotoText.toLowerCase().includes('page not found') ||
       afterGotoText.toLowerCase().includes('this page doesn') ||
       afterGotoText.toLowerCase().includes("uh oh") ||
       afterGotoText.toLowerCase().includes('not found') ||
-      afterGotoUrl.startsWith('chrome-error://')
+      // Non-English 404 patterns (Norwegian, etc.)
+      afterGotoText.toLowerCase().includes('fant ikke siden') ||
+      afterGotoText.toLowerCase().includes('page introuvable') ||
+      afterGotoText.toLowerCase().includes('seite nicht gefunden') ||
+      page.url().startsWith('chrome-error://')
     if (is404) {
       console.log('[LOGIN DEBUG] LinkedIn returned 404/not-found — retrying with global login URL')
-      await page.goto('https://www.linkedin.com/uas/login', { waitUntil: 'domcontentloaded', timeout: 30_000 })
+      await page.goto('https://www.linkedin.com/login?trk=guest_homepage-basic_nav-header-signin', { waitUntil: 'domcontentloaded', timeout: 30_000 })
       await DELAY(2000)
     }
 
