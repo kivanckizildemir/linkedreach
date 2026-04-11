@@ -47,7 +47,7 @@ export const salesNavScraperWorker = new Worker<SalesNavJob>(
         account_id,
         search_url,
         max_leads,
-        (scraped) => {
+        (scraped: number) => {
           const pct = Math.min(85, 10 + Math.round((scraped / max_leads) * 75))
           job.updateProgress(pct).catch(() => null)
         }
@@ -64,7 +64,7 @@ export const salesNavScraperWorker = new Worker<SalesNavJob>(
         account_id,
         search_url,
         max_leads,
-        (scraped) => {
+        (scraped: number) => {
           const pct = Math.min(85, 10 + Math.round((scraped / max_leads) * 75))
           job.updateProgress(pct).catch(() => null)
         }
