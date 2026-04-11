@@ -1140,7 +1140,18 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     console.log('[LOGIN DEBUG]', submitDiag)
 
     // Check if li_at is now in the browser context (login succeeded without challenge)
-    const cookiesAfterPost = await context.cookies()
+    let cookiesAfterPost: Awaited<ReturnType<typeof context.cookies>> = []
+    try {
+      cookiesAfterPost = await context.cookies()
+    } catch (e) {
+      const msg = String(e)
+      if (msg.includes('Target page') || msg.includes('browser has been closed') || msg.includes('context has been destroyed') || msg.includes('Target closed')) {
+        session.status = 'error'
+        session.error  = 'Browser session closed unexpectedly. Please try reconnecting.'
+        return
+      }
+      throw e
+    }
     const liAtCookie = cookiesAfterPost.find(c => c.name === 'li_at' && c.value && c.value.length > 5)
 
     if (liAtCookie) {
