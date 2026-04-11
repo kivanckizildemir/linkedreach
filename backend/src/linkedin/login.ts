@@ -272,14 +272,12 @@ async function resolveBrowserEndpoint(accountId: string): Promise<string | null>
     const url = new URL(browserUrl)
     const baseUser = decodeURIComponent(url.username)
 
-    // Don't double-append if country is already in the URL (e.g. set directly in env var)
-    if (!baseUser.includes('-country-')) {
-      url.username = encodeURIComponent(`${baseUser}-country-${country.toLowerCase()}`)
-      console.log(`[LOGIN DEBUG] BrightData country targeting applied: ${country}`)
-    } else {
-      const existingCountry = baseUser.match(/-country-(\w+)/)?.[1]
-      console.log(`[LOGIN DEBUG] BrightData country already in URL: ${existingCountry}`)
-    }
+    // Always apply the country from DB (or fallback env/default).
+    // Strip any -country-xx already in the env var so we never double-append
+    // and so the DB value always wins over whatever was hardcoded in the env var.
+    const userWithoutCountry = baseUser.replace(/-country-[a-z]{2,3}/gi, '')
+    url.username = encodeURIComponent(`${userWithoutCountry}-country-${country.toLowerCase()}`)
+    console.log(`[LOGIN DEBUG] BrightData country targeting applied: ${country} (base user: ${userWithoutCountry})`)
 
     console.log(`[LOGIN DEBUG] BrightData endpoint username: ${decodeURIComponent(url.username).replace(/:.*/, '')}`)
     return url.toString()
@@ -346,9 +344,11 @@ async function resolveProxy(accountId: string): Promise<
         .single()
       country = (proxyRow as { country?: string | null } | null)?.country ?? null
     }
-    const username = baseUsername && country
-      ? `${baseUsername}-country-${country.toLowerCase()}`
-      : baseUsername
+    // Strip any -country-xx already baked into the env var username so the DB value wins.
+    const baseUsernameClean = baseUsername?.replace(/-country-[a-z]{2,3}/gi, '')
+    const username = baseUsernameClean && country
+      ? `${baseUsernameClean}-country-${country.toLowerCase()}`
+      : baseUsernameClean
     // BrightData: port 33335 is SSL-only and Chromium doesn't support
     // SSL proxy servers. Always connect via the plain HTTP port 22225.
     const proxyPort = host.includes('superproxy.io') ? '22225' : port
