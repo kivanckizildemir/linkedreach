@@ -603,23 +603,21 @@ async function runLogin(key: string, email: string, password: string): Promise<v
         await page.goto('https://www.linkedin.com', { waitUntil: 'domcontentloaded', timeout: 45_000 })
         await DELAY(2_000)
 
-        // Accept the consent banner — wait up to 6s for it to appear
-        const CONSENT_SELECTORS = [
+        // Accept the consent banner — wait up to 6s for ANY accept button to appear.
+        // Use a single combined selector so all candidates race in parallel (no sequential timeouts).
+        const CONSENT_COMBINED = [
           'button[action-type="ACCEPT"]',
           'button[data-tracking-control-name="cookie_policy_banner_accept"]',
           '#artdeco-global-alert-action--accept',
           'button.artdeco-global-alert__action',
           'button[data-control-name="accept"]',
-        ]
+        ].join(', ')
         let consentClicked = false
-        for (const sel of CONSENT_SELECTORS) {
-          const btn = await page.waitForSelector(sel, { timeout: 6_000 }).catch(() => null)
-          if (btn) {
-            console.log(`[LOGIN DEBUG] Clicking consent Accept via: ${sel}`)
-            await btn.click().catch(() => {})
-            consentClicked = true
-            break
-          }
+        const consentBtn = await page.waitForSelector(CONSENT_COMBINED, { timeout: 6_000 }).catch(() => null)
+        if (consentBtn) {
+          console.log('[LOGIN DEBUG] Clicking consent Accept button')
+          await consentBtn.click().catch(() => {})
+          consentClicked = true
         }
 
         // Fallback: language-agnostic text search
