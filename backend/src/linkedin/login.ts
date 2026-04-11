@@ -1395,6 +1395,16 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       }
 
       // Push notification (mobile app approval) or unknown challenge.
+      // Strategy: try to switch to email/SMS code FIRST (avoids push notification dependency).
+      // If switching fails (no alt button found), fall back to push poll.
+      console.log('[LOGIN DEBUG] Push challenge — trying email/SMS alt verification first')
+      const altSwitchedEarly = await switchToAltVerification(page, session)
+      if (altSwitchedEarly && session.status === 'needs_verification') {
+        console.log('[LOGIN DEBUG] Switched to alt verification immediately — returning needs_verification')
+        return
+      }
+
+      // Alt switch didn't work — trigger push notification and poll for approval.
       // Click the primary action button ONCE to trigger the push notification.
       // Then stay on the page and poll — do NOT navigate away (causes tooManyAttempts).
       try {
@@ -1541,8 +1551,8 @@ async function runLogin(key: string, email: string, password: string): Promise<v
             // PIN exists but hidden — part of push challenge page DOM, ignore it
           }
 
-          // After ~90 s with no approval, switch to email/SMS code
-          if (!altSwitchDone && pollCount >= 90) {
+          // After ~20 s with no approval, switch to email/SMS code
+          if (!altSwitchDone && pollCount >= 20) {
             console.log(`[LOGIN DEBUG] push poll #${pollCount}: 90s elapsed, attempting to switch to alt verification (SMS/email code)`)
             altSwitchDone = true
             const switched = await switchToAltVerification(page, session)
