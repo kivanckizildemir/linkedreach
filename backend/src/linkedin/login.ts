@@ -1168,28 +1168,46 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     await captureSnap('pre-submit')
 
     // Step 3: Submit the form.
-    // In CDP mode (BrightData), keyboard.press('Enter') is blocked on password fields.
-    // If we fell through to Strategy C (evaluate injection), the password value lives only in the
-    // raw DOM — LinkedIn's JS event handlers may not have seen it, so button.click() goes through
-    // their JS pipeline and submits with an empty password.
-    // form.submit() bypasses all JS handlers and POSTs raw DOM field values directly — exactly
-    // what we need when we've injected the value via the native setter.
     const preSubmitUrl = page.url()
     if (usingCDP) {
-      console.log('[LOGIN DEBUG] CDP mode: submitting via form.submit() to send raw DOM values')
-      const formSubmitted = await page.evaluate(() => {
+      // BrightData CDP mode — form.submit() causes a page navigation which closes the CDP WebSocket
+      // session before Playwright can read cookies. Instead, use fetch() from within the page context:
+      // fetch POSTs the credentials without navigating the page, LinkedIn sets li_at via Set-Cookie
+      // response headers (the browser's cookie jar is updated automatically), and the session stays live.
+      console.log('[LOGIN DEBUG] CDP mode: submitting via fetch() to avoid page navigation')
+      const fetchResult = await page.evaluate(async () => {
         const form = document.querySelector('form') as HTMLFormElement | null
-        if (!form) return false
-        // Log what values the form has before submit (for debugging, non-sensitive)
-        const passEl = form.querySelector('#password, input[name="session_password"], input[type="password"]') as HTMLInputElement | null
-        const passLen = passEl?.value?.length ?? 0
-        const emailEl = form.querySelector('#username, input[name="session_key"]') as HTMLInputElement | null
-        const emailVal = emailEl?.value ?? ''
-        console.log(`[form.submit] email=${emailVal.substring(0,20)} pass_len=${passLen}`)
-        form.submit()
-        return true
+        if (!form) return { ok: false, reason: 'no-form', status: 0, finalUrl: '' }
+
+        // Collect all form field values (hidden inputs + visible fields)
+        const data = new URLSearchParams()
+        const inputs = form.querySelectorAll('input, select, textarea') as NodeListOf<HTMLInputElement>
+        inputs.forEach(el => {
+          if (el.name && el.type !== 'submit' && el.type !== 'button') {
+            data.append(el.name, el.value)
+          }
+        })
+
+        const action = form.action || '/checkpoint/lg/login-submit?loginSubmitSource=GUEST_HOME_PAGE'
+        console.log(`[fetch-submit] action=${action} pass_len=${(data.get('session_password') ?? '').length} email=${(data.get('session_key') ?? '').substring(0, 20)}`)
+
+        try {
+          const resp = await fetch(action, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: data.toString(),
+            credentials: 'include',
+            redirect: 'follow',
+          })
+          return { ok: resp.ok, status: resp.status, finalUrl: resp.url, reason: 'ok' }
+        } catch (e) {
+          return { ok: false, reason: String(e).substring(0, 100), status: 0, finalUrl: '' }
+        }
       })
-      console.log(`[LOGIN DEBUG] form.submit() dispatched=${formSubmitted}`)
+      console.log(`[LOGIN DEBUG] fetch-submit: ok=${fetchResult.ok} status=${fetchResult.status} finalUrl=${fetchResult.finalUrl?.substring(0, 80)} reason=${fetchResult.reason}`)
+
+      // After fetch, allow a moment for Set-Cookie headers to propagate into the browser jar
+      await DELAY(1_000)
     } else {
       const submitBtn = await page.$(
         'button[type="submit"], .btn__primary--large, ' +
@@ -1213,16 +1231,16 @@ async function runLogin(key: string, email: string, password: string): Promise<v
           await page.keyboard.press('Enter')
         }
       }
-    }
 
-    // Wait for navigation away from the login page
-    try {
-      await page.waitForURL(
-        (u) => !String(u).includes('/login') || String(u).includes('/checkpoint') || String(u).includes('/challenge'),
-        { timeout: 15_000, waitUntil: 'domcontentloaded' }
-      )
-    } catch {
-      console.log('[LOGIN DEBUG] waitForURL timed out after submit — checking page state anyway')
+      // Wait for navigation away from the login page
+      try {
+        await page.waitForURL(
+          (u) => !String(u).includes('/login') || String(u).includes('/checkpoint') || String(u).includes('/challenge'),
+          { timeout: 15_000, waitUntil: 'domcontentloaded' }
+        )
+      } catch {
+        console.log('[LOGIN DEBUG] waitForURL timed out after submit — checking page state anyway')
+      }
     }
     await DELAY(500)
     await captureSnap('post-submit')
