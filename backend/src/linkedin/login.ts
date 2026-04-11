@@ -1559,14 +1559,26 @@ async function runLogin(key: string, email: string, password: string): Promise<v
             if (switched && session.status === 'needs_verification') return
           }
         } catch (pollErr) {
-          console.log(`[LOGIN DEBUG] push poll #${pollCount}: caught error — ${String(pollErr).substring(0, 120)}`)
+          const errMsg = String(pollErr)
+          console.log(`[LOGIN DEBUG] push poll #${pollCount}: caught error — ${errMsg.substring(0, 120)}`)
+          if (
+            errMsg.includes('Target page, context or browser has been closed') ||
+            errMsg.includes('browser has been closed') ||
+            errMsg.includes('context has been destroyed') ||
+            errMsg.includes('Target closed')
+          ) {
+            console.log(`[LOGIN DEBUG] push poll: browser/context closed unexpectedly — aborting poll`)
+            session.status = 'error'
+            session.error  = 'Browser session closed unexpectedly. Please try reconnecting.'
+            return
+          }
         }
       }
 
       console.log(`[LOGIN DEBUG] push poll: ⏰ 3-minute deadline expired without approval`)
       session.status = 'error'
       session.error  = 'Verification not completed within 3 minutes. Please try again.'
-      await browser.close()
+      await browser.close().catch(() => {})
       return
     }
 
