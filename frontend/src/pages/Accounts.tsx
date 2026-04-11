@@ -12,11 +12,8 @@ import {
   verifyConnectCode,
   testHealthCheck,
   requestVerificationCode,
-  startManualSession,
-  interactWithSession,
   type LinkedInAccount,
 } from '../api/accounts'
-import { apiFetch } from '../lib/fetchJson'
 import {
   fetchProxies,
   addProxy,
@@ -103,7 +100,7 @@ export function Accounts() {
   const { user } = useAuth()
   const [tab, setTab] = useState<PageTab>('accounts')
   const [showAddAccount, setShowAddAccount] = useState(false)
-  const [sessionAccountId, setSessionAccountId] = useState<string | null>(null)
+  const [sessionAccount, setSessionAccount] = useState<LinkedInAccount | null>(null)
   const [healthResults, setHealthResults] = useState<Record<string, { ok: boolean; message: string } | 'loading'>>({})
   const [expandedSenderId, setExpandedSenderId] = useState<string | null>(null)
   const queryClient = useQueryClient()
@@ -150,7 +147,7 @@ export function Accounts() {
       void queryClient.invalidateQueries({ queryKey: ['accounts'] })
       setShowAddAccount(false)
       // Auto-open connect modal so user goes straight from Add → Connect
-      setSessionAccountId(newAccount.id)
+      setSessionAccount(newAccount)
     },
   })
 
@@ -457,7 +454,7 @@ export function Accounts() {
                                 </button>
                               )}
                               <button
-                                onClick={() => setSessionAccountId(account.id)}
+                                onClick={() => setSessionAccount(account)}
                                 className="text-xs text-indigo-700 hover:underline font-medium"
                               >
                                 Connect
@@ -611,13 +608,12 @@ export function Accounts() {
         />
       )}
 
-      {sessionAccountId && (
+      {sessionAccount && (
         <ConnectModal
-          accountId={sessionAccountId}
-          isExtensionOnline={user ? extensionOnlineUsers.has(user.id) : false}
-          onClose={() => setSessionAccountId(null)}
+          account={sessionAccount}
+          onClose={() => setSessionAccount(null)}
           onSaved={() => {
-            setSessionAccountId(null)
+            setSessionAccount(null)
             void queryClient.invalidateQueries({ queryKey: ['accounts'] })
           }}
         />
@@ -969,151 +965,48 @@ function AddProxyModal({
 // ── Connect Modal ─────────────────────────────────────────────────────────────
 // Credentials-only login: email + password (+ optional TOTP secret)
 
-type ConnectStep = 'form' | 'connecting' | 'push' | 'verify' | 'done' | 'error' | 'manual' | 'paste'
+type ConnectStep = 'form' | 'connecting' | 'push' | 'verify' | 'done' | 'error'
 
 export function ConnectModal({
-  accountId,
+  account,
   onClose,
   onSaved,
 }: {
-  accountId: string
-  isExtensionOnline?: boolean  // kept for call-site compatibility, not used
+  account: LinkedInAccount
   onClose: () => void
   onSaved: () => void
 }) {
-  const [step, setStep]           = useState<ConnectStep>('form')
+  const accountId = account.id
 
-  // credentials form
-  const [email, setEmail]         = useState('')
-  const [password, setPassword]   = useState('')
+  const [step, setStep]             = useState<ConnectStep>('form')
+  const [password, setPassword]     = useState('')
   const [totpSecret, setTotpSecret] = useState('')
-  const [showTotp, setShowTotp]   = useState(false)
-
-  // verify step
-  const [code, setCode]           = useState('')
-  const [hint, setHint]           = useState('')
+  const [showTotp, setShowTotp]     = useState(false)
+  const [code, setCode]             = useState('')
+  const [hint, setHint]             = useState('')
   const [sessionKey, setSessionKey] = useState('')
-  const [error, setError]         = useState('')
+  const [error, setError]           = useState('')
   const [requestingCode, setRequestingCode] = useState(false)
-  const [screenshotUrl, setScreenshotUrl]   = useState<string | null>(null)
-  const [liAt, setLiAt]                     = useState('')
-  const [pasteSaving, setPasteSaving]       = useState(false)
 
-  const pollRef           = useRef<ReturnType<typeof setInterval> | null>(null)
-  const screenshotPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const screenshotUrlRef  = useRef<string | null>(null)
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  // Cleanup polling on unmount
   useEffect(() => {
-    return () => {
-      if (pollRef.current)           { clearInterval(pollRef.current);           pollRef.current = null }
-      if (screenshotPollRef.current) { clearInterval(screenshotPollRef.current); screenshotPollRef.current = null }
-      if (screenshotUrlRef.current)  { URL.revokeObjectURL(screenshotUrlRef.current); screenshotUrlRef.current = null }
-    }
-  }, [])
-
-  // Auto-start the manual browser session as soon as the modal mounts
-  useEffect(() => {
-    void handleManualLogin()
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    return () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null } }
   }, [])
 
   function stopPolling() {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
   }
 
-  function stopScreenshotPolling() {
-    if (screenshotPollRef.current) { clearInterval(screenshotPollRef.current); screenshotPollRef.current = null }
-    if (screenshotUrlRef.current)  { URL.revokeObjectURL(screenshotUrlRef.current); screenshotUrlRef.current = null }
-  }
-
-  async function startScreenshotPolling(key: string) {
-    const fetchShot = async () => {
-      try {
-        const res = await apiFetch(`/api/accounts/${accountId}/connect-screenshot/${key}`)
-        if (!res.ok) return
-        const blob = await res.blob()
-        const url = URL.createObjectURL(blob)
-        if (screenshotUrlRef.current) URL.revokeObjectURL(screenshotUrlRef.current)
-        screenshotUrlRef.current = url
-        setScreenshotUrl(url)
-      } catch { /* ignore */ }
-    }
-    void fetchShot()
-    screenshotPollRef.current = setInterval(fetchShot, 1500)
-  }
-
-  async function handlePasteCookie(e: React.FormEvent) {
-    e.preventDefault()
-    const val = liAt.trim()
-    if (!val) return
-    setPasteSaving(true); setError('')
-    try {
-      const storageState = {
-        cookies: [{
-          name: 'li_at', value: val,
-          domain: '.linkedin.com', path: '/',
-          expires: -1, httpOnly: true, secure: true, sameSite: 'None' as const,
-        }],
-        origins: [],
-      }
-      await updateAccount(accountId, { cookies: JSON.stringify(storageState), status: 'active' })
-      setStep('done'); setTimeout(onSaved, 1500)
-    } catch (err) {
-      setError((err as Error).message)
-    } finally {
-      setPasteSaving(false)
-    }
-  }
-
-  async function handleManualLogin() {
-    setStep('connecting'); setError('')
-    try {
-      const result = await startManualSession(accountId)
-      setSessionKey(result.session_key)
-      setStep('manual')
-      void startScreenshotPolling(result.session_key)
-      startPolling(result.session_key)
-    } catch (err) {
-      setError((err as Error).message); setStep('error')
-    }
-  }
-
-  function handleManualClick(e: React.MouseEvent<HTMLImageElement>) {
-    if (!sessionKey) return
-    const img = e.currentTarget
-    const rect = img.getBoundingClientRect()
-    const x = Math.round((e.clientX - rect.left) * (1280 / rect.width))
-    const y = Math.round((e.clientY - rect.top)  * (800  / rect.height))
-    void interactWithSession(accountId, sessionKey, { type: 'click', x, y })
-  }
-
-  useEffect(() => {
-    if (step !== 'manual') return
-    const handleKey = (e: KeyboardEvent) => {
-      if (!sessionKey) return
-      const special = ['Enter','Tab','Backspace','Escape','ArrowUp','ArrowDown','ArrowLeft','ArrowRight']
-      if (special.includes(e.key)) {
-        if (e.key === 'Tab') e.preventDefault()
-        void interactWithSession(accountId, sessionKey, { type: 'key', key: e.key })
-      } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
-        void interactWithSession(accountId, sessionKey, { type: 'type', text: e.key })
-      }
-    }
-    window.addEventListener('keydown', handleKey)
-    return () => window.removeEventListener('keydown', handleKey)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step, sessionKey])
-
   async function handleStatusResult(s: Awaited<ReturnType<typeof getConnectStatus>>) {
     if (s.status === 'success') {
-      stopPolling(); stopScreenshotPolling(); setStep('done'); setTimeout(onSaved, 1500)
+      stopPolling(); setStep('done'); setTimeout(onSaved, 1500)
     } else if (s.status === 'needs_verification') {
-      stopPolling(); stopScreenshotPolling(); setHint(s.hint); setStep('verify')
+      stopPolling(); setHint(s.hint); setStep('verify')
     } else if (s.status === 'error') {
-      stopPolling(); stopScreenshotPolling(); setError(s.message); setStep('error')
+      stopPolling(); setError(s.message); setStep('error')
     } else if (s.status === 'not_found') {
-      stopPolling(); stopScreenshotPolling(); setError('Session expired. Please try again.'); setStep('error')
+      stopPolling(); setError('Session expired. Please try again.'); setStep('error')
     } else if (s.status === 'pending_push') {
       setHint(s.hint); setStep('push')
     }
@@ -1132,11 +1025,8 @@ export function ConnectModal({
     setStep('connecting'); setError('')
     try {
       const secret = totpSecret.trim() || undefined
-      const result = await connectAccount(accountId, email, password, secret)
+      const result = await connectAccount(accountId, account.linkedin_email, password, secret)
       setSessionKey(result.session_key)
-      // Stay on 'connecting' — polling will advance to 'push' or 'verify' when
-      // LinkedIn actually requests verification. Don't show "Check your phone"
-      // before the backend has even loaded the browser.
       startPolling(result.session_key)
     } catch (err) {
       setError((err as Error).message); setStep('error')
@@ -1178,23 +1068,16 @@ export function ConnectModal({
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className={`bg-white rounded-2xl shadow-xl w-full ${step === 'manual' ? 'max-w-3xl' : 'max-w-md'}`}>
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md">
 
         {/* Header */}
-        <div className="flex items-start justify-between px-6 py-4 border-b border-gray-100">
-          <div>
-            <h2 className="text-lg font-semibold text-gray-900">
-              {step === 'push'    ? 'Check your phone'
-               : step === 'verify' ? 'Enter verification code'
-               : step === 'paste'  ? 'Paste session cookie'
-               : step === 'form'   ? 'Sign in with credentials'
-               : 'Connect LinkedIn Account'}
-            </h2>
-            {(step === 'manual' || step === 'connecting') && (
-              <p className="text-xs text-gray-400 mt-0.5">Click the password field, then type — we detect login automatically</p>
-            )}
-          </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors mt-0.5">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+          <h2 className="text-lg font-semibold text-gray-900">
+            {step === 'push'    ? 'Check your phone'
+             : step === 'verify' ? 'Enter verification code'
+             : 'Connect LinkedIn Account'}
+          </h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors">
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
             </svg>
@@ -1206,19 +1089,31 @@ export function ConnectModal({
           {/* ── Credentials form ── */}
           {step === 'form' && (
             <form onSubmit={handleSignIn} className="space-y-4">
+              {/* Email — pre-filled, read-only */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1.5">LinkedIn email</label>
-                <input required type="email" autoFocus value={email} onChange={e => setEmail(e.target.value)}
-                  placeholder="you@linkedin.com"
-                  className="w-full px-3.5 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">Password</label>
-                <input required type="password" value={password} onChange={e => setPassword(e.target.value)}
-                  placeholder="••••••••"
-                  className="w-full px-3.5 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" />
+                <input
+                  type="email"
+                  readOnly
+                  value={account.linkedin_email}
+                  className="w-full px-3.5 py-2.5 border border-gray-200 rounded-xl text-sm bg-gray-50 text-gray-500 cursor-default"
+                />
               </div>
 
+              {/* Password */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">Password</label>
+                <input
+                  required autoFocus
+                  type="password"
+                  value={password}
+                  onChange={e => setPassword(e.target.value)}
+                  placeholder="••••••••"
+                  className="w-full px-3.5 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                />
+              </div>
+
+              {/* Optional 2FA secret */}
               <div>
                 <button type="button" onClick={() => setShowTotp(v => !v)}
                   className="flex items-center gap-1.5 text-xs text-gray-400 hover:text-gray-600 transition-colors">
@@ -1238,6 +1133,7 @@ export function ConnectModal({
               </div>
 
               {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-xl p-3">{error}</p>}
+
               <div className="flex gap-3 pt-1">
                 <button type="button" onClick={onClose}
                   className="flex-1 py-2.5 border border-gray-200 text-sm font-medium rounded-xl hover:bg-gray-50 transition-colors">
@@ -1246,16 +1142,6 @@ export function ConnectModal({
                 <button type="submit"
                   className="flex-1 py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-xl hover:bg-blue-700 transition-colors">
                   Sign in
-                </button>
-              </div>
-              <div className="border-t border-gray-100 pt-3 space-y-2 text-center">
-                <button type="button" onClick={() => setStep('paste')}
-                  className="block w-full text-xs text-gray-500 hover:text-blue-600 transition-colors hover:underline underline-offset-2">
-                  Already logged in on Chrome? Paste your li_at cookie →
-                </button>
-                <button type="button" onClick={handleManualLogin}
-                  className="block w-full text-xs text-gray-400 hover:text-blue-600 transition-colors hover:underline underline-offset-2">
-                  Or open a live browser window instead →
                 </button>
               </div>
             </form>
@@ -1269,8 +1155,8 @@ export function ConnectModal({
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
               </svg>
               <div className="text-center">
-                <p className="text-sm font-medium text-gray-700">Opening LinkedIn…</p>
-                <p className="text-xs text-gray-400 mt-1">Loading the login page, usually takes 5–10 seconds</p>
+                <p className="text-sm font-medium text-gray-700">Logging in to LinkedIn…</p>
+                <p className="text-xs text-gray-400 mt-1">This usually takes 10–20 seconds</p>
               </div>
             </div>
           )}
@@ -1306,6 +1192,7 @@ export function ConnectModal({
                   <p className="text-xs text-blue-800">{hint}</p>
                 </div>
               )}
+
               <button
                 type="button"
                 disabled={requestingCode}
@@ -1326,12 +1213,10 @@ export function ConnectModal({
                         } else if (statusNow.status === 'success') {
                           stopPolling(); setStep('done'); setTimeout(onSaved, 1500)
                         } else {
-                          // Move to code entry regardless — user may receive a code via any channel
                           stopPolling(); setStep('verify')
                         }
                       } catch { stopPolling(); setStep('verify') }
                     } else {
-                      // Error — still show code entry so user can type a code if they received one
                       stopPolling()
                       setHint('Enter any verification code LinkedIn sent to your email or phone.')
                       setStep('verify')
@@ -1343,7 +1228,7 @@ export function ConnectModal({
                   }
                 }}
                 className="w-full py-2 border border-gray-200 text-sm text-gray-500 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50">
-                {requestingCode ? 'Requesting…' : "No notification? Request a code via SMS instead"}
+                {requestingCode ? 'Requesting…' : 'No notification? Request a code via SMS instead'}
               </button>
               <button type="button" onClick={() => { stopPolling(); setStep('form') }}
                 className="w-full py-1.5 text-xs text-gray-400 hover:text-gray-600 transition-colors">
@@ -1385,88 +1270,6 @@ export function ConnectModal({
                 className="w-full py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-blue-700">
                 Try Again
               </button>
-            </div>
-          )}
-
-          {/* ── Paste li_at ── */}
-          {step === 'paste' && (
-            <form onSubmit={handlePasteCookie} className="space-y-4">
-              <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 space-y-2">
-                <p className="text-xs font-medium text-amber-900">Get your li_at cookie from Chrome:</p>
-                <ol className="text-xs text-amber-800 space-y-1 list-decimal list-inside">
-                  <li>Open LinkedIn in Chrome, press <kbd className="bg-amber-100 px-1 rounded font-mono">F12</kbd></li>
-                  <li>Go to <strong>Application</strong> → <strong>Cookies</strong> → <strong>https://www.linkedin.com</strong></li>
-                  <li>Find <strong>li_at</strong> → double-click its value → copy</li>
-                </ol>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">li_at value</label>
-                <textarea
-                  required autoFocus rows={4}
-                  value={liAt} onChange={e => setLiAt(e.target.value)}
-                  placeholder="AQEDATxxxxxxxx..."
-                  className="w-full px-3.5 py-2.5 border border-gray-300 rounded-xl text-xs font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
-                />
-              </div>
-              {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-xl p-3">{error}</p>}
-              <div className="flex gap-3">
-                <button type="button" onClick={() => { setStep('form'); setError('') }}
-                  className="flex-1 py-2.5 border border-gray-200 text-sm font-medium rounded-xl hover:bg-gray-50 transition-colors">
-                  Back
-                </button>
-                <button type="submit" disabled={pasteSaving}
-                  className="flex-1 py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-xl hover:bg-blue-700 transition-colors disabled:opacity-50">
-                  {pasteSaving ? 'Saving…' : 'Save Session'}
-                </button>
-              </div>
-            </form>
-          )}
-
-          {/* ── Manual browser (primary connect flow) ── */}
-          {step === 'manual' && (
-            <div className="space-y-3">
-              {screenshotUrl ? (
-                <div
-                  className="relative rounded-xl overflow-hidden border border-gray-200 cursor-pointer select-none"
-                  style={{ aspectRatio: '1280/800' }}
-                  tabIndex={0}
-                >
-                  <img
-                    src={screenshotUrl}
-                    alt="LinkedIn login"
-                    className="w-full h-full block"
-                    onClick={handleManualClick}
-                    draggable={false}
-                  />
-                </div>
-              ) : (
-                <div className="flex items-center justify-center rounded-xl border border-gray-100 bg-gray-50" style={{ aspectRatio: '1280/800' }}>
-                  <div className="text-center space-y-2">
-                    <svg className="w-6 h-6 animate-spin text-blue-500 mx-auto" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-                    </svg>
-                    <p className="text-xs text-gray-400">Opening LinkedIn…</p>
-                  </div>
-                </div>
-              )}
-
-              <div className="flex items-center justify-between pt-1">
-                <button type="button" onClick={onClose}
-                  className="text-xs text-gray-400 hover:text-gray-600 transition-colors">
-                  Cancel
-                </button>
-                <div className="flex items-center gap-3">
-                  <button type="button" onClick={() => { stopPolling(); stopScreenshotPolling(); setStep('paste') }}
-                    className="text-xs text-gray-400 hover:text-blue-600 transition-colors hover:underline underline-offset-2">
-                    Paste li_at cookie
-                  </button>
-                  <button type="button" onClick={() => { stopPolling(); stopScreenshotPolling(); setStep('form') }}
-                    className="text-xs text-gray-400 hover:text-blue-600 transition-colors hover:underline underline-offset-2">
-                    Use credentials form
-                  </button>
-                </div>
-              </div>
             </div>
           )}
 
