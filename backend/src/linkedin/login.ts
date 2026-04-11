@@ -387,10 +387,10 @@ async function runLogin(key: string, email: string, password: string): Promise<v
 
   let browser: Browser | undefined
   try {
-    // Use local Chromium + nsocks/HTTP proxy for login (not BrightData Scraping Browser).
-    // Scraping Browser blocks password typing and form submit. Local Chromium with a residential/ISP
-    // proxy gives a non-datacenter IP without any interaction restrictions.
-    const browserEndpoint = null
+    // Use BrightData Scraping Browser for login — it's the only thing that loads LinkedIn
+    // reliably from Railway. CDP password typing is blocked, but page.route() interception
+    // is NOT blocked — we inject the password directly into the login-submit POST body.
+    const browserEndpoint = await resolveBrowserEndpoint(session.accountId)
 
     let context: BrowserContext
 
