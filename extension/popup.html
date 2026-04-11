@@ -97,6 +97,50 @@
       margin-bottom: 18px;
     }
 
+    .link-method-box {
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      border-radius: 10px;
+      padding: 14px;
+      margin-bottom: 14px;
+    }
+
+    .link-method-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: #1e40af;
+      margin-bottom: 4px;
+    }
+
+    .link-method-steps {
+      font-size: 12px;
+      color: #1e40af;
+      line-height: 1.6;
+      margin-bottom: 10px;
+    }
+
+    .link-method-steps span {
+      display: block;
+    }
+
+    .manual-toggle {
+      font-size: 11px;
+      color: #6b7280;
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 0;
+      text-decoration: underline;
+      text-underline-offset: 2px;
+      width: 100%;
+      text-align: center;
+      margin-top: 4px;
+    }
+    .manual-toggle:hover { color: #374151; }
+
+    #manual-login-form { display: none; }
+    #manual-login-form.visible { display: block; }
+
     .form-group { margin-bottom: 12px; }
 
     .form-label {
@@ -386,20 +430,41 @@
   <!-- ── Login screen ───────────────────────────────────────────────────────── -->
   <div id="screen-login" class="screen">
     <div style="padding: 20px 16px;">
-      <div class="login-title">Sign in to LinkedReach</div>
-      <div class="login-sub">Use your LinkedReach account credentials</div>
-      <form id="login-form" autocomplete="on">
-        <div class="form-group">
-          <label class="form-label" for="login-email">Email</label>
-          <input id="login-email" class="form-input" type="email" placeholder="you@example.com" autocomplete="email" required />
+      <div class="login-title">Connect Extension</div>
+      <div class="login-sub">Link the extension to your LinkedReach account</div>
+
+      <!-- Primary: one-click via web app -->
+      <div class="link-method-box">
+        <div class="link-method-title">⚡ One-click setup (recommended)</div>
+        <div class="link-method-steps">
+          <span>1. Open the LinkedReach web app</span>
+          <span>2. Click <strong>"Link Extension"</strong> in the sidebar</span>
+          <span>3. Done — no password needed here</span>
         </div>
-        <div class="form-group">
-          <label class="form-label" for="login-password">Password</label>
-          <input id="login-password" class="form-input" type="password" placeholder="••••••••" autocomplete="current-password" required />
-        </div>
-        <div id="login-error" class="msg-box msg-error" style="display:none; margin-bottom:10px;"></div>
-        <button type="submit" class="btn btn-primary" id="login-btn">Sign In</button>
-      </form>
+        <button class="btn btn-primary" id="btn-open-webapp">
+          <svg width="13" height="13" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+          Open LinkedReach
+        </button>
+      </div>
+
+      <!-- Secondary: email/password toggle -->
+      <button class="manual-toggle" id="btn-manual-toggle">Sign in with email &amp; password instead</button>
+
+      <div id="manual-login-form">
+        <hr style="border:none;border-top:1px solid #f3f4f6;margin:14px 0;" />
+        <form id="login-form" autocomplete="on">
+          <div class="form-group">
+            <label class="form-label" for="login-email">Email</label>
+            <input id="login-email" class="form-input" type="email" placeholder="you@example.com" autocomplete="email" />
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="login-password">Password</label>
+            <input id="login-password" class="form-input" type="password" placeholder="••••••••" autocomplete="current-password" />
+          </div>
+          <div id="login-error" class="msg-box msg-error" style="display:none; margin-bottom:10px;"></div>
+          <button type="submit" class="btn btn-primary" id="login-btn">Sign In</button>
+        </form>
+      </div>
     </div>
   </div>
 
@@ -449,7 +514,7 @@
   </div>
 
   <div class="footer">
-    <a href="https://linkedreach.netlify.app" target="_blank">Open LinkedReach</a>
+    <a href="https://linkedreach.pages.dev" target="_blank">Open LinkedReach</a>
   </div>
 
   <script src="popup.js"></script>

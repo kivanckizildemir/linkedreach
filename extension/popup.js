@@ -247,8 +247,24 @@ async function init() {
 }
 
 
-// ── Login form ────────────────────────────────────────────────────────────────
+// ── Login screen ──────────────────────────────────────────────────────────────
 
+const WEB_APP_URL = 'https://linkedreach.pages.dev'
+
+// "Open LinkedReach" button — opens the web app so the user can click "Link Extension"
+document.getElementById('btn-open-webapp').addEventListener('click', () => {
+  chrome.tabs.create({ url: WEB_APP_URL })
+})
+
+// Toggle the manual email/password form
+document.getElementById('btn-manual-toggle').addEventListener('click', () => {
+  const form = document.getElementById('manual-login-form')
+  const btn  = document.getElementById('btn-manual-toggle')
+  const visible = form.classList.toggle('visible')
+  btn.textContent = visible ? 'Hide manual sign in' : 'Sign in with email & password instead'
+})
+
+// Manual login form submit
 document.getElementById('login-form').addEventListener('submit', async (e) => {
   e.preventDefault()
   const email = document.getElementById('login-email').value.trim()

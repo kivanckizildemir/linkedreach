@@ -91,8 +91,9 @@ async function handle(msg, sender) {
   switch (msg.type) {
 
     case 'LOGIN': {
-      const { backend } = await getConfig()
-      const res = await fetch(backend + '/api/auth/token', {
+      // Always use DEFAULT_BACKEND for auth — lr_backend is only for API calls
+      // after login, so a stale localhost setting never breaks login.
+      const res = await fetch(DEFAULT_BACKEND + '/api/auth/token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: msg.email, password: msg.password }),
