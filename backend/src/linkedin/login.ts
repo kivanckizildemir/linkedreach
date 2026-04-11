@@ -204,7 +204,7 @@ async function checkFeedForApproval(
   const challengeUrl = session.challengeUrl || page.url()
   try {
     console.log('[LOGIN DEBUG] checkFeed: navigating to /feed/')
-    await page.goto('https://www.linkedin.com/feed/', { waitUntil: 'domcontentloaded', timeout: 12_000 })
+    await page.goto('https://www.linkedin.com/feed/', { waitUntil: 'domcontentloaded', timeout: 8_000 })
     const cookies = await context.cookies()
     if (cookies.find(c => c.name === 'li_at')) {
       await saveCookies(context, session.accountId)
@@ -473,21 +473,22 @@ async function runLogin(key: string, email: string, password: string): Promise<v
         Object.defineProperty(navigator, 'deviceMemory',        { get: () => 8 })
 
         // 3. Realistic plugin list (empty plugins list = headless signal)
-        const makePlugin = (name: string, filename: string, desc: string, mimeTypes: string[]) => {
+        // Inline factory to avoid named arrow function that tsx/esbuild wraps with __name()
+        const plugins = [
+          ['PDF Viewer', 'internal-pdf-viewer', 'Portable Document Format', ['application/pdf', 'text/pdf']],
+          ['Chrome PDF Viewer', 'internal-pdf-viewer', '', ['application/pdf']],
+          ['Chromium PDF Viewer', 'internal-pdf-viewer', '', ['application/pdf']],
+          ['Microsoft Edge PDF Viewer', 'internal-pdf-viewer', '', ['application/pdf']],
+          ['WebKit built-in PDF', 'internal-pdf-viewer', '', ['application/pdf']],
+        ].map((args: unknown[]) => {
+          const [name, filename, desc, mimeTypes] = args as [string, string, string, string[]]
           const plugin = { name, filename, description: desc, length: mimeTypes.length } as unknown as Plugin
           mimeTypes.forEach((m, i) => {
             const mt = { type: m, suffixes: '', description: '', enabledPlugin: plugin } as unknown as MimeType
             ;(plugin as unknown as Record<string, unknown>)[i] = mt
           })
           return plugin
-        }
-        const plugins = [
-          makePlugin('PDF Viewer', 'internal-pdf-viewer', 'Portable Document Format', ['application/pdf', 'text/pdf']),
-          makePlugin('Chrome PDF Viewer', 'internal-pdf-viewer', '', ['application/pdf']),
-          makePlugin('Chromium PDF Viewer', 'internal-pdf-viewer', '', ['application/pdf']),
-          makePlugin('Microsoft Edge PDF Viewer', 'internal-pdf-viewer', '', ['application/pdf']),
-          makePlugin('WebKit built-in PDF', 'internal-pdf-viewer', '', ['application/pdf']),
-        ]
+        })
         Object.defineProperty(navigator, 'plugins', {
           get: () => Object.assign(plugins, { item: (i: number) => plugins[i], namedItem: (n: string) => plugins.find(p => p.name === n) ?? null, refresh: () => {} })
         })
@@ -847,27 +848,24 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     // LinkedIn's newer SPA uses Shadow DOM / web components, so document.querySelector
     // may not find inputs. We use a deep search that traverses shadow roots.
     const formFields = await page.evaluate((args: { emailVal: string }) => {
-      // Helper: collect all inputs from the entire DOM including shadow roots
-      const collectInputs = (root: Document | ShadowRoot | Element): HTMLInputElement[] => {
-        const inputs: HTMLInputElement[] = []
-        const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT)
-        let node = walker.currentNode as Element
-        while (node) {
-          if (node.tagName === 'INPUT') {
-            inputs.push(node as HTMLInputElement)
-          }
-          // Check shadow DOM
-          if (node.shadowRoot) {
-            inputs.push(...collectInputs(node.shadowRoot))
-          }
-          node = walker.nextNode() as Element
-          if (!node) break
-        }
-        return inputs
-      }
-
       try {
-        const allInputs = collectInputs(document)
+        // Collect all inputs from the entire DOM including shadow roots.
+        // Uses a stack-based BFS to avoid named recursive functions
+        // (tsx/esbuild injects __name() for named arrow functions which
+        //  breaks page.evaluate since that helper isn't in the browser context).
+        const allInputs: HTMLInputElement[] = []
+        const roots: (Document | ShadowRoot | Element)[] = [document]
+        while (roots.length > 0) {
+          const root = roots.pop()!
+          const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT)
+          let node = walker.currentNode as Element
+          while (node) {
+            if (node.tagName === 'INPUT') allInputs.push(node as HTMLInputElement)
+            if (node.shadowRoot) roots.push(node.shadowRoot)
+            node = walker.nextNode() as Element
+            if (!node) break
+          }
+        }
 
         // Find CSRF input first — it's the best anchor
         const csrfInput = allInputs.find(i => i.name === 'loginCsrfParam' || i.name === 'csrfToken')
@@ -962,9 +960,35 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     // Step 2: Type credentials into the form fields with human-like delays.
     // page.type() fires real keyboard events — LinkedIn's JS tracks these for bot detection.
     const passSelector = '#password, input[name="session_password"], input[type="password"]'
-    await page.waitForSelector(passSelector, { timeout: 10_000 }).catch(() => {
-      console.log('[LOGIN DEBUG] Password field not visible via waitForSelector')
-    })
+    const passExists = await page.waitForSelector(passSelector, { timeout: 10_000 }).catch(() => null)
+    if (!passExists) {
+      console.log('[LOGIN DEBUG] Password field not visible — proxy may have triggered email-only form. Retrying with /uas/login…')
+      // /uas/login is LinkedIn's legacy login page that always renders both email + password fields.
+      // The SDUI/React form (/login) sometimes shows only the email field for flagged proxy IPs.
+      await page.goto('https://www.linkedin.com/uas/login', { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => {})
+      await DELAY(2000)
+      // Re-find the email field on the new page
+      for (const sel of EMAIL_SELECTORS) {
+        try {
+          const el = await page.$(sel)
+          if (el) { emailSelector = sel; break }
+        } catch { /* try next */ }
+      }
+      console.log(`[LOGIN DEBUG] /uas/login — email selector: ${emailSelector} url: ${page.url()}`)
+      // Clear and re-fill email on the new page
+      try {
+        await page.click(emailSelector, { noWaitAfter: true, force: true, timeout: 5_000 }).catch(() => {})
+        await page.keyboard.press('Control+A')
+        await page.keyboard.press('Delete')
+        await page.keyboard.type(email, { delay: 30 + Math.floor(Math.random() * 30) })
+      } catch { /* ok */ }
+      // Wait again for password field on the new page
+      await page.waitForSelector(passSelector, { timeout: 10_000 }).catch(() => {
+        console.log('[LOGIN DEBUG] Password field still not visible on /uas/login')
+      })
+    } else {
+      console.log('[LOGIN DEBUG] Password field found ✓')
+    }
 
     await dismissBanners()
 
@@ -1017,7 +1041,7 @@ async function runLogin(key: string, email: string, password: string): Promise<v
         await page.click(selector, { noWaitAfter: true, force: true, timeout: 8_000 }).catch(() => {})
         await page.keyboard.press('Control+A')
         await page.keyboard.press('Delete')
-        await page.keyboard.type(value, { delay: 55 + Math.floor(Math.random() * 70) })
+        await page.keyboard.type(value, { delay: 30 + Math.floor(Math.random() * 30) })
       }
     }
 
@@ -1051,10 +1075,10 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     }
 
     await fillField(emailSelector, email)
-    await DELAY(400 + Math.random() * 500)
+    await DELAY(150 + Math.random() * 150)
 
     await fillField(passSelector, password)
-    await DELAY(300 + Math.random() * 400)
+    await DELAY(150 + Math.random() * 150)
 
     await captureSnap('pre-submit')
 
@@ -1088,12 +1112,12 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     try {
       await page.waitForURL(
         (u) => !String(u).includes('/login') || String(u).includes('/checkpoint') || String(u).includes('/challenge'),
-        { timeout: 25_000, waitUntil: 'domcontentloaded' }
+        { timeout: 15_000, waitUntil: 'domcontentloaded' }
       )
     } catch {
       console.log('[LOGIN DEBUG] waitForURL timed out after submit — checking page state anyway')
     }
-    await DELAY(1500)
+    await DELAY(500)
     await captureSnap('post-submit')
 
     // Map browser state into the variable names used by the rest of this function
@@ -1161,9 +1185,9 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       let postNavUrl = page.url()
       let postNavText = ''
       try {
-        await page.waitForLoadState('networkidle', { timeout: 15_000 })
+        await page.waitForLoadState('networkidle', { timeout: 8_000 })
       } catch { /* ok — some challenges never reach networkidle */ }
-      await DELAY(3_000) // extra buffer for any lazy-loaded challenge widgets
+      await DELAY(1_000) // extra buffer for any lazy-loaded challenge widgets
       postNavUrl = page.url()
       postNavText = await page.evaluate(() => (document.body?.innerText ?? '').substring(0, 600)).catch(() => '') as string
       console.log('[LOGIN DEBUG] Challenge rendered. URL:', postNavUrl)
@@ -1269,7 +1293,10 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       const isAppPush = textLower.includes('approve') || textLower.includes('tap') || textLower.includes('notification') || postNavText.length < 30
 
       // Auto-click "Send verification code" if visible (email/phone OTP challenge)
-      if (!hasPinInputNow && (isEmailChallenge || isPhoneChallenge)) {
+      // IMPORTANT: skip this if push notification is the primary flow — the challenge page
+      // always shows "Verify using SMS" as a fallback option, which makes isPhoneChallenge=true
+      // even when push is active. Clicking SMS here would switch away from push prematurely.
+      if (!hasPinInputNow && !isAppPush && (isEmailChallenge || isPhoneChallenge)) {
         for (const btnSel of [
           'button[data-litms-control-urn="challenge|primary-action"]',
           'button.primary-action-new',
@@ -1297,10 +1324,15 @@ async function runLogin(key: string, email: string, password: string): Promise<v
         postNavText = await page.evaluate(() => (document.body?.innerText ?? '').substring(0, 500)).catch(() => '') as string
       }
 
-      // Check again for PIN input after potential button click
-      const hasPinAfterClick = !!(await page.$(
-        'input#input__email_verification_pin, input[name="pin"], input#input__phone_verification_pin, input[id*="verification"], input[name*="verification"]'
-      ).catch(() => null))
+      // Check again for PIN input after potential button click.
+      // Use ONLY specific selectors and require the field to be VISIBLE —
+      // LinkedIn's challenge page has many hidden inputs with "verification" in
+      // their name/id that would otherwise create false positives here.
+      const pinElAfterClick = await page.$(
+        'input#input__email_verification_pin, input[name="pin"], input#input__phone_verification_pin'
+      ).catch(() => null)
+      const hasPinAfterClick = !!(pinElAfterClick && await pinElAfterClick.isVisible().catch(() => false))
+      console.log(`[LOGIN DEBUG] hasPinAfterClick=${hasPinAfterClick} isAppPush=${isAppPush} isEmailChallenge=${isEmailChallenge} isPhoneChallenge=${isPhoneChallenge}`)
 
       await supabase.from('linkedin_accounts').update({
         debug_log: {
@@ -1351,8 +1383,11 @@ async function runLogin(key: string, email: string, password: string): Promise<v
         return
       }
 
-      if (isEmailChallenge || isPhoneChallenge) {
-        // We clicked send but PIN input not visible yet — set needs_verification
+      if (!isAppPush && (isEmailChallenge || isPhoneChallenge)) {
+        // We clicked send but PIN input not visible yet — set needs_verification.
+        // Skip this if push is the primary flow — "Verify using SMS" is always present
+        // as a fallback option on push challenge pages, making isPhoneChallenge=true even
+        // when push notification is the intended path.
         const dest = isEmailChallenge ? 'your email inbox' : 'your phone via SMS'
         session.status = 'needs_verification'
         session.hint   = `LinkedIn sent a verification code to ${dest}. Enter it in the app to complete sign-in.`
@@ -1393,24 +1428,49 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       const PUSH_DEADLINE = Date.now() + 3 * 60 * 1000
       let pollCount = 0
       let altSwitchDone = false
+      console.log(`[LOGIN DEBUG] ── push poll START ── challenge URL: ${session.challengeUrl}`)
+      console.log(`[LOGIN DEBUG] ── push poll: waiting for LinkedIn app approval (primary: cookie check every 1s, /feed/ fallback every 20s)`)
 
       while (Date.now() < PUSH_DEADLINE) {
-        await DELAY(2_000)
+        await DELAY(1_000)
         pollCount++
+        const remainSec = Math.round((PUSH_DEADLINE - Date.now()) / 1000)
         try {
-          // Every 5 polls (~10 s) — or immediately if signalled — actively check /feed/
-          // This is the primary approval detection when the challenge page's own JS is
-          // blocked by the proxy and cannot auto-redirect.
-          if (session.checkNow || pollCount % 5 === 0) {
+          // Instant check — no navigation needed
+          const instantCookies = await context.cookies()
+          const liAt = instantCookies.find(c => c.name === 'li_at' && c.value && c.value.length > 10)
+          if (liAt) {
+            console.log(`[LOGIN DEBUG] push poll #${pollCount}: ✅ li_at cookie appeared → SUCCESS`)
+            await saveCookies(context, session.accountId)
+            session.status = 'success'
+            await browser.close()
+            return
+          }
+
+          // Log every 5s so we can see it's alive
+          if (pollCount % 5 === 0) {
+            const currentUrl = page.url()
+            const cookieNames = instantCookies.map(c => c.name).join(', ')
+            console.log(`[LOGIN DEBUG] push poll #${pollCount} | ${remainSec}s left | url=${currentUrl.substring(0, 80)} | cookies=[${cookieNames}]`)
+          }
+
+          // Every 20 polls (~20 s) — or immediately if signalled — actively check /feed/
+          // Kept infrequent because navigating away from the challengesV2 URL (which
+          // contains a one-time token) invalidates the push session if done too often.
+          // Primary detection is the instant context.cookies() check above.
+          if (session.checkNow || pollCount % 20 === 0) {
+            console.log(`[LOGIN DEBUG] push poll #${pollCount}: navigating to /feed/ to check approval (fallback)`)
             session.checkNow = false
             const approved = await checkFeedForApproval(page, context, session, browser)
             if (approved) return
+            console.log(`[LOGIN DEBUG] push poll #${pollCount}: /feed/ check returned not-approved, back on challenge page`)
             // After navigating back, re-check for PIN input on the challenge page
           }
 
           // Fast path: li_at cookie set by auto-redirect (challenge JS working)
           const pushCookies = await context.cookies()
           if (pushCookies.find(c => c.name === 'li_at')) {
+            console.log(`[LOGIN DEBUG] push poll #${pollCount}: ✅ li_at after feed-check → SUCCESS`)
             await saveCookies(context, session.accountId)
             session.status = 'success'
             await browser.close()
@@ -1425,8 +1485,10 @@ async function runLogin(key: string, email: string, password: string): Promise<v
             !nowUrl.includes('verification') &&
             !nowUrl.includes('/login')
           if (leftChallenge) {
+            console.log(`[LOGIN DEBUG] push poll #${pollCount}: page left challenge → ${nowUrl.substring(0, 80)}`)
             const afterCookies = await context.cookies()
             if (afterCookies.find(c => c.name === 'li_at')) {
+              console.log(`[LOGIN DEBUG] push poll #${pollCount}: ✅ li_at after auto-redirect → SUCCESS`)
               await saveCookies(context, session.accountId)
               session.status = 'success'
               await browser.close()
@@ -1435,39 +1497,63 @@ async function runLogin(key: string, email: string, password: string): Promise<v
           }
 
           // PIN input appeared (LinkedIn switched from push to code)
+          // IMPORTANT: only treat this as a real switch if the input is VISIBLE.
+          // LinkedIn's challengesV2 page keeps hidden PIN inputs in the DOM even
+          // while showing the push-approval prompt — detecting them too eagerly
+          // causes us to jump to needs_verification right as the user approves.
           const pinNow = await page.$('input#input__email_verification_pin, input[name="pin"], input#input__phone_verification_pin').catch(() => null)
           if (pinNow) {
-            if (session.totpSecret) {
-              try {
-                const totp = speakeasy.totp({ secret: session.totpSecret, encoding: 'base32' })
-                await page.fill('input#input__email_verification_pin, input[name="pin"], input#input__phone_verification_pin', totp)
-                await DELAY(300)
-                const sb = await page.$('button[type="submit"], button:has-text("Submit"), button:has-text("Verify")')
-                if (sb) await sb.click(); else await page.keyboard.press('Enter')
-                await page.waitForLoadState('domcontentloaded', { timeout: 10_000 }).catch(() => {})
-                const totpCookies = await context.cookies()
-                if (totpCookies.find(c => c.name === 'li_at')) {
-                  await saveCookies(context, session.accountId)
-                  session.status = 'success'
-                  await browser.close()
-                  return
-                }
-              } catch { /* fall through to manual */ }
+            const pinVisible = await pinNow.isVisible().catch(() => false)
+            console.log(`[LOGIN DEBUG] push poll #${pollCount}: PIN input found, visible=${pinVisible}`)
+            if (pinVisible) {
+              // Do one final cookie check — approval and PIN detection can race
+              await DELAY(500)
+              const raceCookies = await context.cookies()
+              if (raceCookies.find(c => c.name === 'li_at' && c.value && c.value.length > 10)) {
+                console.log(`[LOGIN DEBUG] push poll #${pollCount}: ✅ li_at arrived during PIN-race check → SUCCESS`)
+                await saveCookies(context, session.accountId)
+                session.status = 'success'
+                await browser.close()
+                return
+              }
+              console.log(`[LOGIN DEBUG] push poll #${pollCount}: ⚠️ PIN input VISIBLE — LinkedIn switched from push to code`)
+              if (session.totpSecret) {
+                try {
+                  const totp = speakeasy.totp({ secret: session.totpSecret, encoding: 'base32' })
+                  await page.fill('input#input__email_verification_pin, input[name="pin"], input#input__phone_verification_pin', totp)
+                  await DELAY(300)
+                  const sb = await page.$('button[type="submit"], button:has-text("Submit"), button:has-text("Verify")')
+                  if (sb) await sb.click(); else await page.keyboard.press('Enter')
+                  await page.waitForLoadState('domcontentloaded', { timeout: 10_000 }).catch(() => {})
+                  const totpCookies = await context.cookies()
+                  if (totpCookies.find(c => c.name === 'li_at')) {
+                    await saveCookies(context, session.accountId)
+                    session.status = 'success'
+                    await browser.close()
+                    return
+                  }
+                } catch { /* fall through to manual */ }
+              }
+              session.status = 'needs_verification'
+              session.hint   = 'LinkedIn sent a verification code. Check your email or phone.'
+              return
             }
-            session.status = 'needs_verification'
-            session.hint   = 'LinkedIn sent a verification code. Check your email or phone.'
-            return
+            // PIN exists but hidden — part of push challenge page DOM, ignore it
           }
 
-          // After ~30 s with no approval, switch to email/SMS code
-          if (!altSwitchDone && pollCount >= 15) {
+          // After ~90 s with no approval, switch to email/SMS code
+          if (!altSwitchDone && pollCount >= 90) {
+            console.log(`[LOGIN DEBUG] push poll #${pollCount}: 90s elapsed, attempting to switch to alt verification (SMS/email code)`)
             altSwitchDone = true
             const switched = await switchToAltVerification(page, session)
             if (switched && session.status === 'needs_verification') return
           }
-        } catch { /* network blip, keep polling */ }
+        } catch (pollErr) {
+          console.log(`[LOGIN DEBUG] push poll #${pollCount}: caught error — ${String(pollErr).substring(0, 120)}`)
+        }
       }
 
+      console.log(`[LOGIN DEBUG] push poll: ⏰ 3-minute deadline expired without approval`)
       session.status = 'error'
       session.error  = 'Verification not completed within 3 minutes. Please try again.'
       await browser.close()
@@ -1602,14 +1688,24 @@ async function runLogin(key: string, email: string, password: string): Promise<v
     let altSwitchDone = false
 
     while (Date.now() < DEADLINE) {
-      await DELAY(2_000)
+      await DELAY(1_000)
       pollCount++
 
       try {
-        // Every 5 polls (~10 s) — or on demand — actively navigate to /feed/ to check
-        // if the push was approved. This is the primary mechanism when the challenge
-        // page's own JavaScript is blocked by the proxy.
-        if (session.checkNow || pollCount % 5 === 0) {
+        // Instant check — no navigation needed
+        const instantCookies = await context.cookies()
+        if (instantCookies.find(c => c.name === 'li_at' && c.value && c.value.length > 10)) {
+          await saveCookies(context, session.accountId)
+          session.status = 'success'
+          console.log('[LOGIN DEBUG] push poll: li_at appeared in cookies → success')
+          await browser.close()
+          return
+        }
+
+        // Every 20 polls (~20 s) — or on demand — navigate to /feed/ to check approval.
+        // Kept infrequent: the challengesV2 URL has a one-time token and navigating
+        // away too often invalidates the push session before the user can approve.
+        if (session.checkNow || pollCount % 20 === 0) {
           session.checkNow = false
           const approved = await checkFeedForApproval(page, context, session, browser)
           if (approved) return
@@ -1678,8 +1774,8 @@ async function runLogin(key: string, email: string, password: string): Promise<v
           return
         }
 
-        // After ~30 s with no approval, switch to email/SMS code automatically
-        if (!altSwitchDone && pollCount >= 15) {
+        // After ~90 s with no approval, switch to email/SMS code automatically
+        if (!altSwitchDone && pollCount >= 90) {
           altSwitchDone = true
           const switched = await switchToAltVerification(page, session)
           if (switched && session.status === 'needs_verification') return
@@ -1964,8 +2060,15 @@ export async function checkPushApproval(sessionKey: string): Promise<LoginStatus
   // We don't navigate directly here to avoid racing with the loop's own page.goto() calls.
   s.checkNow = true
 
-  // Give the background loop up to 4 s to complete the check
-  await new Promise(r => setTimeout(r, 4_000))
+  // Rapid poll: check every 300ms for up to 3s instead of waiting a fixed 4s
+  const rapidStart = Date.now()
+  while (Date.now() - rapidStart < 3_000) {
+    const current = getLoginStatus(sessionKey)
+    if (current.status === 'success' || current.status === 'needs_verification' || current.status === 'error') {
+      return current
+    }
+    await new Promise(r => setTimeout(r, 300))
+  }
 
   return getLoginStatus(sessionKey)
 }

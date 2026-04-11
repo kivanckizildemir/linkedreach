@@ -4,6 +4,7 @@ import { supabase } from '../lib/supabase'
 import { requireAuth } from '../middleware/auth'
 import type { AccountStatus } from '../types'
 import { startLogin, startManualSession, submitVerificationCode, getLoginStatus, checkPushApproval, getSessionScreenshot, getSessionPageInfo, getSessionDebugSnapshot, interactWithPage, testProxyRaw, requestVerificationCode } from '../linkedin/login'
+import { isExtensionOnline, sendActionToExtension } from '../lib/extensionHub'
 import { extractCookies, getProfileDir } from '../linkedin/session'
 import { chromium } from 'playwright'
 import * as fsSync from 'fs'
@@ -682,6 +683,41 @@ accountsRouter.get('/:id/proxy-test', async (req: Request, res: Response) => {
   const result = await testProxyRaw(String(req.params.id))
   const ok = result.includes('200')
   res.json({ result, ok, hint: ok ? 'Proxy authenticated OK' : 'Proxy auth failed or unreachable — check BrightData credentials' })
+})
+
+// POST /api/accounts/:id/request-session-export
+// Triggers the Chrome extension (via WebSocket) to export the LinkedIn session for this account.
+// Extension must be connected (user has it installed and is logged into the web app).
+accountsRouter.post('/:id/request-session-export', async (req: Request, res: Response) => {
+  const { data: account, error: accountErr } = await supabase
+    .from('linkedin_accounts')
+    .select('id')
+    .eq('id', req.params.id)
+    .eq('user_id', req.user.id)
+    .single()
+
+  if (accountErr || !account) {
+    res.status(404).json({ error: 'Account not found' })
+    return
+  }
+
+  if (!isExtensionOnline(req.user.id)) {
+    res.status(400).json({ error: 'extension_offline' })
+    return
+  }
+
+  const jobId = `export-session-${req.params.id}-${Date.now()}`
+  try {
+    const result = await sendActionToExtension(req.user.id, {
+      jobId,
+      action:     'export_session',
+      accountId:  String(req.params.id),
+      profileUrl: '',
+    }, 20_000)
+    res.json({ ok: true, ...(result as object) })
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message })
+  }
 })
 
 // POST /api/accounts/:id/start-manual-session

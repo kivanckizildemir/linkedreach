@@ -2,7 +2,7 @@ import { Router } from 'express'
 import type { Request, Response } from 'express'
 import { supabase } from '../lib/supabase'
 import { requireAuth } from '../middleware/auth'
-import { qualifyLeadsQueue, salesNavScraperQueue, profileEnrichQueue } from '../lib/queue'
+import { qualifyLeadsQueue, salesNavScraperQueue, profileEnrichQueue, connection } from '../lib/queue'
 import { scrapeLinkedInProfiles } from '../lib/brightdata'
 import type { IcpFlag, LeadSource } from '../types'
 
@@ -119,9 +119,9 @@ leadsRouter.post('/', async (req: Request, res: Response) => {
   res.status(201).json({ data })
 })
 
-// POST /api/leads/import — bulk insert from Excel parse
+// POST /api/leads/import — bulk insert from extension scrape or Excel parse
 leadsRouter.post('/import', async (req: Request, res: Response) => {
-  const { leads } = req.body as {
+  const { leads, list_id } = req.body as {
     leads: Array<{
       linkedin_url: string
       first_name: string
@@ -133,6 +133,7 @@ leadsRouter.post('/import', async (req: Request, res: Response) => {
       connection_degree?: number
       raw_data?: Record<string, unknown>
     }>
+    list_id?: string
   }
 
   if (!Array.isArray(leads) || leads.length === 0) {
@@ -140,10 +141,18 @@ leadsRouter.post('/import', async (req: Request, res: Response) => {
     return
   }
 
+  // If list_id provided, verify it belongs to this user
+  if (list_id) {
+    const { data: list, error: listErr } = await supabase
+      .from('lead_lists').select('id').eq('id', list_id).eq('user_id', req.user.id).single()
+    if (listErr || !list) { res.status(404).json({ error: 'Lead list not found' }); return }
+  }
+
   const rows = leads.map((l) => ({
     ...l,
     user_id: req.user.id,
-    source: 'excel_import' as LeadSource,
+    source: (list_id ? 'sales_nav' : 'excel_import') as LeadSource,
+    ...(list_id ? { list_id } : {}),
   }))
 
   // Deduplicate: skip leads whose linkedin_url already exists for this user
@@ -293,6 +302,21 @@ leadsRouter.post('/import-profiles', async (req: Request, res: Response) => {
   } catch (err) {
     console.error('[import-profiles]', err)
     res.status(500).json({ error: (err as Error).message })
+  }
+})
+
+// DELETE /api/leads/scrape-status/:jobId — cancel a running/queued scrape job
+leadsRouter.delete('/scrape-status/:jobId', async (req: Request, res: Response) => {
+  try {
+    const jobId = String(req.params.jobId)
+    // Set a Redis cancellation flag so the worker can check it between steps
+    await connection.set(`cancel:scrape:${jobId}`, '1', 'EX', 600)
+    // Also remove from queue if it hasn't started yet
+    const job = await salesNavScraperQueue.getJob(jobId)
+    if (job) await job.remove().catch(() => null)
+    return res.json({ ok: true })
+  } catch (err) {
+    return res.status(500).json({ error: (err as Error).message })
   }
 })
 
@@ -578,9 +602,12 @@ leadsRouter.get('/enrich-status/:jobId', async (req: Request, res: Response) => 
 // DELETE /api/leads/enrich-job/:jobId — cancel a running/queued enrich job
 leadsRouter.delete('/enrich-job/:jobId', async (req: Request, res: Response) => {
   try {
-    const job = await profileEnrichQueue.getJob(String(req.params.jobId))
-    if (!job) return res.status(404).json({ error: 'Job not found' })
-    await job.remove()
+    const jobId = String(req.params.jobId)
+    // Set a Redis cancellation flag so the worker stops between leads (active jobs)
+    await connection.set(`cancel:enrich:${jobId}`, '1', 'EX', 600)
+    // Also remove from queue if it hasn't started yet
+    const job = await profileEnrichQueue.getJob(jobId)
+    if (job) await job.remove().catch(() => null)
     return res.json({ ok: true })
   } catch (err) {
     return res.status(500).json({ error: (err as Error).message })

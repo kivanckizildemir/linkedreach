@@ -54,13 +54,17 @@ inboxRouter.post('/:campaignLeadId/mark-read', async (req: Request, res: Respons
   res.json({ ok: true })
 })
 
-// GET /api/inbox — all received messages across the user's campaigns
-// Joins campaign_leads → campaigns to enforce ownership
+// GET /api/inbox — messages across the user's campaigns
+// ?view=sent  → most recent sent message per campaign_lead (for "Sent" tab)
+// ?view=replies (default) → received messages only
 inboxRouter.get('/', async (req: Request, res: Response) => {
-  const { classification, campaign_id } = req.query as {
+  const { classification, campaign_id, view } = req.query as {
     classification?: ReplyClassification
     campaign_id?: string
+    view?: 'replies' | 'sent'
   }
+
+  const direction = view === 'sent' ? 'sent' : 'received'
 
   let query = supabase
     .from('messages')
@@ -74,7 +78,7 @@ inboxRouter.get('/', async (req: Request, res: Response) => {
         campaign:campaigns (id, name, user_id)
       )
     `)
-    .eq('direction', 'received')
+    .eq('direction', direction)
     .order('sent_at', { ascending: false })
 
   if (campaign_id) {
@@ -88,21 +92,32 @@ inboxRouter.get('/', async (req: Request, res: Response) => {
     return
   }
 
-  // Filter to user's own data (RLS handles this, but we double-check)
+  // Filter to user's own data
   const owned = (data ?? []).filter(
     (msg) =>
       msg.campaign_lead &&
       (msg.campaign_lead as { campaign?: { user_id?: string } }).campaign?.user_id === req.user.id
   )
 
-  const filtered =
-    classification
+  // For sent view: deduplicate — keep only the most recent sent message per campaign_lead
+  let filtered: typeof owned
+  if (view === 'sent') {
+    const seen = new Set<string>()
+    filtered = owned.filter((msg) => {
+      const clId = msg.campaign_lead_id as string
+      if (seen.has(clId)) return false
+      seen.add(clId)
+      return true
+    })
+  } else {
+    filtered = classification
       ? owned.filter(
           (msg) =>
             (msg.campaign_lead as { reply_classification?: string })?.reply_classification ===
             classification
         )
       : owned
+  }
 
   res.json({ data: filtered })
 })

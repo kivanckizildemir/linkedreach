@@ -142,7 +142,7 @@ export async function createSession(account: AccountRecord): Promise<{
     userAgent:
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
       '(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    viewport: { width: 1280, height: 800 } as { width: number; height: number },
+    viewport: { width: 1920, height: 1080 } as { width: number; height: number },
     locale: 'en-US',
     extraHTTPHeaders: { 'Accept-Language': 'en-US,en;q=0.9' },
   }

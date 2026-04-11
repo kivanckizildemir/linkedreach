@@ -7,13 +7,25 @@ import * as XLSX from 'xlsx'
 import multer from 'multer'
 import { isLinkedInPeopleSearch } from '../linkedin/linkedinSearchApi'
 
-function validateLinkedInScrapeUrl(search_url: string): { valid: boolean; source: string; error?: string } {
+function stripSessionId(url: string): string {
+  try {
+    const u = new URL(url)
+    u.searchParams.delete('sessionId')
+    return u.toString()
+  } catch {
+    return url
+  }
+}
+
+function validateLinkedInScrapeUrl(search_url: string, source_type?: string): { valid: boolean; source: string; error?: string } {
   try {
     const u = new URL(search_url)
     if (!u.hostname.includes('linkedin.com')) return { valid: false, source: '', error: 'URL must be a LinkedIn URL' }
-    if (u.pathname.startsWith('/sales/')) return { valid: true, source: 'sales_nav' }
+    if (u.pathname.startsWith('/sales/')) return { valid: true, source: source_type ?? 'sales_nav' }
     if (u.pathname.startsWith('/search/results/people')) return { valid: true, source: 'linkedin_search' }
-    return { valid: false, source: '', error: 'URL must be a Sales Navigator URL (/sales/...) or LinkedIn people search URL (/search/results/people/...)' }
+    if (u.pathname.startsWith('/posts/') || u.pathname.includes('/activity-') || u.pathname.startsWith('/feed/update/')) return { valid: true, source: 'post_reactors' }
+    if (u.pathname.startsWith('/events/')) return { valid: true, source: 'event_attendees' }
+    return { valid: false, source: '', error: 'URL must be a Sales Navigator URL, LinkedIn people search, LinkedIn post, or LinkedIn event URL' }
   } catch {
     return { valid: false, source: '', error: 'Invalid URL' }
   }
@@ -237,17 +249,19 @@ leadListsRouter.post('/:id/duplicate', async (req: Request, res: Response) => {
 
 // POST /api/lead-lists/:id/scrape — queue scrape job into existing list
 leadListsRouter.post('/:id/scrape', async (req: Request, res: Response) => {
-  const { search_url, account_id, max_leads = 100 } = req.body as {
+  const { search_url: raw_url, account_id, max_leads = 100, source_type } = req.body as {
     search_url: string
     account_id: string
     max_leads?: number
+    source_type?: string
   }
+  const search_url = stripSessionId(raw_url)
 
   if (!search_url || !account_id) {
     res.status(400).json({ error: 'search_url and account_id are required' }); return
   }
 
-  const urlCheck = validateLinkedInScrapeUrl(search_url)
+  const urlCheck = validateLinkedInScrapeUrl(search_url, source_type)
   if (!urlCheck.valid) { res.status(400).json({ error: urlCheck.error }); return }
 
   const { data: list, error: listErr } = await supabase
@@ -272,6 +286,7 @@ leadListsRouter.post('/:id/scrape', async (req: Request, res: Response) => {
     user_id: req.user.id,
     max_leads: Math.min(Math.max(1, max_leads), 2500),
     list_id: req.params.id,
+    source_type: source_type ?? urlCheck.source,
   })
 
   res.status(202).json({ job_id: job.id, list_id: req.params.id })
@@ -354,19 +369,21 @@ leadListsRouter.post('/:id/import-excel', upload.single('file'), async (req: Req
 
 // POST /api/lead-lists/import-sales-nav — create list + queue scrape job
 leadListsRouter.post('/import-sales-nav', async (req: Request, res: Response) => {
-  const { list_name, search_url, account_id, max_leads = 100 } = req.body as {
+  const { list_name, search_url: raw_url2, account_id, max_leads = 250, source_type } = req.body as {
     list_name: string
     search_url: string
     account_id: string
     max_leads?: number
+    source_type?: string
   }
+  const search_url = stripSessionId(raw_url2)
 
   if (!list_name?.trim() || !search_url || !account_id) {
     res.status(400).json({ error: 'list_name, search_url, and account_id are required' })
     return
   }
 
-  const urlCheck = validateLinkedInScrapeUrl(search_url)
+  const urlCheck = validateLinkedInScrapeUrl(search_url, source_type)
   if (!urlCheck.valid) { res.status(400).json({ error: urlCheck.error }); return }
 
   // Verify account belongs to user
@@ -378,21 +395,27 @@ leadListsRouter.post('/import-sales-nav', async (req: Request, res: Response) =>
     .single()
   if (accErr || !acc) { res.status(404).json({ error: 'Account not found' }); return }
 
+  // Resolve DB source value — map post/event to valid enum values
+  const dbSource = (['sales_nav', 'excel', 'manual', 'chrome_extension', 'linkedin_search'] as const).includes(urlCheck.source as 'sales_nav')
+    ? urlCheck.source as 'sales_nav' | 'linkedin_search'
+    : 'manual'
+
   // Create the list
   const { data: list, error: listErr } = await supabase
     .from('lead_lists')
-    .insert({ name: list_name.trim(), source: urlCheck.source, search_url, user_id: req.user.id })
+    .insert({ name: list_name.trim(), source: dbSource, search_url, user_id: req.user.id })
     .select()
     .single()
   if (listErr || !list) { res.status(500).json({ error: listErr?.message ?? 'Failed to create list' }); return }
 
-  // Queue the scrape job
+  // Queue the scrape job — pass source_type so worker knows how to scrape
   const job = await salesNavScraperQueue.add('scrape', {
     search_url,
     account_id,
     user_id: req.user.id,
     max_leads: Math.min(Math.max(1, max_leads), 2500),
     list_id: list.id,
+    source_type: urlCheck.source,
   })
 
   res.status(202).json({ job_id: job.id, list_id: list.id, list_name: list.name })

@@ -1,6 +1,7 @@
 import type { Page } from 'playwright'
 import { supabase } from '../lib/supabase'
 
+
 export interface EnrichedProfile {
   about: string | null
   experience_description: string | null
@@ -23,96 +24,46 @@ export async function scrapeLinkedInProfile(page: Page, linkedinUrl: string): Pr
   try {
     let profileUrl = linkedinUrl.split('?')[0].replace(/\/$/, '')
 
-    // Sales Nav URLs (/sales/lead/...) — intercept API responses to extract the
-    // real /in/ profile URL. The Sales Nav UI renders the "View LinkedIn profile"
-    // button via JS with no <a href>, so DOM scanning doesn't work.
+    // Sales Nav URLs — intercept the salesApiProfiles API response which fires
+    // when navigating to a Sales Nav profile. It returns the real /in/ URL.
+    // This is more reliable than DOM manipulation (three-dot menu) which fails
+    // because Sales Nav is a SPA and doesn't render individual profiles on direct nav.
     if (profileUrl.includes('/sales/lead/') || profileUrl.includes('/sales/people/')) {
-      // Helper: one attempt to navigate to Sales Nav and intercept the /in/ URL.
-      // Returns the resolved /in/ URL or null.
-      const tryResolveSalesNav = async (): Promise<string | null> => {
-        let resolved: string | null = null
-        const handler = async (response: import('playwright').Response) => {
-          if (resolved) return
-          const url = response.url()
-          if (!url.includes('/sales-api/') && !url.includes('/voyager/api/')) return
-          try {
-            const body = await response.text()
-            const re = /linkedin\.com\/in\/([a-zA-Z0-9_%-]{3,})/g
-            let m: RegExpExecArray | null
-            while ((m = re.exec(body)) !== null) {
-              const candidate = `https://www.linkedin.com/in/${m[1]}`
-              if (!candidate.includes('/in/me')) {
-                resolved = candidate.split('?')[0].replace(/\/$/, '')
-                break
-              }
-            }
-          } catch { /* ignore unreadable responses */ }
-        }
-        page.on('response', handler)
-        await page.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 })
-        await page.waitForLoadState('networkidle', { timeout: 12_000 }).catch(() => null)
-        await page.waitForTimeout(2000)
-        page.off('response', handler)
+      let resolvedFromApi: string | null = null
 
-        const landed = page.url()
-        if (landed.includes('/in/')) return landed.split('?')[0].replace(/\/$/, '')
-        return resolved
+      const apiListener = async (response: import('playwright').Response) => {
+        const url = response.url()
+        if (!url.includes('/salesApiProfiles/')) return
+        try {
+          const body = await response.text()
+          const inMatch = body.match(/linkedin\.com\/in\/([a-zA-Z0-9_%-]{3,})(?:\/|"|\\|\s|$)/)
+          if (inMatch && inMatch[1] !== 'me' && !resolvedFromApi) {
+            resolvedFromApi = `https://www.linkedin.com/in/${inMatch[1]}`.split('?')[0].replace(/\/$/, '')
+          }
+        } catch { /* non-fatal */ }
       }
+      page.on('response', apiListener)
 
-      let firstAttempt = await tryResolveSalesNav()
-      const landedAfterFirst = page.url()
+      // Navigate to the Sales Nav profile — this triggers the salesApiProfiles API call
+      await page.goto(profileUrl.split('?')[0], { waitUntil: 'domcontentloaded', timeout: 30_000 })
+      await page.waitForTimeout(3000)  // allow time for API response to be intercepted
 
-      // If Sales Nav redirected to its own login page, the li_a session is not
-      // established yet. Warm up on the regular LinkedIn feed (li_at is still
-      // valid) — this triggers LinkedIn to issue a fresh li_a — then retry once.
+      page.off('response', apiListener)
+
+      const landedUrl = page.url()
       if (
-        landedAfterFirst.includes('/sales/login') ||
-        (!firstAttempt && (
-          landedAfterFirst.includes('/login') ||
-          landedAfterFirst.includes('/checkpoint') ||
-          landedAfterFirst.includes('/uas/login')
-        ))
+        landedUrl.includes('/login') ||
+        landedUrl.includes('/checkpoint') ||
+        landedUrl.includes('/uas/login')
       ) {
-        console.log(`[enrich] Sales Nav session not ready (${landedAfterFirst.split('?')[0]}) — warming up on feed and retrying...`)
-        await page.goto('https://www.linkedin.com/feed/', { waitUntil: 'domcontentloaded', timeout: 30_000 })
-        await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => null)
-        await page.waitForTimeout(3000)
-
-        const feedUrl = page.url()
-        if (feedUrl.includes('/login') || feedUrl.includes('/uas/login') || feedUrl.includes('/checkpoint')) {
-          console.log(`[enrich] li_at session also expired — account needs reconnect, skipping`)
-          return { ...result, _sessionExpired: true }
-        }
-
-        console.log(`[enrich] Feed loaded (${feedUrl.substring(0, 60)}) — retrying Sales Nav URL...`)
-        firstAttempt = await tryResolveSalesNav()
-        const landedAfterRetry = page.url()
-
-        if (landedAfterRetry.includes('/sales/login') || landedAfterRetry.includes('/login')) {
-          console.log(`[enrich] Still on login after warm-up retry — li_a expired, skipping`)
-          return { ...result, _sessionExpired: true }
-        }
-      } else if (
-        landedAfterFirst.includes('/login') ||
-        landedAfterFirst.includes('/checkpoint') ||
-        landedAfterFirst.includes('/uas/login')
-      ) {
-        console.log(`[enrich] Session expired — redirected to login, skipping`)
+        console.log(`[enrich] Session expired — redirected to ${landedUrl.split('?')[0]}, skipping`)
         return { ...result, _sessionExpired: true }
       }
 
-      const resolvedInUrl = firstAttempt
-      const landedUrl = page.url()
-
-      // Redirect straight to /in/ (rare but possible)
-      if (landedUrl.includes('/in/')) {
-        profileUrl = landedUrl.split('?')[0].replace(/\/$/, '')
-        console.log(`[enrich] Redirected to /in/ URL: ${profileUrl}`)
-        result._resolvedUrl = profileUrl
-      } else if (resolvedInUrl) {
-        console.log(`[enrich] Resolved via API intercept → ${resolvedInUrl}`)
-        profileUrl = resolvedInUrl
-        result._resolvedUrl = resolvedInUrl
+      if (resolvedFromApi) {
+        console.log(`[enrich] Resolved via salesApiProfiles → ${resolvedFromApi}`)
+        profileUrl = resolvedFromApi
+        result._resolvedUrl = resolvedFromApi
       } else {
         console.log(`[enrich] Could not resolve /in/ URL for ${profileUrl} — skipping`)
         return result
@@ -303,9 +254,15 @@ export async function enrichLeads(
   page: Page,
   leads: LeadToEnrich[],
   user_id: string,
-  onProgress?: (done: number, total: number) => void
-): Promise<{ sessionExpired: boolean }> {
+  onProgress?: (done: number, total: number) => void,
+  isCancelled?: () => Promise<boolean>
+): Promise<{ sessionExpired: boolean; cancelled?: boolean }> {
   for (let i = 0; i < leads.length; i++) {
+    if (isCancelled && await isCancelled()) {
+      console.log(`[enrich] Cancelled at lead ${i + 1}/${leads.length}`)
+      return { sessionExpired: false, cancelled: true }
+    }
+
     const lead = leads[i]
     if (!lead.linkedin_url) {
       onProgress?.(i + 1, leads.length)

@@ -32,6 +32,9 @@ import { sequenceAiRouter } from './routes/sequenceAi'
 import { errorHandler, notFound } from './middleware/errors'
 import { testProxyRaw, getLastErrorSnapshot, clearLastErrorSnapshot } from './linkedin/login'
 import { setupExtensionHub, isExtensionOnline, onlineUsers } from './lib/extensionHub'
+import { sequenceRunnerQueue, salesNavScraperQueue, qualifyLeadsQueue } from './lib/queue'
+import { supabase } from './lib/supabase'
+import { requireAuth } from './middleware/auth'
 import { createServer } from 'http'
 
 dotenv.config({ override: true })
@@ -151,6 +154,47 @@ app.use('/api/lead-lists', leadListsRouter)
 app.use('/api/scraper', scraperRouter)
 app.use('/api/sequence-ai', sequenceAiRouter)
 
+// GET /api/system/status — live queue + worker health (authenticated)
+app.get('/api/system/status', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user.id
+
+    // Queue counts
+    const [seqCounts, scraperCounts, qualifyCounts] = await Promise.all([
+      sequenceRunnerQueue.getJobCounts('waiting', 'active', 'completed', 'failed', 'delayed'),
+      salesNavScraperQueue.getJobCounts('waiting', 'active'),
+      qualifyLeadsQueue.getJobCounts('waiting', 'active'),
+    ])
+
+    // Last activity for this user (most recent log entry)
+    const { data: lastActivity } = await supabase
+      .from('activity_log')
+      .select('action, detail, created_at')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .single()
+
+    // Accounts + their live status
+    const { data: accounts } = await supabase
+      .from('linkedin_accounts')
+      .select('id, linkedin_email, status, last_active_at, daily_connection_count, daily_message_count')
+      .eq('user_id', userId)
+
+    res.json({
+      queues: {
+        sequence_runner: seqCounts,
+        scraper:         scraperCounts,
+        qualify:         qualifyCounts,
+      },
+      last_activity: lastActivity ?? null,
+      accounts:      accounts ?? [],
+    })
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message })
+  }
+})
+
 // Extension status endpoints (no auth required — extension status is non-sensitive)
 app.get('/api/extension/status', (req, res) => {
   const userId = (req as { user?: { id?: string } }).user?.id
@@ -162,6 +206,37 @@ app.get('/api/extension/status', (req, res) => {
 app.get('/api/extension/online-users', (_req, res) => {
   res.json({ users: onlineUsers() })
 })
+
+// ── Dev/test endpoints ────────────────────────────────────────────────────────
+// POST /api/dev/run-step { campaign_lead_id }  → immediately enqueue a sequence step
+// POST /api/dev/run-extension { userId, action, profileUrl, note?, message?, reaction? } → fire extension action directly
+if (process.env.NODE_ENV !== 'production') {
+  app.post('/api/dev/run-step', async (req, res) => {
+    try {
+      const { sequenceRunnerQueue } = await import('./lib/queue')
+      const { campaign_lead_id } = req.body as { campaign_lead_id?: string }
+      if (!campaign_lead_id) { res.status(400).json({ error: 'campaign_lead_id required' }); return }
+      const job = await sequenceRunnerQueue.add('run', { campaign_lead_id }, { removeOnComplete: 100 })
+      res.json({ ok: true, jobId: job.id })
+    } catch (e) { res.status(500).json({ error: String(e) }) }
+  })
+
+  app.post('/api/dev/run-extension', async (req, res) => {
+    try {
+      const { sendActionToExtension: send } = await import('./lib/extensionHub')
+      const { randomUUID } = await import('crypto')
+      const { userId, action, profileUrl, accountId, note, message, reaction } = req.body as {
+        userId: string; action: string; profileUrl: string; accountId: string
+        note?: string; message?: string; reaction?: string
+      }
+      if (!userId || !action || !profileUrl || !accountId) {
+        res.status(400).json({ error: 'userId, action, profileUrl, accountId required' }); return
+      }
+      const result = await send(userId, { jobId: randomUUID(), action: action as never, accountId, profileUrl, note, message, reaction })
+      res.json({ ok: true, result })
+    } catch (e) { res.status(500).json({ error: String(e) }) }
+  })
+}
 
 app.use(notFound)
 app.use(errorHandler)

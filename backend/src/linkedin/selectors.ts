@@ -5,7 +5,7 @@ export const SELECTORS = {
   // Profile page
   profile: {
     connectButton:     'button[aria-label*="Connect"]',
-    messageButton:     'button[aria-label*="Message"]',
+    messageButton:     'button[aria-label*="essage"]',
     followButton:      'button[aria-label*="Follow"]',
     moreActionsButton: 'button[aria-label*="More actions"]',
     name:              'h1.text-heading-xlarge',

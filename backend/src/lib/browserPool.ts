@@ -45,6 +45,7 @@ interface PoolEntry {
   accountId:   string
   lastUsed:    number
   invalidated: boolean
+  refreshing?: boolean
 }
 
 const pool = new Map<string, PoolEntry>()
@@ -56,6 +57,33 @@ const cleanupInterval = setInterval(async () => {
   const now = Date.now()
   for (const [accountId, entry] of pool.entries()) {
     const idleMs = now - entry.lastUsed
+
+    // Proactive refresh: ping /feed/ at 20 min to keep cookies fresh
+    const PROACTIVE_REFRESH_MS = 20 * 60 * 1000
+    if (!entry.invalidated && !entry.refreshing && idleMs > PROACTIVE_REFRESH_MS && idleMs < IDLE_TIMEOUT_MS) {
+      entry.refreshing = true
+      console.log(`[browser-pool] Proactive cookie refresh for ${accountId} (${Math.round(idleMs/60000)}m idle)`)
+      ;(async () => {
+        try {
+          await entry.page.goto('https://www.linkedin.com/feed/', { waitUntil: 'domcontentloaded', timeout: 10_000 })
+          const url = entry.page.url()
+          if (!url.includes('/login') && !url.includes('/checkpoint')) {
+            const storage = await entry.context.storageState()
+            await supabase.from('linkedin_accounts').update({ cookies: JSON.stringify(storage) }).eq('id', accountId)
+            entry.lastUsed = Date.now() // Reset idle timer
+            console.log(`[browser-pool] Proactive refresh succeeded for ${accountId}`)
+          } else {
+            console.warn(`[browser-pool] Proactive refresh redirected to ${url} — invalidating`)
+            entry.invalidated = true
+          }
+        } catch (err) {
+          console.warn(`[browser-pool] Proactive refresh failed for ${accountId}: ${(err as Error).message}`)
+        } finally {
+          entry.refreshing = false
+        }
+      })()
+    }
+
     if (entry.invalidated || idleMs > IDLE_TIMEOUT_MS) {
       const reason = entry.invalidated ? 'invalidated' : `idle ${Math.round(idleMs / 60000)}m`
       console.log(`[browser-pool] Closing ${reason} session for ${accountId}`)

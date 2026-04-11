@@ -21,7 +21,7 @@ import type { Server } from 'http'
 
 export interface ExtensionJob {
   jobId:          string
-  action:         'view_profile' | 'connect' | 'message' | 'follow' | 'react_post'
+  action:         'view_profile' | 'connect' | 'message' | 'follow' | 'react_post' | 'export_session'
   accountId:      string
   profileUrl:     string
   note?:          string   // connection note

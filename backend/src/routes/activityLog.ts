@@ -6,10 +6,11 @@ import { requireAuth } from '../middleware/auth'
 export const activityLogRouter = Router()
 activityLogRouter.use(requireAuth)
 
-// GET /api/activity — list recent activity
+// GET /api/activity — list recent activity (optionally filtered by account or campaign)
 activityLogRouter.get('/', async (req: Request, res: Response) => {
-  const { account_id, limit = '100' } = req.query as {
+  const { account_id, campaign_id, limit = '100' } = req.query as {
     account_id?: string
+    campaign_id?: string
     limit?: string
   }
 
@@ -23,9 +24,8 @@ activityLogRouter.get('/', async (req: Request, res: Response) => {
     .order('created_at', { ascending: false })
     .limit(Math.min(parseInt(limit, 10) || 100, 500))
 
-  if (account_id) {
-    query = query.eq('account_id', account_id)
-  }
+  if (account_id)  query = query.eq('account_id', account_id)
+  if (campaign_id) query = query.eq('campaign_id', campaign_id)
 
   const { data, error } = await query
   if (error) { res.status(500).json({ error: error.message }); return }

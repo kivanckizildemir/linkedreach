@@ -1,5 +1,6 @@
 import { Worker } from 'bullmq'
 import { connection, profileEnrichQueue } from '../lib/queue'
+import type IORedis from 'ioredis'
 import { supabase } from '../lib/supabase'
 import { persistCookies } from '../linkedin/session'
 import type { AccountRecord } from '../linkedin/session'
@@ -64,10 +65,22 @@ export const profileEnrichWorker = new Worker<ProfileEnrichJob>(
       context = session.context
       const { page } = session
 
-      const { sessionExpired } = await enrichLeads(page, leads, user_id, async (done, total) => {
+      const cancelKey = `cancel:enrich:${job.id}`
+      const isCancelled = async () => {
+        const flag = await (connection as unknown as IORedis).get(cancelKey)
+        return flag === '1'
+      }
+
+      const { sessionExpired, cancelled } = await enrichLeads(page, leads, user_id, async (done, total) => {
         const pct = 5 + Math.round((done / total) * 93)
         await job.updateProgress(pct)
-      })
+      }, isCancelled)
+
+      if (cancelled) {
+        await (connection as unknown as IORedis).del(cancelKey)
+        await job.updateProgress(100)
+        return { enriched: 0, cancelled: true }
+      }
 
       if (sessionExpired) {
         console.warn(`[profile-enrich] Session expired mid-batch for ${account_id} — pausing account and re-queuing in ${RECONNECT_WAIT_MS / 60000}min`)

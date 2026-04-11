@@ -20,8 +20,8 @@ import { acquireAccountLock } from '../lib/accountLock'
 import { reconnectWithPersistentProfile } from '../lib/browserPool'
 import type { AccountRecord } from '../linkedin/session'
 
-const INTERVAL_MS           = 30 * 60 * 1000       // 30 minutes
-const IDLE_THRESHOLD_MS     = 45 * 60 * 1000       // only touch accounts idle 45+ min
+const INTERVAL_MS           = 15 * 60 * 1000       // Check every 15 min (was 30)
+const IDLE_THRESHOLD_MS     = 20 * 60 * 1000       // Refresh if idle 20+ min (was 45)
 const RECONNECT_BACKOFF_MS  =  4 * 60 * 60 * 1000  // don't retry paused accounts more than once per 4h
 
 // In-memory map of accountId → last reconnect attempt timestamp.
@@ -146,7 +146,7 @@ async function keepAliveTick(): Promise<void> {
 }
 
 export function startSessionKeepAlive(): void {
-  console.log('[keep-alive] Worker started — checking every 30min, refreshing accounts idle 45min+')
+  console.log('[keep-alive] Worker started — checking every 15min, refreshing accounts idle 20min+')
   // First run after 1 minute — auto-reconnects any paused accounts with stored credentials
   setTimeout(() => keepAliveTick().catch(console.error), 60 * 1000)
   setInterval(() => keepAliveTick().catch(console.error), INTERVAL_MS)
