@@ -113,6 +113,11 @@ export function Accounts() {
     queryFn: fetchAccounts,
   })
 
+  const { data: proxies = [] } = useQuery({
+    queryKey: ['proxies'],
+    queryFn: fetchProxies,
+  })
+
   // System status — queue counts + last activity
   const { data: systemStatus } = useQuery({
     queryKey: ['system-status'],
@@ -1029,7 +1034,6 @@ export function ConnectModal({
   const [sessionKey, setSessionKey] = useState('')
   const [error, setError]           = useState('')
   const [requestingCode, setRequestingCode] = useState(false)
-  const [extensionExporting, setExtensionExporting] = useState(false)
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -1077,10 +1081,9 @@ export function ConnectModal({
   }
 
   async function handleConnectViaExtension() {
-    setExtensionExporting(true); setError(''); setStep('extension_waiting')
+    setError(''); setStep('extension_waiting')
     try {
       await requestSessionExport(accountId)
-      // Extension exported cookies directly to the account — we're done
       setStep('done'); setTimeout(onSaved, 1500)
     } catch (err) {
       const msg = (err as Error).message
@@ -1090,8 +1093,6 @@ export function ConnectModal({
         setError(msg)
       }
       setStep('error')
-    } finally {
-      setExtensionExporting(false)
     }
   }
 

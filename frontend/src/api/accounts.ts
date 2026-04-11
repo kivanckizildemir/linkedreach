@@ -12,6 +12,7 @@ export interface LinkedInAccount {
   last_active_at: string | null
   has_premium: boolean
   inmail_credits: number
+  proxy_id: string | null
   proxy_country: string | null
   sender_name: string | null
   sender_headline: string | null
