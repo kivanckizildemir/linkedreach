@@ -144,12 +144,15 @@ async function handle(msg, sender) {
       const { accountId, tabId } = msg
       const chromeCookies = await chrome.cookies.getAll({ domain: '.linkedin.com' })
       const cookies = chromeCookies.map(cookieToPlaywright)
-      if (!cookies.find(c => c.name === 'li_at')) throw new Error('Not logged into LinkedIn — li_at cookie not found.')
+      if (!cookies.find(c => c.name === 'li_at')) throw new Error('Not logged into LinkedIn — open linkedin.com and make sure you\'re logged in.')
 
+      // tabId may be 0 (called from web app) — localStorage capture is optional
       let origins = []
       try {
-        const r = await chrome.tabs.sendMessage(tabId, { type: 'GET_LOCALSTORAGE' })
-        if (r?.ok && r.items?.length) origins = [{ origin: 'https://www.linkedin.com', localStorage: r.items }]
+        if (tabId) {
+          const r = await chrome.tabs.sendMessage(tabId, { type: 'GET_LOCALSTORAGE' })
+          if (r?.ok && r.items?.length) origins = [{ origin: 'https://www.linkedin.com', localStorage: r.items }]
+        }
       } catch (_) {}
 
       const storageState = { cookies, origins }
