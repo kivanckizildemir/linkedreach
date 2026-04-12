@@ -145,15 +145,29 @@ export async function createSession(account: AccountRecord): Promise<{
   let proxySettings: { server: string; username?: string; password?: string } | undefined
 
   if (!DISABLE_PROXY && account.proxy_id) {
-    const { data: proxy } = await supabase
+    // Try to fetch proxy with proxy_type; fall back to proxy_url-only if column missing
+    let proxyRow: ProxyRecord | null = null
+    const { data: proxyFull, error: proxyErr } = await supabase
       .from('proxies')
       .select('proxy_url, proxy_type')
       .eq('id', account.proxy_id)
       .single()
 
-    if (proxy) {
-      const rec = proxy as ProxyRecord
-      const url = new URL(rec.proxy_url)
+    if (proxyErr && (proxyErr.code === '42703' || proxyErr.message?.includes('proxy_type'))) {
+      // proxy_type column not yet migrated — fetch without it (default to residential)
+      console.warn('[session] proxy_type column missing — fetching proxy_url only, defaulting to residential')
+      const { data: proxyBasic } = await supabase
+        .from('proxies')
+        .select('proxy_url')
+        .eq('id', account.proxy_id)
+        .single()
+      if (proxyBasic) proxyRow = { ...(proxyBasic as { proxy_url: string }), proxy_type: 'residential' }
+    } else if (!proxyErr && proxyFull) {
+      proxyRow = proxyFull as ProxyRecord
+    }
+
+    if (proxyRow) {
+      const url = new URL(proxyRow.proxy_url)
       const server   = `${url.protocol}//${url.host}`
       let   username = decodeURIComponent(url.username) || undefined
 
@@ -161,7 +175,7 @@ export async function createSession(account: AccountRecord): Promise<{
       // provider (BrightData, Oxylabs, etc.) always routes this account through
       // the same IP.  ISP/datacenter proxies are already static — no change needed.
       // Default to 'residential' if proxy_type column not yet migrated (safe fallback).
-      const proxyType = rec.proxy_type ?? 'residential'
+      const proxyType = proxyRow.proxy_type ?? 'residential'
       if (username && proxyType === 'residential') {
         const sticky = makeStickyUsername(username, server, account.id)
         if (sticky !== username) {
