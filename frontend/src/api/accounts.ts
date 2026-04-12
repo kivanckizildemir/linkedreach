@@ -192,3 +192,9 @@ export async function unlockAccount(accountId: string): Promise<{ ok: boolean; w
   if (!res.ok) throw new Error(await parseErrorResponse(res))
   return res.json() as Promise<{ ok: boolean; wasLocked: boolean; message: string }>
 }
+
+export async function reconnectAccount(accountId: string): Promise<{ ok: boolean; message: string }> {
+  const res = await apiFetch(`/api/accounts/${accountId}/reconnect`, { method: 'POST' })
+  if (!res.ok) throw new Error(await parseErrorResponse(res))
+  return res.json() as Promise<{ ok: boolean; message: string }>
+}

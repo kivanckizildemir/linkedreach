@@ -13,6 +13,7 @@ import {
   verifyConnectCode,
   testHealthCheck,
   unlockAccount,
+  reconnectAccount,
   requestVerificationCode,
   fetchExtensionStatus,
   type LinkedInAccount,
@@ -109,6 +110,7 @@ export function Accounts() {
   const [sessionAccount, setSessionAccount] = useState<LinkedInAccount | null>(null)
   const [healthResults, setHealthResults] = useState<Record<string, { ok: boolean; message: string } | 'loading'>>({})
   const [unlockResults, setUnlockResults] = useState<Record<string, string | 'loading'>>({})
+  const [reconnectResults, setReconnectResults] = useState<Record<string, string | 'loading'>>({})
   const [expandedSenderId, setExpandedSenderId] = useState<string | null>(null)
   const queryClient = useQueryClient()
 
@@ -197,6 +199,22 @@ export function Accounts() {
     } catch (err) {
       setUnlockResults(prev => ({ ...prev, [accountId]: (err as Error).message }))
       setTimeout(() => setUnlockResults(prev => { const n = { ...prev }; delete n[accountId]; return n }), 4000)
+    }
+  }
+
+  async function runReconnect(accountId: string) {
+    setReconnectResults(prev => ({ ...prev, [accountId]: 'loading' }))
+    try {
+      const result = await reconnectAccount(accountId)
+      setReconnectResults(prev => ({ ...prev, [accountId]: result.message }))
+      // Refresh account status after ~30s
+      setTimeout(() => {
+        void queryClient.invalidateQueries({ queryKey: ['accounts'] })
+        setReconnectResults(prev => { const n = { ...prev }; delete n[accountId]; return n })
+      }, 30_000)
+    } catch (err) {
+      setReconnectResults(prev => ({ ...prev, [accountId]: (err as Error).message }))
+      setTimeout(() => setReconnectResults(prev => { const n = { ...prev }; delete n[accountId]; return n }), 6000)
     }
   }
 
@@ -498,6 +516,20 @@ export function Accounts() {
                                     className="text-xs text-teal-700 hover:underline"
                                   >
                                     Test Health
+                                  </button>
+                                )
+                              })()}
+                              {(() => {
+                                const rr = reconnectResults[account.id]
+                                if (rr === 'loading') return <span className="text-xs text-blue-500">Logging in…</span>
+                                if (rr) return <span className="text-xs text-blue-600">{rr}</span>
+                                return (
+                                  <button
+                                    onClick={() => void runReconnect(account.id)}
+                                    className="text-xs text-blue-600 hover:underline font-medium"
+                                    title="Re-login with stored credentials via headless browser"
+                                  >
+                                    Reconnect
                                   </button>
                                 )
                               })()}
