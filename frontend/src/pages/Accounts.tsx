@@ -12,6 +12,7 @@ import {
   getConnectStatus,
   verifyConnectCode,
   testHealthCheck,
+  unlockAccount,
   requestVerificationCode,
   fetchExtensionStatus,
   type LinkedInAccount,
@@ -106,6 +107,7 @@ export function Accounts() {
   const [showAddAccount, setShowAddAccount] = useState(false)
   const [sessionAccount, setSessionAccount] = useState<LinkedInAccount | null>(null)
   const [healthResults, setHealthResults] = useState<Record<string, { ok: boolean; message: string } | 'loading'>>({})
+  const [unlockResults, setUnlockResults] = useState<Record<string, string | 'loading'>>({})
   const [expandedSenderId, setExpandedSenderId] = useState<string | null>(null)
   const queryClient = useQueryClient()
 
@@ -182,6 +184,18 @@ export function Accounts() {
     } catch (err) {
       setHealthResults(prev => ({ ...prev, [accountId]: { ok: false, message: (err as Error).message } }))
       setTimeout(() => setHealthResults(prev => { const n = { ...prev }; delete n[accountId]; return n }), 6000)
+    }
+  }
+
+  async function runUnlock(accountId: string) {
+    setUnlockResults(prev => ({ ...prev, [accountId]: 'loading' }))
+    try {
+      const result = await unlockAccount(accountId)
+      setUnlockResults(prev => ({ ...prev, [accountId]: result.message }))
+      setTimeout(() => setUnlockResults(prev => { const n = { ...prev }; delete n[accountId]; return n }), 4000)
+    } catch (err) {
+      setUnlockResults(prev => ({ ...prev, [accountId]: (err as Error).message }))
+      setTimeout(() => setUnlockResults(prev => { const n = { ...prev }; delete n[accountId]; return n }), 4000)
     }
   }
 
@@ -483,6 +497,20 @@ export function Accounts() {
                                     className="text-xs text-teal-700 hover:underline"
                                   >
                                     Test Health
+                                  </button>
+                                )
+                              })()}
+                              {(() => {
+                                const ur = unlockResults[account.id]
+                                if (ur === 'loading') return <span className="text-xs text-gray-400">Unlocking…</span>
+                                if (ur) return <span className="text-xs text-orange-600">{ur}</span>
+                                return (
+                                  <button
+                                    onClick={() => void runUnlock(account.id)}
+                                    className="text-xs text-orange-600 hover:underline"
+                                    title="Force-release a stale lock left by a crashed scrape job"
+                                  >
+                                    Unlock
                                   </button>
                                 )
                               })()}

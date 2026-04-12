@@ -6,6 +6,7 @@ import type { AccountStatus } from '../types'
 import { startLogin, startManualSession, submitVerificationCode, getLoginStatus, checkPushApproval, getSessionScreenshot, getSessionPageInfo, getSessionDebugSnapshot, interactWithPage, testProxyRaw, requestVerificationCode } from '../linkedin/login'
 import { isExtensionOnline, sendActionToExtension } from '../lib/extensionHub'
 import { extractCookies, getProfileDir } from '../linkedin/session'
+import { forceReleaseAccountLock, isAccountLocked } from '../lib/accountLock'
 import { generateFingerprint } from '../lib/fingerprint'
 import { chromium } from 'playwright'
 import * as fsSync from 'fs'
@@ -339,6 +340,22 @@ accountsRouter.post('/:id/health-check', async (req: Request, res: Response) => 
   } catch (err) {
     res.json({ ok: false, message: `Health check failed: ${(err as Error).message}` })
   }
+})
+
+// POST /api/accounts/:id/unlock — force-release a stale Redis lock left by a crashed job
+accountsRouter.post('/:id/unlock', async (req: Request, res: Response) => {
+  const { data: account, error } = await supabase
+    .from('linkedin_accounts')
+    .select('id')
+    .eq('id', req.params.id)
+    .eq('user_id', req.user.id)
+    .single()
+  if (error || !account) { res.status(404).json({ ok: false, message: 'Account not found' }); return }
+
+  const id = String(req.params.id)
+  const wasLocked = await isAccountLocked(id)
+  await forceReleaseAccountLock(id)
+  res.json({ ok: true, wasLocked, message: wasLocked ? 'Lock released — you can now scrape.' : 'Account was not locked.' })
 })
 
 // POST /api/accounts/:id/request-code/:sessionKey — click "Use another way" to get email/SMS code

@@ -83,3 +83,16 @@ export async function isAccountLocked(accountId: string): Promise<boolean> {
   const ttl = await lockRedis.ttl(lockKey(accountId))
   return ttl > 0
 }
+
+/**
+ * Force-release a lock (e.g. after a crashed job left it stuck).
+ * Returns true if a lock was present and deleted.
+ */
+export async function forceReleaseAccountLock(accountId: string): Promise<boolean> {
+  const deleted = await lockRedis.del(lockKey(accountId))
+  if (deleted > 0) {
+    console.log(`[account-lock] Force-released stale lock for account ${accountId}`)
+    return true
+  }
+  return false
+}
