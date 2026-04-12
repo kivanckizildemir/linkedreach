@@ -271,14 +271,10 @@ accountsRouter.post('/:id/health-check', async (req: Request, res: Response) => 
       return
     }
 
-    // Send ALL saved cookies (not just li_at) — LinkedIn may require bcookie, JSESSIONID, etc.
-    let cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join('; ')
-    let jsessionid = cookies.find(c => c.name === 'JSESSIONID')?.value?.replace(/"/g, '') ?? ''
+    // Only li_at is needed for the feed redirect check — no CSRF token required.
+    const liAtCookie = `li_at=${liAt}`
 
-    // Build proxy agent — prefer account's own residential proxy (proxy_id → proxies table),
-    // fall back to BRIGHTDATA_PROXY_URL env var, then try direct (no proxy).
-    // Never use PROXY_HOST/PROXY_USERNAME env vars — those point to nsocks (datacenter IP)
-    // which gets 999-blocked by LinkedIn just like Railway's own IP.
+    // Build proxy agent — prefer account's own residential proxy, fall back to BrightData env var.
     let agent: ProxyAgent | undefined
     if ((account as { proxy_id?: string | null }).proxy_id) {
       const { data: proxyRow } = await supabase
@@ -286,89 +282,58 @@ accountsRouter.post('/:id/health-check', async (req: Request, res: Response) => 
         .select('proxy_url')
         .eq('id', (account as { proxy_id: string }).proxy_id)
         .single()
-      if (proxyRow) {
-        agent = new ProxyAgent((proxyRow as { proxy_url: string }).proxy_url)
-      }
+      if (proxyRow) agent = new ProxyAgent((proxyRow as { proxy_url: string }).proxy_url)
     }
     if (!agent && process.env.BRIGHTDATA_PROXY_URL) {
       agent = new ProxyAgent(process.env.BRIGHTDATA_PROXY_URL)
     }
-    // If neither residential proxy is available, try direct — Voyager API often works
-    // without a proxy when all auth cookies + LinkedIn headers are present.
 
-    // Bootstrap JSESSIONID from LinkedIn feed if not stored — Voyager API requires it as CSRF token.
-    // A missing or fabricated JSESSIONID causes LinkedIn to return 400 Bad Request.
-    if (!jsessionid) {
-      console.log(`[health-check] ${req.params.id} — no JSESSIONID, bootstrapping from /feed/…`)
-      try {
-        const bootstrapRes = await fetch('https://www.linkedin.com/feed/', {
-          headers: {
-            Cookie: cookieHeader,
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-            Accept: 'text/html',
-          },
-          redirect: 'manual',
-          ...(agent ? { dispatcher: agent } : {}),
-          signal: AbortSignal.timeout(10_000),
-        } as RequestInit)
-        const sc = bootstrapRes.headers.get('set-cookie') ?? ''
-        const m = sc.match(/JSESSIONID=([^;,\s]+)/)
-        if (m) {
-          jsessionid = m[1].replace(/"/g, '')
-          cookieHeader = `${cookieHeader}; JSESSIONID=${jsessionid}`
-          console.log(`[health-check] ${req.params.id} — bootstrapped JSESSIONID ✓`)
-        }
-      } catch (e) {
-        console.warn(`[health-check] ${req.params.id} — bootstrap failed: ${(e as Error).message}`)
-      }
-    }
-
-    // Only send csrf-token when we have a real JSESSIONID — sending a fabricated value causes 400.
-    const probeHeaders: Record<string, string> = {
-      Cookie: cookieHeader,
-      'User-Agent':
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
-        '(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-      Accept: 'application/vnd.linkedin.normalized+json+2.1',
-      'x-li-lang': 'en_US',
-      'x-restli-protocol-version': '2.0.0',
-    }
-    if (jsessionid) probeHeaders['csrf-token'] = jsessionid
-
+    // Health check strategy: GET /feed/ with redirect:manual.
+    // - Valid session  → LinkedIn serves feed (200) or redirects to a non-login page
+    // - Expired session → LinkedIn redirects to /login or /uas/login
+    // This avoids all CSRF token complexity (no Voyager API, no JSESSIONID needed).
     const attemptProbe = async (useAgent: ProxyAgent | undefined) =>
-      fetch('https://www.linkedin.com/voyager/api/me', {
+      fetch('https://www.linkedin.com/feed/', {
         method: 'GET',
-        headers: probeHeaders,
+        headers: {
+          Cookie: liAtCookie,
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+          Accept: 'text/html,application/xhtml+xml',
+          'Accept-Language': 'en-US,en;q=0.9',
+        },
+        redirect: 'manual',
         ...(useAgent ? { dispatcher: useAgent } : {}),
         signal: AbortSignal.timeout(12_000),
       } as RequestInit)
 
-    // First attempt (with proxy if available)
     let probe = await attemptProbe(agent)
-    let probeBody = ''
-    try { probeBody = await probe.clone().text() } catch { /* non-fatal */ }
-    console.log(`[health-check] ${req.params.id} status=${probe.status} jsessionid=${jsessionid ? 'yes' : 'no'} hasProxy=${!!agent} body=${probeBody.slice(0, 200)}`)
+    const location = probe.headers.get('location') ?? ''
+    console.log(`[health-check] ${req.params.id} status=${probe.status} location=${location} hasProxy=${!!agent}`)
 
-    // If proxy returned 999/blocked AND we had a proxy, retry without it — direct call
-    // might succeed since Voyager API is more permissive than browser-facing endpoints
-    if (probe.status === 999 && agent) {
-      console.log(`[health-check] ${req.params.id} proxy returned 999 — retrying direct`)
+    // Retry without proxy if we got a hard block (999) or no response
+    if ((probe.status === 999 || probe.status === 0) && agent) {
+      console.log(`[health-check] ${req.params.id} proxy blocked — retrying direct`)
       probe = await attemptProbe(undefined)
-      try { probeBody = await probe.clone().text() } catch { /* non-fatal */ }
-      console.log(`[health-check] ${req.params.id} retry status=${probe.status} body=${probeBody.slice(0, 200)}`)
+      const loc2 = probe.headers.get('location') ?? ''
+      console.log(`[health-check] ${req.params.id} retry status=${probe.status} location=${loc2}`)
     }
 
-    // 400 after bootstrap = bad CSRF token or malformed cookies → treat as expired
-    if (probe.status === 200) {
+    const loc = probe.headers.get('location') ?? ''
+    const isLoginRedirect = loc.includes('/login') || loc.includes('/uas/login') || loc.includes('/checkpoint')
+    const isBlocked = probe.status === 999 || probe.status === 0
+
+    if (isBlocked) {
+      res.json({ ok: false, message: 'LinkedIn blocked the check (IP flagged) — assign a residential proxy to this account.' })
+    } else if (probe.status === 200 || (probe.status >= 300 && probe.status < 400 && !isLoginRedirect)) {
+      // 200 = feed loaded; 3xx to non-login = still authenticated
       if (account.status === 'paused') {
         await supabase.from('linkedin_accounts').update({ status: 'active' }).eq('id', req.params.id)
       }
       res.json({ ok: true, message: 'Session is active ✓' })
-    } else if (probe.status === 401 || probe.status === 403 || probe.status === 400) {
+    } else if (isLoginRedirect || probe.status === 401 || probe.status === 403) {
       await supabase.from('linkedin_accounts').update({ status: 'paused' }).eq('id', req.params.id)
-      res.json({ ok: false, message: `Session invalid (HTTP ${probe.status}) — please reconnect the account.` })
+      res.json({ ok: false, message: 'Session expired — please reconnect the account.' })
     } else {
-      // Non-200/4xx (e.g. 429 rate limit, 999 bot block) — don't mark as expired, just warn
       res.json({ ok: false, message: `LinkedIn returned ${probe.status} — try again in a moment.` })
     }
   } catch (err) {
