@@ -212,7 +212,7 @@ export async function reconnectWithPersistentProfile(
 
     bgContext = await chromium.launchPersistentContext(profileDir, {
       headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled'],
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--disable-software-rasterizer', '--disable-blink-features=AutomationControlled', '--no-first-run', '--disable-extensions', '--disable-sync'],
       proxy: proxySettings,
       userAgent: fp.user_agent,
       locale: fp.locale,

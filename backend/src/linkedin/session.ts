@@ -136,8 +136,15 @@ export async function createSession(account: AccountRecord): Promise<{
     '--no-sandbox',
     '--disable-setuid-sandbox',
     '--disable-dev-shm-usage',
+    '--disable-gpu',                          // no GPU in Railway containers — prevents renderer crash
+    '--disable-software-rasterizer',          // prevents GL fallback that also crashes headless
     '--disable-blink-features=AutomationControlled',
     '--ignore-certificate-errors',
+    '--disable-background-networking',
+    '--disable-extensions',
+    '--disable-sync',
+    '--metrics-recording-only',
+    '--no-first-run',
   ]
 
   // Build the stable fingerprint for this account (stored in DB, generated lazily).

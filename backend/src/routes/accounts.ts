@@ -586,7 +586,8 @@ accountsRouter.post('/:id/login-browser', async (req: Request, res: Response) =>
           headless: true,
           args: [
             '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
-            '--disable-blink-features=AutomationControlled',
+            '--disable-gpu', '--disable-software-rasterizer',
+            '--disable-blink-features=AutomationControlled', '--no-first-run', '--disable-extensions',
           ],
           ...(playwrightProxy ? { proxy: playwrightProxy } : {}),
           userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
