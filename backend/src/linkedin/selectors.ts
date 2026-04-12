@@ -7,7 +7,8 @@ export const SELECTORS = {
     connectButton:     'button[aria-label*="Connect"]',
     messageButton:     'button[aria-label*="essage"]',
     followButton:      'button[aria-label*="Follow"]',
-    moreActionsButton: 'button[aria-label*="More actions"]',
+    // LinkedIn uses different aria-labels for the overflow menu across UI versions
+    moreActionsButton: 'button[aria-label*="More"]',
     name:              'h1.text-heading-xlarge',
     connectionDegree:  '.distance-badge .dist-value',
   },
@@ -22,8 +23,8 @@ export const SELECTORS = {
 
   // Messaging
   message: {
-    composerTextarea: '.msg-form__contenteditable',
-    sendButton:       'button.msg-form__send-button',
+    composerTextarea: '.msg-form__contenteditable, [contenteditable="true"][role="textbox"]',
+    sendButton:       'button.msg-form__send-button, button[aria-label="Send"], button[data-control-name="send"]',
     subjectInput:     '.msg-form__subject-field input',  // InMail
   },
 

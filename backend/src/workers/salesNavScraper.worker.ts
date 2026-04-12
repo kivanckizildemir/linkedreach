@@ -23,7 +23,7 @@ import { scrapeLinkedInSearchApi, isLinkedInPeopleSearch } from '../linkedin/lin
 import { scrapePostReactors } from '../linkedin/postReactorsApi'
 import type { ScrapedLead } from '../linkedin/salesNavApi'
 import { enrichLeads, type LeadToEnrich } from '../linkedin/enrichProfiles'
-import { resolveSalesNavUrl, humanMouseMove, humanScroll, SHORT_WAIT, LONG_WAIT, READ_WAIT, delay } from '../linkedin/actions'
+import { humanMouseMove, humanScroll, SHORT_WAIT, LONG_WAIT, delay } from '../linkedin/actions'
 
 interface SalesNavJob {
   search_url:   string
@@ -60,7 +60,7 @@ export const salesNavScraperWorker = new Worker<SalesNavJob>(
       )
       console.log(`[sales-nav] Post reactors scraped ${leads.length} leads`)
       await job.updateProgress(88)
-      const { scraped: s, saved: sv } = await saveLeads(leads, user_id, list_id, job)
+      const { scraped: s, saved: sv } = await saveLeads(leads, user_id, list_id, job, 'post_reactors')
       return { scraped: s, saved: sv }
     }
 
@@ -79,7 +79,7 @@ export const salesNavScraperWorker = new Worker<SalesNavJob>(
       console.log(`[sales-nav] LinkedIn search scraped ${leads.length} leads`)
       await job.updateProgress(88)
 
-      const { scraped: s, saved: sv } = await saveLeads(leads, user_id, list_id, job)
+      const { scraped: s, saved: sv } = await saveLeads(leads, user_id, list_id, job, 'linkedin_search')
       return { scraped: s, saved: sv }
     }
 
@@ -191,30 +191,44 @@ export const salesNavScraperWorker = new Worker<SalesNavJob>(
       url.searchParams.delete('sessionId')
       const cleanUrl = url.toString()
 
-      // Step 1: Warm up session on LinkedIn feed so all session cookies are set
+      // Step 1: Warm up session on LinkedIn feed so all session cookies are set.
+      // LinkedIn's feed page never reaches networkidle (continuous XHR polling), so
+      // we only wait for domcontentloaded + a short dwell. The 15s networkidle wait
+      // was wasting time on every scrape job.
+      // If the feed fails to load (proxy issue, timeout), we continue anyway —
+      // the Sales Nav session may still be active from the persistent browser pool.
       console.log('[sales-nav] Warming up session on LinkedIn feed...')
-      await page.goto('https://www.linkedin.com/feed/', { waitUntil: 'domcontentloaded', timeout: 30_000 })
-      await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => null)
-      await READ_WAIT()   // dwell on feed like a human landing on it
-      await humanScroll(page)
-      await job.updateProgress(8)
+      await job.updateProgress(6)
+      try {
+        await page.goto('https://www.linkedin.com/feed/', { waitUntil: 'domcontentloaded', timeout: 25_000 })
+        // Short dwell — enough for session cookies to settle without the networkidle hang
+        await SHORT_WAIT()
+        await humanScroll(page)
 
-      const feedUrl = page.url()
-      if (feedUrl.includes('/login') || feedUrl.includes('/uas/login') || feedUrl.includes('/checkpoint')) {
-        throw new Error('SESSION_EXPIRED: LinkedIn redirected to login. Please reconnect from the Accounts page.')
+        const feedUrl = page.url()
+        if (feedUrl.includes('/login') || feedUrl.includes('/uas/login') || feedUrl.includes('/checkpoint')) {
+          throw new Error('SESSION_EXPIRED: LinkedIn redirected to login. Please reconnect from the Accounts page.')
+        }
+        console.log(`[sales-nav] Feed loaded (${feedUrl.substring(0, 80)}), warming up Sales Nav session...`)
+      } catch (feedErr) {
+        const feedMsg = (feedErr as Error).message ?? ''
+        if (feedMsg.includes('SESSION_EXPIRED')) throw feedErr
+        // Network/timeout issues — log and continue, the pool session may still be valid
+        console.warn(`[sales-nav] Feed warmup failed (continuing): ${feedMsg.substring(0, 120)}`)
       }
-      console.log(`[sales-nav] Feed loaded (${feedUrl.substring(0, 80)}), warming up Sales Nav session...`)
+      await job.updateProgress(7)
 
       // Step 1b: Visit Sales Nav home to establish li_a session cookie
       await page.goto('https://www.linkedin.com/sales/home', { waitUntil: 'domcontentloaded', timeout: 30_000 })
-      await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => null)
-      await LONG_WAIT()   // simulate landing on Sales Nav home
+      // Don't wait for networkidle — Sales Nav home also has continuous background XHR
+      await LONG_WAIT()
+      await job.updateProgress(8)
 
       const salesHomeUrl = page.url()
       if (salesHomeUrl.includes('/sales/login')) {
         console.log('[sales-nav] On /sales/login — waiting for auto-redirect (up to 30s)…')
         try {
-          await page.waitForURL((url: URL) => !url.toString().includes('/sales/login'), { timeout: 30_000 })
+          await page.waitForURL((u: URL) => !u.toString().includes('/sales/login'), { timeout: 30_000 })
           console.log(`[sales-nav] Sales Nav home redirected to: ${page.url().substring(0, 120)}`)
         } catch {
           throw new Error('SESSION_EXPIRED: Stuck on Sales Navigator login page. Set Session again.')
@@ -256,22 +270,26 @@ export const salesNavScraperWorker = new Worker<SalesNavJob>(
       const pageTitle = await page.title()
       console.log(`[sales-nav] After nav: url=${afterUrl.substring(0, 120)} title=${pageTitle}`)
 
-      // If title is still generic, wait longer for SPA to render search results
-      if (pageTitle === 'Sales Navigator') {
-        console.log('[sales-nav] Generic title — waiting extra 8s for SPA to render search results...')
-        await delay(6000 + Math.random() * 4000)
+      // If title is still generic, wait for SPA to render search results.
+      // Use a waitForSelector approach rather than blind sleep — fires as soon as
+      // the first result card appears, which is much faster than a fixed 8s delay.
+      if (pageTitle === 'Sales Navigator' || !pageTitle.includes('Search')) {
+        console.log('[sales-nav] Generic title — waiting for result cards (up to 15s)...')
+        await page.waitForSelector(
+          '[data-anonymize="person-name"], .artdeco-entity-lockup__title, .result-lockup__name, [data-view-name="search-results-lead-result"]',
+          { timeout: 15_000 }
+        ).catch(() => null)
         const titleAfterWait = await page.title()
-        console.log(`[sales-nav] Title after extra wait: ${titleAfterWait}`)
+        console.log(`[sales-nav] Title after card wait: ${titleAfterWait}`)
       }
 
-      await page.waitForLoadState('networkidle', { timeout: 20_000 }).catch(() => null)
       await humanScroll(page)   // scroll through results like a human reading the page
 
-      // Wait for results to appear
+      // Wait for results to appear (may already be present from above wait)
       console.log('[sales-nav] Waiting for result cards…')
       await page.waitForSelector(
-        '[data-anonymize="person-name"], .artdeco-entity-lockup__title, .result-lockup__name',
-        { timeout: 30_000 }
+        '[data-anonymize="person-name"], .artdeco-entity-lockup__title, .result-lockup__name, [data-view-name="search-results-lead-result"]',
+        { timeout: 20_000 }
       ).catch(() => null)
 
       // Sales Nav uses virtual scrolling — cards are added/removed from the DOM
@@ -292,36 +310,74 @@ export const salesNavScraperWorker = new Worker<SalesNavJob>(
             salesNavUrl: string | null; degree: number | null
           }> = []
 
-          // Find all rendered lead cards by anchoring on person-name elements
+          // Sales Nav 2024/2025 uses data-view-name="search-results-lead-result" on each card.
+          // Older versions used [data-anonymize="person-name"] or .result-lockup__name.
+          // We anchor on the widest possible set and deduplicate by crawling up to the card root.
           const nameEls = Array.from(document.querySelectorAll<HTMLElement>(
-            '[data-anonymize="person-name"], .result-lockup__name'
+            '[data-anonymize="person-name"], .result-lockup__name, [data-view-name="search-results-lead-result"] [data-anonymize="person-name"]'
           ))
           const itemSet = new Set<Element>()
           for (const el of nameEls) {
-            const li = el.closest('li') ?? el.closest('.result-lockup') ?? el.parentElement
-            if (li) itemSet.add(li)
+            // Walk up to the nearest card root: li, [data-view-name="search-results-lead-result"],
+            // .result-lockup, or the artdeco card container
+            const card =
+              el.closest('[data-view-name="search-results-lead-result"]') ??
+              el.closest('li.artdeco-list__item') ??
+              el.closest('li') ??
+              el.closest('.result-lockup') ??
+              el.parentElement
+            if (card) itemSet.add(card)
           }
 
           itemSet.forEach(item => {
-            const nameEl = item.querySelector('[data-anonymize="person-name"], .artdeco-entity-lockup__title, .result-lockup__name')
+            // Person name — try all known selectors in priority order
+            const nameEl = item.querySelector(
+              '[data-anonymize="person-name"] span:not(.visually-hidden), ' +
+              '[data-anonymize="person-name"], ' +
+              '.artdeco-entity-lockup__title span, ' +
+              '.artdeco-entity-lockup__title, ' +
+              '.result-lockup__name'
+            )
             const name = nameEl?.textContent?.trim() ?? ''
-            if (!name) return
+            if (!name || name.length < 2) return
 
-            const titleEl = item.querySelector('[data-anonymize="title"], .artdeco-entity-lockup__subtitle, .result-lockup__highlight-keyword')
+            // Title / headline
+            const titleEl = item.querySelector(
+              '[data-anonymize="title"], ' +
+              '.artdeco-entity-lockup__subtitle span, ' +
+              '.artdeco-entity-lockup__subtitle, ' +
+              '.result-lockup__highlight-keyword'
+            )
             const title = titleEl?.textContent?.trim() ?? null
 
-            const companyEl = item.querySelector('[data-anonymize="company-name"], .artdeco-entity-lockup__caption, .result-lockup__position-company')
+            // Company
+            const companyEl = item.querySelector(
+              '[data-anonymize="company-name"], ' +
+              '.artdeco-entity-lockup__caption span, ' +
+              '.artdeco-entity-lockup__caption, ' +
+              '.result-lockup__position-company'
+            )
             const company = companyEl?.textContent?.trim() ?? null
 
-            const locationEl = item.querySelector('[data-anonymize="location"], .artdeco-entity-lockup__metadata, .result-lockup__misc-list')
+            // Location
+            const locationEl = item.querySelector(
+              '[data-anonymize="location"], ' +
+              '.artdeco-entity-lockup__metadata span, ' +
+              '.artdeco-entity-lockup__metadata, ' +
+              '.result-lockup__misc-list'
+            )
             const location = locationEl?.textContent?.trim() ?? null
 
+            // Sales Nav profile link — prefer /sales/lead/ or /sales/people/ over /in/
             const allLinks = Array.from(item.querySelectorAll<HTMLAnchorElement>('a[href]'))
-            const linkEl = allLinks.find(a => a.href.includes('/sales/lead/') || a.href.includes('/sales/people/') || a.href.includes('/in/')) ?? null
-            const salesNavUrl = linkEl ? (linkEl.href.split('?')[0] || null) : null
+            const salesLinkEl = allLinks.find(a =>
+              a.href.includes('/sales/lead/') || a.href.includes('/sales/people/')
+            ) ?? allLinks.find(a => a.href.includes('/in/')) ?? null
+            const salesNavUrl = salesLinkEl ? (salesLinkEl.href.split('?')[0] || null) : null
             const inMatch = salesNavUrl?.match(/(https?:\/\/[^/]*\/in\/[^/?#]+)/)
             const profileUrl = inMatch ? inMatch[1] : null
 
+            // Connection degree
             const degreeEl = item.querySelector('.dist-value, [data-anonymize="degree"]')
             const degreeText = degreeEl?.textContent?.trim() ?? ''
             const degree = degreeText.includes('1') ? 1 : degreeText.includes('2') ? 2 : degreeText.includes('3') ? 3 : null
@@ -509,7 +565,7 @@ export const salesNavScraperWorker = new Worker<SalesNavJob>(
 
       await job.updateProgress(88)
 
-      const { scraped, saved, savedLeads } = await saveLeads(leads, user_id, list_id, job)
+      const { scraped, saved, savedLeads } = await saveLeads(leads, user_id, list_id, job, source_type ?? 'sales_nav')
 
       // Enrich profiles — visit each lead's LinkedIn profile to pull About,
       // experience description, skills, and recent posts. During enrichment,
@@ -575,14 +631,27 @@ export const salesNavScraperWorker = new Worker<SalesNavJob>(
   }
 )
 
+// Map job source_type to the leads table source enum value
+function resolveSourceField(sourceType: string | undefined): string {
+  switch (sourceType) {
+    case 'sales_nav':       return 'sales_nav_import'
+    case 'linkedin_search': return 'linkedin_search'
+    case 'post_reactors':   return 'post_reactors'
+    case 'event_attendees': return 'event_attendees'
+    default:                return 'sales_nav_import'
+  }
+}
+
 async function saveLeads(
   leads: ScrapedLead[],
   user_id: string,
   list_id: string | undefined,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  job: any
+  job: any,
+  source_type?: string
 ): Promise<{ scraped: number; saved: number; savedLeads: LeadToEnrich[] }> {
   let savedLeads: LeadToEnrich[] = []
+  const sourceField = resolveSourceField(source_type)
 
   // Clear existing leads in this list before adding fresh ones — ensures
   // each scrape cycle gives a clean result rather than appending duplicates.
@@ -602,22 +671,15 @@ async function saveLeads(
     const rows = leads.map(l => ({
       ...l,
       user_id,
-      source: 'sales_nav_import' as const,
-      raw_data: { source: 'sales_navigator' },
+      source: sourceField,
+      raw_data: { source: sourceField },
       ...(list_id ? { list_id } : {}),
     }))
 
-    // No deduplication needed since we just cleared the list.
-    // For users without a list_id, still deduplicate globally.
-    const newRows = list_id ? rows : (() => {
-      // Non-list import: deduplicate against existing leads
-      return rows  // simplified — list-based scrapes always clear first
-    })()
-
-    if (newRows.length > 0) {
+    if (rows.length > 0) {
       const { data: inserted, error: insertErr } = await supabase
         .from('leads')
-        .insert(newRows)
+        .insert(rows)
         .select('id, linkedin_url, first_name, last_name')
       if (insertErr) throw new Error(`DB insert failed: ${insertErr.message}`)
 
