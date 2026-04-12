@@ -261,6 +261,26 @@ function resolveNextStep(
   return nextSibling ?? null
 }
 
+/**
+ * Find the next meaningful step after currentStep, skipping waits and forks.
+ * Returns the step type string, or 'end' if an end step follows, or null if nothing.
+ */
+function resolveNextMeaningfulStepType(
+  allSteps: SequenceStep[],
+  currentStep: SequenceStep
+): string | null {
+  const SKIP_TYPES = new Set(['wait', 'fork'])
+  let step: SequenceStep | null = currentStep
+  // Walk siblings in the same branch, skipping wait/fork
+  while (step) {
+    const next = resolveNextStep(allSteps, step.step_order, step.parent_step_id, step.branch)
+    if (!next) return null
+    if (!SKIP_TYPES.has(next.type)) return next.type
+    step = next
+  }
+  return null
+}
+
 // ── Main worker handler ───────────────────────────────────────────────────────
 
 async function runSequenceStep(campaignLeadId: string): Promise<void> {
@@ -489,6 +509,8 @@ async function runSequenceStep(campaignLeadId: string): Promise<void> {
           skills:                 leadData.skills ?? undefined,
           recent_posts:           leadData.recent_posts ?? undefined,
         }
+        const nextStepType = resolveNextMeaningfulStepType(allSteps, currentStep)
+
         const result = await generateSequenceMessage({
           step_type:            currentStep.type as 'connect' | 'message' | 'inmail',
           position_in_sequence: positionInSequence,
@@ -500,6 +522,7 @@ async function runSequenceStep(campaignLeadId: string): Promise<void> {
           resolve_variables:    true,
           approach:             ctx.approach,
           tone:                 ctx.tone,
+          next_step_type:       nextStepType,
         })
         aiGeneratedMessage = result.body
         console.log(`[runner] AI message generated for ${leadData.first_name} (pos ${positionInSequence}, ${priorMessages.length} prior msgs): "${aiGeneratedMessage.slice(0, 80)}..."`)

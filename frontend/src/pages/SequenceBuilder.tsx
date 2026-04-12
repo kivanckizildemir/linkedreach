@@ -414,7 +414,10 @@ function buildLayout(allSteps: SequenceStep[], cb: Callbacks): { nodes: Node[]; 
 
 /** Returns the step ID that best represents where this lead currently is. */
 function mapLeadToStepId(lead: CampaignLead, steps: SequenceStep[]): string | null {
-  if (lead.status === 'converted' || lead.status === 'stopped') return null
+  // Stopped leads sit on the end step (if one exists)
+  if (lead.status === 'converted' || lead.status === 'stopped') {
+    return steps.find(s => s.type === 'end')?.id ?? null
+  }
 
   // Main branch steps ordered by step_order
   const mainSteps = steps
@@ -739,9 +742,10 @@ function OverlayAddButton({ onAdd, disabledReasons = [] }: {
   )
 }
 
-function EndNodeComp() {
+function EndNodeComp({ data }: NodeProps) {
+  const { leadsHere = [] } = (data ?? {}) as { leadsHere?: LeadPin[] }
   return (
-    <div style={{ width: NW }} className="flex items-center justify-center">
+    <div style={{ width: NW }} className="flex flex-col items-center">
       <Handle type="target" position={Position.Top} className="!w-2 !h-2 !bg-red-400" />
       <div
         style={{ width: NW, background: '#FEF2F2', border: '2px solid #FECACA', borderLeft: '5px solid #DC2626' }}
@@ -753,6 +757,11 @@ function EndNodeComp() {
           <p className="text-xs text-red-400">Stops this lead's journey here</p>
         </div>
       </div>
+      {leadsHere.length > 0 && (
+        <div className="mt-1 w-full px-1">
+          <LeadChips leads={leadsHere} />
+        </div>
+      )}
     </div>
   )
 }
@@ -1446,7 +1455,7 @@ export function FlowCanvas({ sequence, campaignId }: { sequence: Sequence; campa
     const layout = buildLayout(steps, cb)
     // Inject leadsHere into each step/fork node
     const enriched = layout.nodes.map(n => {
-      if ((n.type === 'stepNode' || n.type === 'forkNode') && n.data) {
+      if ((n.type === 'stepNode' || n.type === 'forkNode' || n.type === 'endNode') && n.data) {
         const step = (n.data as { step: SequenceStep }).step
         const leadsHere = leadsByStep.get(step.id) ?? []
         return { ...n, data: { ...n.data, leadsHere } }

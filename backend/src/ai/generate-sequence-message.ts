@@ -88,6 +88,12 @@ export interface GenerateSequenceMessageInput {
   /** Which lead profile data sources to include. Omit = include all available. */
   profile_sources?: string[]
   /**
+   * The type of the next meaningful step after this one (skipping waits/forks).
+   * 'end' means this is the final message before the sequence closes.
+   * null means unknown or nothing follows.
+   */
+  next_step_type?: string | null
+  /**
    * Strategic guidance injected by the AI Sequence Architect (AI automated mode).
    * When present, the message generator follows the architect's brief precisely.
    */
@@ -163,7 +169,7 @@ function stepConstraints(type: SequenceStepType, position: number): string {
 // ─── Prompt builder ───────────────────────────────────────────────────────────
 
 function buildPrompt(input: GenerateSequenceMessageInput): string {
-  const { step_type, position_in_sequence, product, sender, lead, prior_messages, icp_notes, resolve_variables, approach, tone, max_words, profile_sources, ai_guidance } = input
+  const { step_type, position_in_sequence, product, sender, lead, prior_messages, icp_notes, resolve_variables, approach, tone, max_words, profile_sources, ai_guidance, next_step_type } = input
 
   // Determine which lead data sources are active (default: all)
   const src = profile_sources ?? ['basic', 'summary', 'experience', 'posts']
@@ -337,6 +343,31 @@ function buildPrompt(input: GenerateSequenceMessageInput): string {
       lines.push('A new question — different angle, same genuine curiosity. Never reuse the same question frame.')
     } else if (approach === 'value_first') {
       lines.push('Surface a different value dimension: the earlier message named one outcome — this one names a different one.')
+    }
+    lines.push('')
+  }
+
+  // ── Next step context ──
+  if (next_step_type !== undefined && next_step_type !== null) {
+    lines.push('━━━ WHAT COMES NEXT IN THE SEQUENCE ━━━')
+    if (next_step_type === 'end') {
+      lines.push('This is the FINAL message in the sequence. There are no more follow-ups after this.')
+      lines.push('Write accordingly:')
+      lines.push('  - Use a closing tone that respects their time and leaves a positive impression even if they never reply.')
+      lines.push('  - A subtle "last try" or "last thought" framing is appropriate — honest, not desperate.')
+      lines.push('  - The CTA should be easy to act on. No lengthy asks. Make it simple to say yes.')
+      lines.push("  - Leave the door open. Even if they don't reply now, they should remember this positively.")
+    } else if (next_step_type === 'message' || next_step_type === 'follow_up') {
+      lines.push(`Next step after this: another ${next_step_type}.`)
+      lines.push('Write accordingly:')
+      lines.push("  - This is NOT the last chance — don't treat it as one. Stay confident, not closing.")
+      lines.push('  - Use a lighter, more curious CTA. Leave room for the next message to escalate or change angle.')
+      lines.push('  - Plant a hook or open question that the next message can naturally build on.')
+    } else if (next_step_type === 'connect') {
+      lines.push('Next step: a connection request will follow this message.')
+      lines.push('  - This message is a warm-up before the connect request — keep it soft.')
+    } else {
+      lines.push(`Next step: ${next_step_type}.`)
     }
     lines.push('')
   }
