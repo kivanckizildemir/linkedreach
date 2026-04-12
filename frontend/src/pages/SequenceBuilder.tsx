@@ -1381,10 +1381,9 @@ export function FlowCanvas({ sequence, campaignId }: { sequence: Sequence; campa
   }, [queryClient, campaignId])
 
   const onAdd = useCallback(async (parentId: string | null, branch: Branch, type: StepType) => {
-    const siblings = steps.filter(s =>
-      s.parent_step_id === parentId && s.branch === branch
-    )
-    const nextOrder = siblings.length > 0 ? Math.max(...siblings.map(s => s.step_order)) + 1 : 1
+    // step_order must be globally unique across ALL steps in the sequence so the
+    // worker can look up "current_step" unambiguously regardless of branch.
+    const nextOrder = steps.length > 0 ? Math.max(...steps.map(s => s.step_order)) + 1 : 1
     const newStep = await createStep(sequence.id, {
       type,
       step_order: nextOrder,

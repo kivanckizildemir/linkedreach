@@ -244,7 +244,11 @@ function evaluateFork(
 
 /**
  * Resolve the next step for a campaign lead.
+ *
  * Traverses the sequence tree respecting parent_step_id / branch.
+ * When a branch (if_yes / if_no) is exhausted, automatically continues
+ * with the step that follows the parent fork node in the outer sequence —
+ * so leads never get stuck at the end of a branch.
  */
 function resolveNextStep(
   allSteps: SequenceStep[],
@@ -252,13 +256,28 @@ function resolveNextStep(
   currentParentId: string | null,
   currentBranch: 'main' | 'if_yes' | 'if_no'
 ): SequenceStep | null {
-  // Find next step in the same branch / parent
+  // Find next sibling in the same branch / parent
   const siblings = allSteps
     .filter(s => s.parent_step_id === currentParentId && s.branch === currentBranch)
     .sort((a, b) => a.step_order - b.step_order)
 
   const nextSibling = siblings.find(s => s.step_order > currentStepOrder)
-  return nextSibling ?? null
+  if (nextSibling) return nextSibling
+
+  // Branch exhausted — walk up to the parent fork and continue from there
+  if (currentParentId !== null) {
+    const parentFork = allSteps.find(s => s.id === currentParentId)
+    if (parentFork) {
+      return resolveNextStep(
+        allSteps,
+        parentFork.step_order,
+        parentFork.parent_step_id,
+        parentFork.branch
+      )
+    }
+  }
+
+  return null
 }
 
 /**
@@ -446,10 +465,15 @@ async function runSequenceStep(campaignLeadId: string): Promise<void> {
 
     // Guard: if this is a message/connect step with no template and no AI mode, skip and warn
     // rather than hanging Playwright trying to send an empty message.
+    // IMPORTANT: advance current_step so the lead doesn't get stuck here indefinitely.
     if ((currentStep.type === 'message' || currentStep.type === 'connect')
         && tmpl.trim() === ''
         && !currentStep.ai_generation_mode) {
       console.warn(`[runner] Step ${currentStep.id} (${currentStep.type}) has no message_template — skipping lead ${leadData.first_name}. Add a template in the Sequence Builder.`)
+      const skipNext = resolveNextStep(allSteps, currentStep.step_order, currentStep.parent_step_id, currentStep.branch)
+      if (skipNext) {
+        await supabase.from('campaign_leads').update({ current_step: skipNext.step_order }).eq('id', campaignLeadId)
+      }
       if (context) await persistCookies(context, account.id)
       return
     }
@@ -683,7 +707,7 @@ async function runSequenceStep(campaignLeadId: string): Promise<void> {
         }
 
         case 'follow':
-          await followProfile(page, leadData.linkedin_url, account.id)
+          await followProfile(page, effectiveUrl, account.id)
           break
 
         case 'end':
