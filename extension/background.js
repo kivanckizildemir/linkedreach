@@ -82,7 +82,15 @@ function isTokenExpired(token) {
 }
 
 // ── Main message handler ──────────────────────────────────────────────────────
+// Messages from extension pages (popup, content scripts)
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  handle(msg, _sender).then(sendResponse).catch(e => sendResponse({ error: e.message }))
+  return true
+})
+
+// Messages from external web pages (linkedreach.pages.dev via externally_connectable)
+// Chrome routes these to onMessageExternal, NOT onMessage
+chrome.runtime.onMessageExternal.addListener((msg, _sender, sendResponse) => {
   handle(msg, _sender).then(sendResponse).catch(e => sendResponse({ error: e.message }))
   return true
 })
