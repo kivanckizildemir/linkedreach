@@ -81,16 +81,33 @@ async function testProxyUrl(rawUrl: string): Promise<TestResult> {
 
 // GET /api/proxies
 proxiesRouter.get('/', async (req: Request, res: Response) => {
-  const { data, error } = await supabase
+  // Try with proxy_type first; fall back gracefully if migration not yet applied
+  let { data, error } = await supabase
     .from('proxies')
     .select('id, label, proxy_url, assigned_account_id, is_available, created_at, country, proxy_type')
     .eq('user_id', req.user.id)
     .order('created_at', { ascending: false })
 
+  if (error && (error.code === '42703' || error.message?.includes('proxy_type'))) {
+    // proxy_type column doesn't exist yet — fall back to query without it
+    console.warn('[proxies] proxy_type column missing — run migration 00033_proxy_type.sql in Supabase SQL Editor')
+    const fallback = await supabase
+      .from('proxies')
+      .select('id, label, proxy_url, assigned_account_id, is_available, created_at, country')
+      .eq('user_id', req.user.id)
+      .order('created_at', { ascending: false })
+    data = (fallback.data ?? []).map((p: any) => ({ ...p, proxy_type: 'isp' })) as typeof data
+    error = fallback.error
+  }
+
   if (error) { res.status(500).json({ error: error.message }); return }
 
-  // Mask credentials before sending to frontend
-  const masked = (data ?? []).map(p => ({ ...p, proxy_url: maskUrl(p.proxy_url as string) }))
+  // Mask credentials and normalise proxy_type default before sending to frontend
+  const masked = (data ?? []).map(p => ({
+    ...p,
+    proxy_url: maskUrl(p.proxy_url as string),
+    proxy_type: (p as any).proxy_type ?? 'isp',
+  }))
   res.json({ data: masked })
 })
 
@@ -120,21 +137,32 @@ proxiesRouter.post('/', async (req: Request, res: Response) => {
     }
   }
 
-  const { data, error } = await supabase
+  // Build insert payload — omit proxy_type if column not yet migrated
+  const insertPayload: Record<string, unknown> = {
+    proxy_url: normalizedUrl,
+    label: label?.trim() || null,
+    country: resolvedCountry,
+    user_id: req.user.id,
+    is_available: true,
+  }
+
+  let { data, error } = await supabase
     .from('proxies')
-    .insert({
-      proxy_url: normalizedUrl,
-      label: label?.trim() || null,
-      country: resolvedCountry,
-      proxy_type: resolvedType,
-      user_id: req.user.id,
-      is_available: true,
-    })
+    .insert({ ...insertPayload, proxy_type: resolvedType })
     .select('id, label, proxy_url, assigned_account_id, is_available, created_at, country, proxy_type')
     .single()
 
+  if (error && (error.code === '42703' || error.message?.includes('proxy_type'))) {
+    // Column not yet migrated — insert without it
+    ;({ data, error } = await supabase
+      .from('proxies')
+      .insert(insertPayload)
+      .select('id, label, proxy_url, assigned_account_id, is_available, created_at, country')
+      .single())
+  }
+
   if (error) { res.status(500).json({ error: error.message }); return }
-  res.status(201).json({ data: { ...data, proxy_url: maskUrl(data.proxy_url as string) } })
+  res.status(201).json({ data: { ...(data ?? {}), proxy_url: maskUrl((data as any).proxy_url as string), proxy_type: (data as any).proxy_type ?? resolvedType } })
 })
 
 // POST /api/proxies/bulk — import multiple proxies from newline-separated list
