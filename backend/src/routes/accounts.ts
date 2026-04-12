@@ -272,8 +272,8 @@ accountsRouter.post('/:id/health-check', async (req: Request, res: Response) => 
     }
 
     // Send ALL saved cookies (not just li_at) — LinkedIn may require bcookie, JSESSIONID, etc.
-    const cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join('; ')
-    const jsessionid = cookies.find(c => c.name === 'JSESSIONID')?.value?.replace(/"/g, '') ?? 'ajax:0'
+    let cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join('; ')
+    let jsessionid = cookies.find(c => c.name === 'JSESSIONID')?.value?.replace(/"/g, '') ?? ''
 
     // Build proxy agent — prefer account's own residential proxy (proxy_id → proxies table),
     // fall back to BRIGHTDATA_PROXY_URL env var, then try direct (no proxy).
@@ -296,19 +296,49 @@ accountsRouter.post('/:id/health-check', async (req: Request, res: Response) => 
     // If neither residential proxy is available, try direct — Voyager API often works
     // without a proxy when all auth cookies + LinkedIn headers are present.
 
+    // Bootstrap JSESSIONID from LinkedIn feed if not stored — Voyager API requires it as CSRF token.
+    // A missing or fabricated JSESSIONID causes LinkedIn to return 400 Bad Request.
+    if (!jsessionid) {
+      console.log(`[health-check] ${req.params.id} — no JSESSIONID, bootstrapping from /feed/…`)
+      try {
+        const bootstrapRes = await fetch('https://www.linkedin.com/feed/', {
+          headers: {
+            Cookie: cookieHeader,
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            Accept: 'text/html',
+          },
+          redirect: 'manual',
+          ...(agent ? { dispatcher: agent } : {}),
+          signal: AbortSignal.timeout(10_000),
+        } as RequestInit)
+        const sc = bootstrapRes.headers.get('set-cookie') ?? ''
+        const m = sc.match(/JSESSIONID=([^;,\s]+)/)
+        if (m) {
+          jsessionid = m[1].replace(/"/g, '')
+          cookieHeader = `${cookieHeader}; JSESSIONID=${jsessionid}`
+          console.log(`[health-check] ${req.params.id} — bootstrapped JSESSIONID ✓`)
+        }
+      } catch (e) {
+        console.warn(`[health-check] ${req.params.id} — bootstrap failed: ${(e as Error).message}`)
+      }
+    }
+
+    // Only send csrf-token when we have a real JSESSIONID — sending a fabricated value causes 400.
+    const probeHeaders: Record<string, string> = {
+      Cookie: cookieHeader,
+      'User-Agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+        '(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+      Accept: 'application/vnd.linkedin.normalized+json+2.1',
+      'x-li-lang': 'en_US',
+      'x-restli-protocol-version': '2.0.0',
+    }
+    if (jsessionid) probeHeaders['csrf-token'] = jsessionid
+
     const attemptProbe = async (useAgent: ProxyAgent | undefined) =>
       fetch('https://www.linkedin.com/voyager/api/me', {
         method: 'GET',
-        headers: {
-          Cookie: cookieHeader,
-          'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
-            '(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-          Accept: 'application/vnd.linkedin.normalized+json+2.1',
-          'x-li-lang': 'en_US',
-          'x-restli-protocol-version': '2.0.0',
-          'csrf-token': jsessionid,
-        },
+        headers: probeHeaders,
         ...(useAgent ? { dispatcher: useAgent } : {}),
         signal: AbortSignal.timeout(12_000),
       } as RequestInit)
@@ -323,16 +353,17 @@ accountsRouter.post('/:id/health-check', async (req: Request, res: Response) => 
       probe = await attemptProbe(undefined)
     }
 
+    // 400 after bootstrap = bad CSRF token or malformed cookies → treat as expired
     if (probe.status === 200) {
       if (account.status === 'paused') {
         await supabase.from('linkedin_accounts').update({ status: 'active' }).eq('id', req.params.id)
       }
       res.json({ ok: true, message: 'Session is active ✓' })
-    } else if (probe.status === 401 || probe.status === 403) {
+    } else if (probe.status === 401 || probe.status === 403 || probe.status === 400) {
       await supabase.from('linkedin_accounts').update({ status: 'paused' }).eq('id', req.params.id)
-      res.json({ ok: false, message: 'Session expired — please reconnect.' })
+      res.json({ ok: false, message: 'Session expired or invalid — please reconnect the account.' })
     } else {
-      // Non-200/401 (e.g. 429 rate limit, 999 bot block) — don't mark as expired, just warn
+      // Non-200/4xx (e.g. 429 rate limit, 999 bot block) — don't mark as expired, just warn
       res.json({ ok: false, message: `LinkedIn returned ${probe.status} — try again in a moment.` })
     }
   } catch (err) {
