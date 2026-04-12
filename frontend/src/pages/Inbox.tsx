@@ -209,7 +209,7 @@ export function Inbox() {
               const isSelected = msg.campaign_lead_id === selectedId
               return (
                 <button
-                  key={msg.id}
+                  key={msg.campaign_lead_id}
                   onClick={() => setSelectedId(msg.campaign_lead_id)}
                   className={[
                     'w-full text-left px-4 py-3.5 border-b border-gray-100 transition-colors',
@@ -217,14 +217,19 @@ export function Inbox() {
                   ].join(' ')}
                 >
                   <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <p className="text-sm font-semibold text-gray-900 truncate">
+                    <div className="min-w-0 flex items-center gap-1.5">
+                      <p className={['text-sm truncate', (msg as { unread_count?: number }).unread_count ? 'font-bold text-gray-900' : 'font-semibold text-gray-900'].join(' ')}>
                         {lead.first_name} {lead.last_name}
                       </p>
-                      <p className="text-xs text-gray-400 truncate">{lead.title ?? ''} {lead.company ? `· ${lead.company}` : ''}</p>
+                      {!!( msg as { unread_count?: number }).unread_count && (
+                        <span className="shrink-0 inline-flex items-center justify-center w-4 h-4 text-[9px] font-bold bg-blue-600 text-white rounded-full">
+                          {(msg as { unread_count?: number }).unread_count}
+                        </span>
+                      )}
                     </div>
                     <span className="text-[10px] text-gray-400 shrink-0 mt-0.5">{timeAgo(msg.sent_at)}</span>
                   </div>
+                  <p className="text-xs text-gray-400 truncate">{lead.title ?? ''} {lead.company ? `· ${lead.company}` : ''}</p>
                   <p className="mt-1.5 text-xs text-gray-500 line-clamp-2">{msg.content}</p>
                   <div className="mt-2 flex items-center gap-2">
                     <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${CLASS_COLORS[cls] ?? CLASS_COLORS.none}`}>

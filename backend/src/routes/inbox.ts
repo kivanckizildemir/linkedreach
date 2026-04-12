@@ -99,25 +99,37 @@ inboxRouter.get('/', async (req: Request, res: Response) => {
       (msg.campaign_lead as { campaign?: { user_id?: string } }).campaign?.user_id === req.user.id
   )
 
-  // For sent view: deduplicate — keep only the most recent sent message per campaign_lead
-  let filtered: typeof owned
-  if (view === 'sent') {
-    const seen = new Set<string>()
-    filtered = owned.filter((msg) => {
+  // Apply classification filter before deduplication
+  const classified = (view === 'replies' && classification)
+    ? owned.filter(
+        (msg) =>
+          (msg.campaign_lead as { reply_classification?: string })?.reply_classification === classification
+      )
+    : owned
+
+  // Always deduplicate by campaign_lead_id — one entry per conversation (most recent message).
+  // Messages are already ordered by sent_at DESC so the first occurrence is the latest.
+  // Attach unread_count so the sidebar can show a badge without another query.
+  const unreadCounts = new Map<string, number>()
+  for (const msg of owned) {
+    if ((msg as { is_read?: boolean }).is_read === false) {
+      const clId = msg.campaign_lead_id as string
+      unreadCounts.set(clId, (unreadCounts.get(clId) ?? 0) + 1)
+    }
+  }
+
+  const seen = new Set<string>()
+  const filtered = classified
+    .filter((msg) => {
       const clId = msg.campaign_lead_id as string
       if (seen.has(clId)) return false
       seen.add(clId)
       return true
     })
-  } else {
-    filtered = classification
-      ? owned.filter(
-          (msg) =>
-            (msg.campaign_lead as { reply_classification?: string })?.reply_classification ===
-            classification
-        )
-      : owned
-  }
+    .map((msg) => ({
+      ...msg,
+      unread_count: unreadCounts.get(msg.campaign_lead_id as string) ?? 0,
+    }))
 
   res.json({ data: filtered })
 })
