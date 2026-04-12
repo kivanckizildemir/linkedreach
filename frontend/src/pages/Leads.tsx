@@ -197,17 +197,89 @@ export function Leads() {
   const scoringStartTimeRef = useRef<number>(0)
   const scoringPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
+  // ── localStorage persistence keys (scoped by list) ─────────────────────────
+  const lsEnrichKey  = `lr_enrich_job_${listId ?? 'global'}`
+  const lsScrapeKey  = `lr_scrape_job_${listId ?? 'global'}`
+  const lsScoreKey   = `lr_score_job_${listId ?? 'global'}`
+
   const { data: accounts = [] } = useQuery({
     queryKey: ['accounts'],
     queryFn: fetchAccounts,
   })
 
+  // ── Resume in-progress jobs after navigation ────────────────────────────────
   useEffect(() => {
+    // Enrich job
+    try {
+      const saved = localStorage.getItem(lsEnrichKey)
+      if (saved) {
+        const { jobId } = JSON.parse(saved) as { jobId: string }
+        setEnrichJobId(jobId)
+        setEnrichStatus('running')
+        enrichPollRef.current = setInterval(async () => {
+          try {
+            const status = await getEnrichStatus(jobId)
+            setEnrichProgress(status.progress)
+            if (status.state === 'completed') {
+              clearInterval(enrichPollRef.current!); enrichPollRef.current = null
+              localStorage.removeItem(lsEnrichKey)
+              setEnrichStatus('done'); setEnrichJobId(null)
+              void queryClient.invalidateQueries({ queryKey: ['leads'] })
+              setTimeout(() => setEnrichStatus('idle'), 3000)
+            } else if (status.state === 'failed') {
+              clearInterval(enrichPollRef.current!); enrichPollRef.current = null
+              localStorage.removeItem(lsEnrichKey)
+              setEnrichStatus('error'); setEnrichJobId(null)
+              setTimeout(() => setEnrichStatus('idle'), 4000)
+            }
+          } catch { /* keep polling */ }
+        }, 3000)
+      }
+    } catch { /* ignore bad localStorage */ }
+
+    // Scrape / add-leads job
+    try {
+      const saved = localStorage.getItem(lsScrapeKey)
+      if (saved) {
+        const { jobId } = JSON.parse(saved) as { jobId: string }
+        setAddLeadsJobId(jobId)
+        addLeadsPollRef.current = setInterval(async () => {
+          try {
+            const s = await getListScrapeStatus(jobId)
+            setAddLeadsProgress(s.progress ?? 0)
+            if (s.state === 'completed' || s.state === 'failed') {
+              clearInterval(addLeadsPollRef.current!); addLeadsPollRef.current = null
+              localStorage.removeItem(lsScrapeKey)
+              setAddLeadsJobId(null); setAddLeadsProgress(0)
+              void queryClient.invalidateQueries({ queryKey: ['leads'] })
+              void queryClient.invalidateQueries({ queryKey: ['lead-list', listId] })
+            }
+          } catch { /* keep polling */ }
+        }, 3000)
+      }
+    } catch { /* ignore bad localStorage */ }
+
+    // Scoring job
+    try {
+      const saved = localStorage.getItem(lsScoreKey)
+      if (saved) {
+        const { startTime, total } = JSON.parse(saved) as { startTime: number; total: number }
+        scoringStartTimeRef.current = startTime
+        setIsScoringAll(true)
+        setScoringTotal(total)
+        setScoringDone(0)
+        scoringPollRef.current = setInterval(() => {
+          void queryClient.invalidateQueries({ queryKey: ['leads'] })
+        }, 2000)
+      }
+    } catch { /* ignore bad localStorage */ }
+
     return () => {
       if (addLeadsPollRef.current) clearInterval(addLeadsPollRef.current)
       if (enrichPollRef.current) clearInterval(enrichPollRef.current)
       if (scoringPollRef.current) clearInterval(scoringPollRef.current)
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   function toggleSort(col: SortCol) {
@@ -262,6 +334,7 @@ export function Leads() {
     if (freshlyScored >= scoringTotal) {
       if (scoringPollRef.current) clearInterval(scoringPollRef.current)
       scoringPollRef.current = null
+      localStorage.removeItem(lsScoreKey)
       setIsScoringAll(false)
     }
   }, [leads, isScoringAll, scoringTotal])
@@ -269,6 +342,7 @@ export function Leads() {
   async function handleCancelScoring() {
     if (scoringPollRef.current) clearInterval(scoringPollRef.current)
     scoringPollRef.current = null
+    localStorage.removeItem(lsScoreKey)
     setIsScoringAll(false)
     await cancelQualify(leads.map(l => l.id)).catch(() => null)
   }
@@ -408,6 +482,7 @@ export function Leads() {
     if (enrichPollRef.current) clearInterval(enrichPollRef.current)
     enrichPollRef.current = null
     if (enrichJobId) await cancelEnrichJob(enrichJobId).catch(() => null)
+    localStorage.removeItem(lsEnrichKey)
     setEnrichStatus('idle')
     setEnrichJobId(null)
     setEnrichProgress(0)
@@ -426,18 +501,21 @@ export function Leads() {
       setEnrichJobId(result.job_id)
       setEnrichCount(result.count)
       setShowEnrichModal(false)   // close modal — progress shows on button
+      localStorage.setItem(lsEnrichKey, JSON.stringify({ jobId: result.job_id }))
 
       enrichPollRef.current = setInterval(async () => {
         try {
           const status = await getEnrichStatus(result.job_id)
           setEnrichProgress(status.progress)
           if (status.state === 'completed') {
-            clearInterval(enrichPollRef.current!)
-            setEnrichStatus('done')
+            clearInterval(enrichPollRef.current!); enrichPollRef.current = null
+            localStorage.removeItem(lsEnrichKey)
+            setEnrichStatus('done'); setEnrichJobId(null)
             void queryClient.invalidateQueries({ queryKey: ['leads'] })
             setTimeout(() => setEnrichStatus('idle'), 3000)
           } else if (status.state === 'failed') {
-            clearInterval(enrichPollRef.current!)
+            clearInterval(enrichPollRef.current!); enrichPollRef.current = null
+            localStorage.removeItem(lsEnrichKey)
             setEnrichError('Worker job failed — check server logs')
             setEnrichStatus('error')
             setTimeout(() => setEnrichStatus('idle'), 4000)
@@ -477,10 +555,12 @@ export function Leads() {
               onClick={() => {
                 if (isScoringAll) { handleCancelScoring(); return }
                 // Start animation immediately, then fire the mutation
-                scoringStartTimeRef.current = Date.now()
+                const startTime = Date.now()
+                scoringStartTimeRef.current = startTime
                 setIsScoringAll(true)
                 setScoringTotal(leads.length)
                 setScoringDone(0)
+                localStorage.setItem(lsScoreKey, JSON.stringify({ startTime, total: leads.length }))
                 if (scoringPollRef.current) clearInterval(scoringPollRef.current)
                 scoringPollRef.current = setInterval(() => {
                   void queryClient.invalidateQueries({ queryKey: ['leads'] })
@@ -603,6 +683,7 @@ export function Leads() {
                 onClick={async () => {
                   if (addLeadsPollRef.current) clearInterval(addLeadsPollRef.current)
                   await cancelScrapeJob(addLeadsJobId).catch(() => null)
+                  localStorage.removeItem(lsScrapeKey)
                   setAddLeadsJobId(null)
                   setAddLeadsProgress(0)
                   void queryClient.invalidateQueries({ queryKey: ['leads'] })
@@ -1054,14 +1135,15 @@ export function Leads() {
               setAddLeadsJobId(job_id)
               setAddLeadsProgress(0)
               setShowAddToList(false)
+              localStorage.setItem(lsScrapeKey, JSON.stringify({ jobId: job_id }))
               addLeadsPollRef.current = setInterval(async () => {
                 try {
                   const s = await getListScrapeStatus(job_id)
                   setAddLeadsProgress(s.progress ?? 0)
                   if (s.state === 'completed' || s.state === 'failed') {
-                    clearInterval(addLeadsPollRef.current!)
-                    setAddLeadsJobId(null)
-                    setAddLeadsProgress(0)
+                    clearInterval(addLeadsPollRef.current!); addLeadsPollRef.current = null
+                    localStorage.removeItem(lsScrapeKey)
+                    setAddLeadsJobId(null); setAddLeadsProgress(0)
                     void queryClient.invalidateQueries({ queryKey: ['leads'] })
                     void queryClient.invalidateQueries({ queryKey: ['lead-list', listId] })
                   }
