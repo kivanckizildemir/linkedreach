@@ -423,9 +423,14 @@ async function runSequenceStep(campaignLeadId: string): Promise<void> {
   try {
     // 8. Handle fork — evaluate condition and route to branch
     if (currentStep.type === 'fork') {
-      const isConnected = page
-        ? await checkConnectionStatus(page, leadData.linkedin_url, account.id) === 'connected'
-        : false   // fallback: assume not connected when no browser
+      // Trust the DB status when it already tells us the lead is connected.
+      // Only do a live Playwright check when status is ambiguous (pending/connection_sent).
+      const alreadyConnectedByStatus = ['connected', 'messaged', 'replied', 'stopped', 'converted'].includes(campaignLead.status)
+      const isConnected = alreadyConnectedByStatus
+        ? true
+        : page
+          ? await checkConnectionStatus(page, leadData.linkedin_url, account.id) === 'connected'
+          : false   // fallback: assume not connected when no browser
       const branch = evaluateFork(
         currentStep.condition ?? {},
         campaignLead.status,
