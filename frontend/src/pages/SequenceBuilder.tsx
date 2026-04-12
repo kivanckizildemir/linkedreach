@@ -219,6 +219,36 @@ function mergeDisabled(a: DisabledEntry[], b: DisabledEntry[]): DisabledEntry[] 
   return [...a, ...b.filter(e => !seen.has(e.type))]
 }
 
+/**
+ * Walk up the step's ancestry and return fork conditions that should be
+ * blocked in this step's fork condition picker.
+ *
+ * Rule: inside the if_yes branch of a "connected?" fork you cannot add
+ * another "connected?" fork — the lead is already confirmed connected.
+ */
+function getBlockedForkConditions(step: SequenceStep, allSteps: SequenceStep[]): ForkCondition[] {
+  const blocked: ForkCondition[] = []
+  let parentId = step.parent_step_id
+  let branch   = step.branch
+
+  while (parentId !== null) {
+    const parent = allSteps.find(s => s.id === parentId)
+    if (!parent) break
+
+    if (parent.type === 'fork' && branch === 'if_yes') {
+      const cond = parent.condition?.type as ForkCondition | undefined
+      if (cond === 'connected' || cond === 'not_connected') {
+        blocked.push('connected', 'not_connected')
+      }
+    }
+
+    branch   = parent.branch
+    parentId = parent.parent_step_id
+  }
+
+  return [...new Set(blocked)]
+}
+
 // ── Tree ──────────────────────────────────────────────────────────────────────
 
 interface StepNode { step: SequenceStep; ifYes?: StepNode[]; ifNo?: StepNode[] }
@@ -778,10 +808,11 @@ const nodeTypes = {
 
 // ── Edit modal ────────────────────────────────────────────────────────────────
 
-function EditModal({ step, sequenceId, defaultLengthPreset, onSave, onDelete, onClose, onTest }: {
+function EditModal({ step, sequenceId, defaultLengthPreset, blockedForkConditions = [], onSave, onDelete, onClose, onTest }: {
   step: SequenceStep
   sequenceId: string
   defaultLengthPreset: string
+  blockedForkConditions?: ForkCondition[]
   onSave: (updates: Partial<SequenceStep>) => void
   onDelete: (id: string) => void
   onClose: () => void
@@ -905,27 +936,38 @@ function EditModal({ step, sequenceId, defaultLengthPreset, onSave, onDelete, on
             <div className="space-y-3">
               <label className="block text-sm font-semibold text-gray-700">Branch condition</label>
               <div className="grid grid-cols-1 gap-2">
-                {FORK_CONDS.map(({ value, question, yes, no }) => (
-                  <button key={value} onClick={() => setFork(value)}
-                    className={[
-                      'flex items-start gap-3 px-4 py-3 rounded-xl border-2 text-sm text-left transition-all',
-                      forkCond === value
-                        ? 'border-indigo-400 bg-indigo-50'
-                        : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50',
-                    ].join(' ')}>
-                    <span className={`mt-0.5 w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 ${forkCond === value ? 'border-indigo-500 bg-indigo-500' : 'border-gray-300'}`}>
-                      {forkCond === value && <span className="w-1.5 h-1.5 rounded-full bg-white block" />}
-                    </span>
-                    <div>
-                      <p className="font-semibold text-gray-800">{question}</p>
-                      <p className="text-xs text-gray-500 mt-0.5">
-                        <span className="text-green-600 font-medium">{yes}</span>
-                        {' → '}
-                        <span className="text-red-500 font-medium">{no}</span>
-                      </p>
-                    </div>
-                  </button>
-                ))}
+                {FORK_CONDS.map(({ value, question, yes, no }) => {
+                  const isBlocked = blockedForkConditions.includes(value)
+                  return (
+                    <button key={value}
+                      onClick={() => { if (!isBlocked) setFork(value) }}
+                      disabled={isBlocked}
+                      title={isBlocked ? 'Lead is already confirmed connected — this condition is redundant here' : undefined}
+                      className={[
+                        'flex items-start gap-3 px-4 py-3 rounded-xl border-2 text-sm text-left transition-all',
+                        isBlocked
+                          ? 'opacity-40 cursor-not-allowed border-gray-200 bg-gray-50'
+                          : forkCond === value
+                            ? 'border-indigo-400 bg-indigo-50'
+                            : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50',
+                      ].join(' ')}>
+                      <span className={`mt-0.5 w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 ${!isBlocked && forkCond === value ? 'border-indigo-500 bg-indigo-500' : 'border-gray-300'}`}>
+                        {!isBlocked && forkCond === value && <span className="w-1.5 h-1.5 rounded-full bg-white block" />}
+                      </span>
+                      <div>
+                        <p className="font-semibold text-gray-800">{question}</p>
+                        {isBlocked
+                          ? <p className="text-xs text-orange-500 mt-0.5 font-medium">Not available — lead already confirmed connected in this branch</p>
+                          : <p className="text-xs text-gray-500 mt-0.5">
+                              <span className="text-green-600 font-medium">{yes}</span>
+                              {' → '}
+                              <span className="text-red-500 font-medium">{no}</span>
+                            </p>
+                        }
+                      </div>
+                    </button>
+                  )
+                })}
               </div>
             </div>
           )}
@@ -1682,6 +1724,7 @@ export function FlowCanvas({ sequence, campaignId }: { sequence: Sequence; campa
           step={editingStep}
           sequenceId={sequence.id}
           defaultLengthPreset={defaultLengthPreset}
+          blockedForkConditions={getBlockedForkConditions(editingStep, steps)}
           onSave={updates => updateMutation.mutate({ id: editingStep.id, updates })}
           onDelete={onDelete}
           onClose={() => setEditingStep(null)}
