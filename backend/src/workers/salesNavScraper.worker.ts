@@ -416,10 +416,10 @@ export const salesNavScraperWorker = new Worker<SalesNavJob>(
       // so we must pause long enough at each position for new cards to appear.
       const allRawLeads = new Map<string, RawLead>()  // keyed by salesNavUrl for dedup
       let scrollY = 0
-      const SCROLL_STEP = 250   // smaller step = more render triggers
+      const SCROLL_STEP = 400   // px per step — larger = reach more of the page faster
       let noNewCount = 0
 
-      for (let s = 0; s < 60 && noNewCount < 8; s++) {
+      for (let s = 0; s < 80 && noNewCount < 15; s++) {
         const batch = await extractVisibleLeads().catch(() => [] as RawLead[])
         const before = allRawLeads.size
         for (const r of batch) {
@@ -429,9 +429,11 @@ export const salesNavScraperWorker = new Worker<SalesNavJob>(
         if (allRawLeads.size === before) noNewCount++
         else noNewCount = 0
 
+        console.log(`[sales-nav] Scroll step ${s + 1}: y=${scrollY} leads=${allRawLeads.size} noNew=${noNewCount}`)
+
         scrollY += SCROLL_STEP
         await page.evaluate(`window.scrollTo(0, ${scrollY})`)
-        await delay(800 + Math.random() * 400)  // longer dwell for virtual scroll to render
+        await delay(1200 + Math.random() * 600)  // longer dwell for virtual scroll to render
       }
 
       const cardCount = allRawLeads.size
@@ -455,7 +457,7 @@ export const salesNavScraperWorker = new Worker<SalesNavJob>(
           const pageRaw = new Map<string, RawLead>()
           let pgScrollY = 0
           let pgNoNew = 0
-          for (let s = 0; s < 60 && pgNoNew < 8; s++) {
+          for (let s = 0; s < 80 && pgNoNew < 15; s++) {
             const batch = await extractVisibleLeads().catch(() => [] as RawLead[])
             const before = pageRaw.size
             for (const r of batch) {
@@ -466,7 +468,7 @@ export const salesNavScraperWorker = new Worker<SalesNavJob>(
             else pgNoNew = 0
             pgScrollY += SCROLL_STEP
             await page.evaluate(`window.scrollTo(0, ${pgScrollY})`)
-            await delay(800 + Math.random() * 400)
+            await delay(1200 + Math.random() * 600)
           }
           pageLeads = Array.from(pageRaw.values())
         }
@@ -682,6 +684,25 @@ async function saveLeads(
   let savedLeads: LeadToEnrich[] = []
   const sourceField = resolveSourceField(source_type)
 
+  // Normalize a LinkedIn URL: strip query string and Sales Nav comma-separated suffixes
+  // e.g. "…/lead/ACwAAA,NAME_SEARCH,ar0N?_ntb=x" → "…/lead/ACwAAA"
+  function normalizeUrl(url: string): string {
+    return url.split('?')[0].split(',')[0].replace(/\/+$/, '')
+  }
+
+  // Normalize all incoming lead URLs before any DB work
+  for (const lead of leads) {
+    lead.linkedin_url = normalizeUrl(lead.linkedin_url)
+  }
+
+  // Deduplicate within the batch itself (keep first occurrence)
+  const seenUrls = new Set<string>()
+  const dedupedLeads = leads.filter(l => {
+    if (seenUrls.has(l.linkedin_url)) return false
+    seenUrls.add(l.linkedin_url)
+    return true
+  })
+
   // Clear existing leads in this list before adding fresh ones — ensures
   // each scrape cycle gives a clean result rather than appending duplicates.
   if (list_id) {
@@ -696,31 +717,71 @@ async function saveLeads(
     }
   }
 
-  if (leads.length > 0) {
-    const rows = leads.map(l => ({
-      ...l,
-      user_id,
-      source: sourceField,
-      raw_data: { source: sourceField },
-      ...(list_id ? { list_id } : {}),
-    }))
+  if (dedupedLeads.length > 0) {
+    const allUrls = dedupedLeads.map(l => l.linkedin_url)
 
-    if (rows.length > 0) {
+    // Check which leads already exist for this user (cross-list deduplication)
+    const { data: alreadyExisting } = await supabase
+      .from('leads')
+      .select('id, linkedin_url, first_name, last_name')
+      .eq('user_id', user_id)
+      .in('linkedin_url', allUrls)
+
+    const existingByUrl = new Map(
+      (alreadyExisting ?? []).map((e: { id: string; linkedin_url: string }) => [e.linkedin_url, e])
+    )
+
+    const toUpdate = dedupedLeads.filter(l => existingByUrl.has(l.linkedin_url))
+    const toInsert = dedupedLeads.filter(l => !existingByUrl.has(l.linkedin_url))
+
+    console.log(`[sales-nav] ${toUpdate.length} existing leads will be overwritten, ${toInsert.length} new leads to insert`)
+
+    // Update (overwrite) existing leads with fresh scraped data
+    for (const lead of toUpdate) {
+      const existing = existingByUrl.get(lead.linkedin_url)!
+      const { data: updated } = await supabase
+        .from('leads')
+        .update({
+          first_name: lead.first_name,
+          last_name: lead.last_name,
+          title: lead.title,
+          company: lead.company,
+          location: lead.location,
+          source: sourceField,
+          raw_data: { source: sourceField },
+          ...(list_id ? { list_id } : {}),
+        })
+        .eq('id', (existing as { id: string }).id)
+        .select('id, linkedin_url, first_name, last_name')
+        .single()
+      if (updated) savedLeads.push(updated as LeadToEnrich)
+    }
+
+    // Insert brand-new leads
+    if (toInsert.length > 0) {
+      const rows = toInsert.map(l => ({
+        ...l,
+        user_id,
+        source: sourceField,
+        raw_data: { source: sourceField },
+        ...(list_id ? { list_id } : {}),
+      }))
+
       const { data: inserted, error: insertErr } = await supabase
         .from('leads')
         .insert(rows)
         .select('id, linkedin_url, first_name, last_name')
       if (insertErr) throw new Error(`DB insert failed: ${insertErr.message}`)
 
-      savedLeads = (inserted ?? []) as LeadToEnrich[]
-
-      // Qualification is triggered on-demand when the user opens the lead list,
-      // not here — so we don't score leads nobody has looked at yet.
+      savedLeads = [...savedLeads, ...(inserted ?? []) as LeadToEnrich[]]
     }
+
+    // Qualification is triggered on-demand when the user opens the lead list,
+    // not here — so we don't score leads nobody has looked at yet.
   }
 
   await job.updateProgress(100)
-  return { scraped: leads.length, saved: savedLeads.length, savedLeads }
+  return { scraped: dedupedLeads.length, saved: savedLeads.length, savedLeads }
 }
 
 salesNavScraperWorker.on('failed', (job, err) => {

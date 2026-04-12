@@ -31,24 +31,26 @@ export async function scrapeLinkedInProfile(page: Page, linkedinUrl: string): Pr
     if (profileUrl.includes('/sales/lead/') || profileUrl.includes('/sales/people/')) {
       let resolvedFromApi: string | null = null
 
-      const apiListener = async (response: import('playwright').Response) => {
-        const url = response.url()
-        if (!url.includes('/salesApiProfiles/')) return
+      // Race: wait for the salesApiProfiles response OR 10s timeout — whichever fires first.
+      // The old fixed 3s sleep was too short; the API response often arrives at 4-6s.
+      const apiResponsePromise = page.waitForResponse(
+        (r) => r.url().includes('/salesApiProfiles/'),
+        { timeout: 10_000 }
+      ).then(async (r) => {
         try {
-          const body = await response.text()
+          const body = await r.text()
           const inMatch = body.match(/linkedin\.com\/in\/([a-zA-Z0-9_%-]{3,})(?:\/|"|\\|\s|$)/)
-          if (inMatch && inMatch[1] !== 'me' && !resolvedFromApi) {
+          if (inMatch && inMatch[1] !== 'me') {
             resolvedFromApi = `https://www.linkedin.com/in/${inMatch[1]}`.split('?')[0].replace(/\/$/, '')
           }
         } catch { /* non-fatal */ }
-      }
-      page.on('response', apiListener)
+      }).catch(() => null)  // timeout → null, that's fine
 
       // Navigate to the Sales Nav profile — this triggers the salesApiProfiles API call
       await page.goto(profileUrl.split('?')[0], { waitUntil: 'domcontentloaded', timeout: 30_000 })
-      await page.waitForTimeout(3000)  // allow time for API response to be intercepted
 
-      page.off('response', apiListener)
+      // Wait for the API response (up to 10s from above) to resolve
+      await apiResponsePromise
 
       const landedUrl = page.url()
       if (
@@ -251,12 +253,15 @@ export async function scrapeLinkedInProfile(page: Page, linkedinUrl: string): Pr
 }
 
 export async function enrichLeads(
-  page: Page,
+  initialPage: Page,
   leads: LeadToEnrich[],
   user_id: string,
   onProgress?: (done: number, total: number) => void,
   isCancelled?: () => Promise<boolean>
 ): Promise<{ sessionExpired: boolean; cancelled?: boolean }> {
+  let consecutiveSessionExpiries = 0
+  let page = initialPage
+
   for (let i = 0; i < leads.length; i++) {
     if (isCancelled && await isCancelled()) {
       console.log(`[enrich] Cancelled at lead ${i + 1}/${leads.length}`)
@@ -273,12 +278,41 @@ export async function enrichLeads(
       console.log(`[enrich] (${i + 1}/${leads.length}) ${lead.first_name} ${lead.last_name}`)
       const enriched = await scrapeLinkedInProfile(page, lead.linkedin_url)
 
-      // Session died — stop the entire batch, don't hammer more profiles
+      // Session died — try to recover by revisiting the feed before giving up
       if (enriched._sessionExpired) {
-        console.warn(`[enrich] Session expired mid-batch — stopping at lead ${i + 1}/${leads.length}`)
-        onProgress?.(i + 1, leads.length)
-        return { sessionExpired: true }
+        consecutiveSessionExpiries++
+        console.warn(`[enrich] Session expired on lead ${i + 1}/${leads.length} (consecutive: ${consecutiveSessionExpiries})`)
+
+        if (consecutiveSessionExpiries >= 2) {
+          console.warn('[enrich] 2 consecutive session expiries — session is truly dead, stopping batch')
+          onProgress?.(i + 1, leads.length)
+          return { sessionExpired: true }
+        }
+
+        // Try to recover: navigate back to LinkedIn feed and wait for session to re-establish
+        console.log('[enrich] Attempting session recovery via feed...')
+        try {
+          await page.goto('https://www.linkedin.com/feed/', { waitUntil: 'domcontentloaded', timeout: 25_000 })
+          await page.waitForTimeout(4000)
+          const feedUrl = page.url()
+          if (feedUrl.includes('/login') || feedUrl.includes('/uas/login') || feedUrl.includes('/checkpoint')) {
+            console.warn('[enrich] Recovery failed — feed also redirected to login. Stopping batch.')
+            onProgress?.(i + 1, leads.length)
+            return { sessionExpired: true }
+          }
+          console.log('[enrich] Recovery succeeded — continuing from current lead')
+          // Retry the same lead after recovery
+          i--
+          onProgress?.(i + 1, leads.length)
+          continue
+        } catch (recovErr) {
+          console.warn(`[enrich] Recovery navigation failed: ${(recovErr as Error).message}`)
+          onProgress?.(i + 1, leads.length)
+          return { sessionExpired: true }
+        }
       }
+
+      consecutiveSessionExpiries = 0  // reset on any non-expired result
 
       const hasData = enriched.about || enriched.experience_description || enriched.skills.length > 0 || enriched.recent_posts.length > 0
       if (hasData) {
@@ -307,16 +341,36 @@ export async function enrichLeads(
         console.log(`[enrich] No data scraped for ${lead.first_name} ${lead.last_name} (${lead.linkedin_url})`)
       }
     } catch (err) {
-      console.warn(`[enrich] Failed for ${lead.linkedin_url}: ${(err as Error).message}`)
+      const msg = (err as Error).message ?? ''
+      console.warn(`[enrich] Failed for ${lead.linkedin_url}: ${msg}`)
+
+      // Page/tab crash (OOM in renderer) — open a fresh page on the same context and continue
+      if (msg.includes('crashed') || msg.includes('Target closed') || msg.includes('Target crashed')) {
+        console.warn('[enrich] Page crashed — opening new page on existing context')
+        try {
+          page = await page.context().newPage()
+          console.warn('[enrich] New page opened — continuing batch')
+        } catch (newPageErr) {
+          console.warn(`[enrich] Could not open new page: ${(newPageErr as Error).message} — stopping batch`)
+          return { sessionExpired: false }
+        }
+      }
     }
 
     onProgress?.(i + 1, leads.length)
 
     if (i < leads.length - 1) {
-      // 0.5–3 second randomised gap — human-like paging speed
-      const delay = 500 + Math.random() * 2500
+      // 4–10 second randomised gap — slow enough to avoid bot detection
+      const delay = 4000 + Math.random() * 6000
       console.log(`[enrich] Waiting ${(delay / 1000).toFixed(1)}s before next lead…`)
       await page.waitForTimeout(delay)
+
+      // Every 3rd profile visit, briefly check the feed to look human
+      if ((i + 1) % 3 === 0) {
+        console.log('[enrich] Pausing at feed between profiles…')
+        await page.goto('https://www.linkedin.com/feed/', { waitUntil: 'domcontentloaded', timeout: 25_000 }).catch(() => null)
+        await page.waitForTimeout(3000 + Math.random() * 2000)
+      }
     }
   }
   return { sessionExpired: false }
