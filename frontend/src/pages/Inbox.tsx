@@ -49,7 +49,7 @@ function timeAgo(dateStr: string): string {
 }
 
 export function Inbox() {
-  const [view, setView] = useState<'replies' | 'sent'>('replies')
+  const [replyFilter, setReplyFilter] = useState<'all' | 'replied'>('all')
   const [filter, setFilter] = useState('')
   const [campaignFilter, setCampaignFilter] = useState('')
   const [inboxSearch, setInboxSearch] = useState('')
@@ -66,11 +66,11 @@ export function Inbox() {
   })
 
   const { data: messages = [], isLoading } = useQuery({
-    queryKey: ['inbox', view, filter, campaignFilter],
+    queryKey: ['inbox', replyFilter, filter, campaignFilter],
     queryFn: () => fetchInbox(
-      view === 'replies' ? (filter || undefined) : undefined,
+      filter || undefined,
       campaignFilter || undefined,
-      view,
+      replyFilter,
     ),
   })
 
@@ -139,16 +139,16 @@ export function Inbox() {
       <div className="w-80 shrink-0 border-r border-gray-200 bg-white flex flex-col">
         <div className="px-4 py-4 border-b border-gray-200">
           <h1 className="text-lg font-bold text-gray-900">Inbox</h1>
-          {/* Replies / Sent tab switcher */}
+          {/* All / Replied filter */}
           <div className="mt-3 flex rounded-lg border border-gray-200 overflow-hidden text-xs font-medium">
             <button
-              onClick={() => { setView('replies'); setSelectedId(null) }}
-              className={['flex-1 py-1.5 transition-colors', view === 'replies' ? 'bg-gray-800 text-white' : 'text-gray-600 hover:bg-gray-50'].join(' ')}
-            >Replies</button>
+              onClick={() => { setReplyFilter('all'); setSelectedId(null) }}
+              className={['flex-1 py-1.5 transition-colors', replyFilter === 'all' ? 'bg-gray-800 text-white' : 'text-gray-600 hover:bg-gray-50'].join(' ')}
+            >All</button>
             <button
-              onClick={() => { setView('sent'); setSelectedId(null) }}
-              className={['flex-1 py-1.5 border-l border-gray-200 transition-colors', view === 'sent' ? 'bg-gray-800 text-white' : 'text-gray-600 hover:bg-gray-50'].join(' ')}
-            >Sent</button>
+              onClick={() => { setReplyFilter('replied'); setSelectedId(null) }}
+              className={['flex-1 py-1.5 border-l border-gray-200 transition-colors', replyFilter === 'replied' ? 'bg-gray-800 text-white' : 'text-gray-600 hover:bg-gray-50'].join(' ')}
+            >Replied</button>
           </div>
           {campaigns.length > 0 && (
             <select
@@ -169,24 +169,22 @@ export function Inbox() {
             placeholder="Search by name or company…"
             className="mt-2 w-full px-2.5 py-1.5 border border-gray-200 rounded-lg text-xs text-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
-          {view === 'replies' && (
-            <div className="mt-3 flex flex-wrap gap-1.5">
-              {FILTERS.map(({ label, value }) => (
-                <button
-                  key={value}
-                  onClick={() => setFilter(value)}
-                  className={[
-                    'px-2.5 py-1 text-xs rounded-full border transition-colors',
-                    filter === value
-                      ? 'bg-blue-600 text-white border-blue-600'
-                      : 'border-gray-200 text-gray-600 hover:bg-gray-50',
-                  ].join(' ')}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          )}
+          <div className="mt-3 flex flex-wrap gap-1.5">
+            {FILTERS.map(({ label, value }) => (
+              <button
+                key={value}
+                onClick={() => setFilter(value)}
+                className={[
+                  'px-2.5 py-1 text-xs rounded-full border transition-colors',
+                  filter === value
+                    ? 'bg-blue-600 text-white border-blue-600'
+                    : 'border-gray-200 text-gray-600 hover:bg-gray-50',
+                ].join(' ')}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto">
@@ -194,7 +192,7 @@ export function Inbox() {
             <div className="py-10 text-center text-sm text-gray-400">Loading…</div>
           ) : messages.length === 0 ? (
             <div className="py-16 text-center px-4">
-              <p className="text-sm text-gray-500">{view === 'sent' ? 'No messages sent yet' : 'No replies yet'}</p>
+              <p className="text-sm text-gray-500">{replyFilter === 'replied' ? 'No replies yet' : 'No conversations yet'}</p>
               <p className="mt-1 text-xs text-gray-400">Replies from your campaigns will appear here</p>
             </div>
           ) : (
@@ -218,13 +216,16 @@ export function Inbox() {
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0 flex items-center gap-1.5">
-                      <p className={['text-sm truncate', (msg as { unread_count?: number }).unread_count ? 'font-bold text-gray-900' : 'font-semibold text-gray-900'].join(' ')}>
+                      <p className={['text-sm truncate', msg.unread_count ? 'font-bold text-gray-900' : 'font-semibold text-gray-900'].join(' ')}>
                         {lead.first_name} {lead.last_name}
                       </p>
-                      {!!( msg as { unread_count?: number }).unread_count && (
+                      {!!msg.unread_count && (
                         <span className="shrink-0 inline-flex items-center justify-center w-4 h-4 text-[9px] font-bold bg-blue-600 text-white rounded-full">
-                          {(msg as { unread_count?: number }).unread_count}
+                          {msg.unread_count}
                         </span>
+                      )}
+                      {msg.has_reply && !msg.unread_count && (
+                        <span className="shrink-0 text-[9px] font-medium text-emerald-600">↩</span>
                       )}
                     </div>
                     <span className="text-[10px] text-gray-400 shrink-0 mt-0.5">{timeAgo(msg.sent_at)}</span>

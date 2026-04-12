@@ -54,18 +54,19 @@ inboxRouter.post('/:campaignLeadId/mark-read', async (req: Request, res: Respons
   res.json({ ok: true })
 })
 
-// GET /api/inbox — messages across the user's campaigns
-// ?view=sent  → most recent sent message per campaign_lead (for "Sent" tab)
-// ?view=replies (default) → received messages only
+// GET /api/inbox — one conversation entry per campaign_lead, sorted by most recent activity
+// ?filter=replied   → only conversations where lead has replied
+// ?filter=all       → all conversations (default)
+// ?classification=  → filter by reply_classification
+// ?campaign_id=     → filter by campaign
 inboxRouter.get('/', async (req: Request, res: Response) => {
-  const { classification, campaign_id, view } = req.query as {
+  const { classification, campaign_id, filter } = req.query as {
     classification?: ReplyClassification
     campaign_id?: string
-    view?: 'replies' | 'sent'
+    filter?: 'all' | 'replied'
   }
 
-  const direction = view === 'sent' ? 'sent' : 'received'
-
+  // Fetch ALL messages (both directions) so we can build proper conversation previews
   let query = supabase
     .from('messages')
     .select(`
@@ -78,7 +79,6 @@ inboxRouter.get('/', async (req: Request, res: Response) => {
         campaign:campaigns (id, name, user_id)
       )
     `)
-    .eq('direction', direction)
     .order('sent_at', { ascending: false })
 
   if (campaign_id) {
@@ -99,39 +99,46 @@ inboxRouter.get('/', async (req: Request, res: Response) => {
       (msg.campaign_lead as { campaign?: { user_id?: string } }).campaign?.user_id === req.user.id
   )
 
-  // Apply classification filter before deduplication
-  const classified = (view === 'replies' && classification)
-    ? owned.filter(
-        (msg) =>
-          (msg.campaign_lead as { reply_classification?: string })?.reply_classification === classification
-      )
-    : owned
+  // Build per-conversation aggregates in one pass
+  const convMap = new Map<string, {
+    latestMsg: typeof owned[0]
+    unreadCount: number
+    hasReply: boolean
+  }>()
 
-  // Always deduplicate by campaign_lead_id — one entry per conversation (most recent message).
-  // Messages are already ordered by sent_at DESC so the first occurrence is the latest.
-  // Attach unread_count so the sidebar can show a badge without another query.
-  const unreadCounts = new Map<string, number>()
   for (const msg of owned) {
-    if ((msg as { is_read?: boolean }).is_read === false) {
-      const clId = msg.campaign_lead_id as string
-      unreadCounts.set(clId, (unreadCounts.get(clId) ?? 0) + 1)
+    const clId = msg.campaign_lead_id as string
+    const isUnread = (msg as { is_read?: boolean }).is_read === false && msg.direction === 'received'
+    const isReceived = msg.direction === 'received'
+
+    if (!convMap.has(clId)) {
+      // First occurrence = most recent (query is DESC)
+      convMap.set(clId, { latestMsg: msg, unreadCount: 0, hasReply: false })
     }
+    const entry = convMap.get(clId)!
+    if (isUnread) entry.unreadCount++
+    if (isReceived) entry.hasReply = true
   }
 
-  const seen = new Set<string>()
-  const filtered = classified
-    .filter((msg) => {
-      const clId = msg.campaign_lead_id as string
-      if (seen.has(clId)) return false
-      seen.add(clId)
-      return true
-    })
-    .map((msg) => ({
-      ...msg,
-      unread_count: unreadCounts.get(msg.campaign_lead_id as string) ?? 0,
-    }))
+  let conversations = Array.from(convMap.values())
 
-  res.json({ data: filtered })
+  // Apply filters
+  if (filter === 'replied') {
+    conversations = conversations.filter(c => c.hasReply)
+  }
+  if (classification) {
+    conversations = conversations.filter(
+      c => (c.latestMsg.campaign_lead as { reply_classification?: string })?.reply_classification === classification
+    )
+  }
+
+  const result = conversations.map(c => ({
+    ...c.latestMsg,
+    unread_count: c.unreadCount,
+    has_reply: c.hasReply,
+  }))
+
+  res.json({ data: result })
 })
 
 // GET /api/inbox/:campaignLeadId — full conversation thread

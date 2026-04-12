@@ -327,17 +327,25 @@ async function pollAccountInbox(account: Account): Promise<void> {
     const publicIdentifier = getParticipantIdentifier(conv, myMemberUrn)
     if (!publicIdentifier) continue
 
-    const profileUrl = `https://www.linkedin.com/in/${publicIdentifier}/`
-
-    // Find the lead in DB
+    // Find the lead in DB — match against the /in/ identifier.
+    // Leads imported from Sales Nav may still have a /sales/lead/ URL so we
+    // search by publicIdentifier substring which works for both URL formats.
+    // Also try the normalised full /in/ URL as an exact match for speed.
+    const normalizedUrl = `https://www.linkedin.com/in/${publicIdentifier}`
     const { data: leads } = await supabase
       .from('leads')
-      .select('id')
-      .ilike('linkedin_url', `%${publicIdentifier}%`)
-      .limit(1)
+      .select('id, linkedin_url')
+      .or(`linkedin_url.ilike.%${publicIdentifier}%`)
+      .limit(5)   // grab a few candidates in case of trailing-slash variants
 
-    if (!leads || leads.length === 0) continue
-    const leadId = (leads[0] as { id: string }).id
+    // Pick the best match: prefer exact /in/ URL, fall back to first result
+    const matchedLead = (leads ?? []).find(
+      (l: { id: string; linkedin_url: string }) =>
+        l.linkedin_url.replace(/\/$/, '') === normalizedUrl
+    ) ?? leads?.[0]
+
+    if (!matchedLead) continue
+    const leadId = (matchedLead as { id: string }).id
 
     // Find the campaign_lead for this account + lead
     const { data: campaignLeads } = await supabase

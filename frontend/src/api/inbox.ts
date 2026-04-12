@@ -7,6 +7,8 @@ export interface InboxMessage {
   content: string
   sent_at: string
   linkedin_message_id: string | null
+  unread_count: number
+  has_reply: boolean
   campaign_lead: {
     id: string
     status: string
@@ -36,11 +38,15 @@ export interface ThreadMessage {
 
 export type ReplyClassification = 'interested' | 'not_now' | 'wrong_person' | 'referral' | 'negative' | 'none'
 
-export async function fetchInbox(classification?: string, campaign_id?: string, view?: 'replies' | 'sent'): Promise<InboxMessage[]> {
+export async function fetchInbox(
+  classification?: string,
+  campaign_id?: string,
+  filter?: 'all' | 'replied',
+): Promise<InboxMessage[]> {
   const params = new URLSearchParams()
   if (classification) params.set('classification', classification)
   if (campaign_id) params.set('campaign_id', campaign_id)
-  if (view) params.set('view', view)
+  if (filter) params.set('filter', filter)
   const res = await apiFetch(`/api/inbox?${params}`)
   if (!res.ok) throw new Error('Failed to fetch inbox')
   const { data } = await res.json() as { data: InboxMessage[] }
