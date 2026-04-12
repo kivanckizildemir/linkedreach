@@ -35,12 +35,14 @@ function parseCookieHeader(cookies: CookieRecord[]): string {
 function buildVoyagerHeaders(cookieHeader: string, csrfToken: string) {
   return {
     'Cookie': cookieHeader,
-    'Csrf-Token': csrfToken,
-    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'csrf-token': csrfToken,
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
     'Accept': 'application/vnd.linkedin.normalized+json+2.1',
     'Accept-Language': 'en-US,en;q=0.9',
+    'Referer': 'https://www.linkedin.com/search/results/people/',
+    'Origin': 'https://www.linkedin.com',
     'x-li-lang': 'en_US',
-    'x-li-track': JSON.stringify({ clientVersion: '2024.1.0', osName: 'web', timezoneOffset: 0 }),
+    'x-li-track': JSON.stringify({ clientVersion: '2024.4.0', osName: 'web', timezoneOffset: 0 }),
     'x-restli-protocol-version': '2.0.0',
     'x-li-page-instance': 'urn:li:page:search_people;',
   }
@@ -188,39 +190,69 @@ export async function scrapeLinkedInSearchApi(
   const liAt = cookies.find(c => c.name === 'li_at')?.value
   if (!liAt) throw new Error('No li_at cookie found. Please reconnect from the Accounts page.')
 
+  // Start with stored cookies, then refresh via /feed/ to get a live JSESSIONID.
+  // The stored JSESSIONID may be stale or formatted differently from what LinkedIn
+  // expects for CSRF validation — always bootstrap a fresh one from the feed page.
   let cookieHeader = parseCookieHeader(cookies)
-  let jsessionId = cookies.find(c => c.name === 'JSESSIONID')?.value?.replace(/^"(.*)"$/, '$1')
+  let jsessionId = ''
 
   const agent = getProxyAgent()
 
-  // Bootstrap JSESSIONID if missing
-  if (!jsessionId) {
-    console.log('[linkedin-search-api] Bootstrapping JSESSIONID from LinkedIn home…')
-    try {
-      const bootstrapRes = await fetch('https://www.linkedin.com/feed/', {
-        headers: {
-          Cookie: cookieHeader,
-          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-          Accept: 'text/html',
-        },
-        redirect: 'manual',
-        ...(agent ? { dispatcher: agent } : {}),
-      } as RequestInit)
-      const sc = bootstrapRes.headers.get('set-cookie') ?? ''
-      const m = sc.match(/JSESSIONID=([^;,]+)/)
-      if (m) {
-        jsessionId = m[1]
-        cookieHeader = `${cookieHeader}; JSESSIONID=${jsessionId}`
-        console.log('[linkedin-search-api] Bootstrapped JSESSIONID')
-      }
-    } catch (e) {
-      console.warn('[linkedin-search-api] Bootstrap failed:', (e as Error).message)
+  // Always bootstrap JSESSIONID from /feed/ — this gives us a fresh token that
+  // LinkedIn's CSRF check will definitely accept, and also updates the cookie jar
+  // with any new session cookies LinkedIn sets on this request.
+  console.log('[linkedin-search-api] Bootstrapping JSESSIONID from /feed/…')
+  try {
+    const bootstrapRes = await fetch('https://www.linkedin.com/feed/', {
+      headers: {
+        Cookie: cookieHeader,
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+      redirect: 'manual',
+      ...(agent ? { dispatcher: agent } : {}),
+    } as RequestInit)
+
+    const location = bootstrapRes.headers.get('location') ?? ''
+    if (location.includes('/login') || location.includes('/uas/login')) {
+      throw new Error('SESSION_EXPIRED: li_at cookie is no longer valid. Please reconnect from the Accounts page.')
     }
+
+    // Collect all Set-Cookie headers and merge into cookieHeader
+    const setCookie = bootstrapRes.headers.get('set-cookie') ?? ''
+    const newCookies = setCookie.split(',').map(c => c.split(';')[0].trim()).filter(Boolean)
+    for (const kv of newCookies) {
+      const [name] = kv.split('=')
+      if (name) {
+        // Replace existing cookie with same name or append
+        const re = new RegExp(`(^|; )${name}=[^;]*`, 'i')
+        cookieHeader = re.test(cookieHeader)
+          ? cookieHeader.replace(re, `$1${kv}`)
+          : `${cookieHeader}; ${kv}`
+      }
+    }
+
+    const m = setCookie.match(/JSESSIONID=([^;,\s]+)/)
+    if (m) {
+      jsessionId = m[1].replace(/"/g, '')
+      console.log('[linkedin-search-api] Bootstrapped fresh JSESSIONID ✓')
+    } else {
+      // Fall back to stored JSESSIONID
+      const stored = cookies.find(c => c.name === 'JSESSIONID')?.value ?? ''
+      jsessionId = stored.replace(/"/g, '')
+      console.log(`[linkedin-search-api] No new JSESSIONID in Set-Cookie, using stored: ${jsessionId ? 'yes' : 'none'}`)
+    }
+  } catch (e) {
+    const msg = (e as Error).message
+    if (msg.includes('SESSION_EXPIRED')) throw e
+    console.warn('[linkedin-search-api] Bootstrap failed:', msg)
+    const stored = cookies.find(c => c.name === 'JSESSIONID')?.value ?? ''
+    jsessionId = stored.replace(/"/g, '')
   }
 
-  if (!jsessionId) jsessionId = `ajax:${Date.now()}`
-  // Strip quotes LinkedIn wraps around it
-  const csrfToken = jsessionId.replace(/^"(.*)"$/, '$1')
+  if (!jsessionId) throw new Error('Could not obtain JSESSIONID — please reconnect the account.')
+  const csrfToken = jsessionId
 
   const url = new URL(searchUrl)
   const keywords = url.searchParams.get('keywords') ?? ''
