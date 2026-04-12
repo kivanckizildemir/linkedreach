@@ -445,6 +445,29 @@ export const salesNavScraperWorker = new Worker<SalesNavJob>(
       })()`) as string
       console.log(`[sales-nav] Scroll container: ${scrollContainerSel || 'window'}`)
 
+      // DOM diagnostic: understand the page structure before scrolling
+      const domDiag = await page.evaluate(`(function() {
+        var cardCount = document.querySelectorAll('[data-view-name="search-results-lead-result"]').length;
+        var liCount = document.querySelectorAll('li.artdeco-list__item, li[class*="result"]').length;
+        var allViewNames = Array.from(new Set(
+          Array.from(document.querySelectorAll('[data-view-name]'))
+            .map(function(el) { return el.getAttribute('data-view-name'); })
+            .filter(function(v) { return v && (v.indexOf('search') !== -1 || v.indexOf('lead') !== -1 || v.indexOf('result') !== -1); })
+        ));
+        var bodyH = document.body.scrollHeight;
+        var docH = document.documentElement.scrollHeight;
+        // Find all elements with scrollHeight > clientHeight
+        var scrollables = Array.from(document.querySelectorAll('*')).filter(function(el) {
+          return el.scrollHeight > el.clientHeight + 100 && el.scrollHeight > 500;
+        }).map(function(el) {
+          return (el.tagName.toLowerCase()) + (el.id ? '#'+el.id : '') + (el.className && typeof el.className === 'string' ? '.'+el.className.trim().split(/\\s+/).slice(0,2).join('.') : '') + ' sh=' + el.scrollHeight;
+        }).slice(0, 8);
+        return { cardCount: cardCount, liCount: liCount, viewNames: allViewNames, bodyH: bodyH, docH: docH, scrollables: scrollables };
+      })()`) as { cardCount: number; liCount: number; viewNames: string[]; bodyH: number; docH: number; scrollables: string[] }
+      console.log(`[sales-nav] DOM diag: cards=${domDiag.cardCount} lis=${domDiag.liCount} bodyH=${domDiag.bodyH} docH=${domDiag.docH}`)
+      console.log(`[sales-nav] DOM diag viewNames: ${domDiag.viewNames.join(', ') || 'none'}`)
+      console.log(`[sales-nav] DOM diag scrollables: ${domDiag.scrollables.join(' | ') || 'none'}`)
+
       const allRawLeads = new Map<string, RawLead>()  // keyed by salesNavUrl for dedup
       let scrollY = 0
       const SCROLL_STEP = 400   // px per step — larger = reach more of the page faster
