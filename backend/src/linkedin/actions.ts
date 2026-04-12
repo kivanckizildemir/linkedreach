@@ -351,8 +351,8 @@ export async function sendConnectionRequest(
     }
 
     await humanMouseMove(page)
-    await (moreEl as Parameters<typeof page.$>[0] extends string ? never : typeof moreEl).scrollIntoViewIfNeeded()
-    await (moreEl as Parameters<typeof page.$>[0] extends string ? never : typeof moreEl).click({ timeout: 5000 })
+    await moreEl.scrollIntoViewIfNeeded()
+    await moreEl.click({ timeout: 5000 })
     await delay(1200)  // give dropdown time to render
 
     // Collect visible elements after More click (for dropdown analysis)
