@@ -695,7 +695,12 @@ async function saveLeads(
 }
 
 salesNavScraperWorker.on('failed', (job, err) => {
-  console.error(`[sales-nav] Job ${job?.id} failed:`, err.message)
+  console.error(`[sales-nav] Job ${job?.id} failed: ${err.message}`)
+  if (err.stack) console.error(`[sales-nav] Stack: ${err.stack.split('\n').slice(0, 5).join(' | ')}`)
+})
+
+salesNavScraperWorker.on('active', (job) => {
+  console.log(`[sales-nav] Job ${job.id} started (url=${String(job.data?.search_url ?? '').substring(0, 80)})`)
 })
 
 console.log('Sales Nav scraper worker started')

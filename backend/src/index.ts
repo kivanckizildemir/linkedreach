@@ -53,6 +53,9 @@ app.use(express.json())
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok' })
 })
+app.get('/health', (_req, res) => {
+  res.json({ status: 'ok' })
+})
 
 // Get Railway's outbound IP
 app.get('/api/my-ip', async (_req, res) => {

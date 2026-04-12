@@ -178,6 +178,7 @@ export function Leads() {
   const [addLeadsImporting, setAddLeadsImporting] = useState(false)
   const [addLeadsJobId, setAddLeadsJobId] = useState<string | null>(null)
   const [addLeadsProgress, setAddLeadsProgress] = useState(0)
+  const [addLeadsJobError, setAddLeadsJobError] = useState<string | null>(null)
   const addLeadsPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const addLeadsCsvRef = useRef<HTMLInputElement>(null)
 
@@ -243,6 +244,7 @@ export function Leads() {
       if (saved) {
         const { jobId } = JSON.parse(saved) as { jobId: string }
         setAddLeadsJobId(jobId)
+        setAddLeadsJobError(null)
         addLeadsPollRef.current = setInterval(async () => {
           try {
             const s = await getListScrapeStatus(jobId)
@@ -251,6 +253,9 @@ export function Leads() {
               clearInterval(addLeadsPollRef.current!); addLeadsPollRef.current = null
               localStorage.removeItem(lsScrapeKey)
               setAddLeadsJobId(null); setAddLeadsProgress(0)
+              if (s.state === 'failed') {
+                setAddLeadsJobError(s.error ?? 'Scrape job failed. Check your account session.')
+              }
               void queryClient.invalidateQueries({ queryKey: ['leads'] })
               void queryClient.invalidateQueries({ queryKey: ['lead-list', listId] })
             }
@@ -699,9 +704,20 @@ export function Leads() {
                   <span className="hidden group-hover:inline">✕</span>
                 </span>
               </button>
+            ) : addLeadsJobError ? (
+              <button
+                onClick={() => { setAddLeadsJobError(null); setShowAddToList(true); setAddLeadsStep('source'); setAddLeadsSource(null); setAddLeadsError('') }}
+                title={addLeadsJobError}
+                className="flex items-center gap-2 px-3 py-2 rounded-lg bg-red-50 border border-red-200 text-red-700 text-xs font-medium hover:bg-red-100 transition-colors max-w-xs"
+              >
+                <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <span className="truncate">{addLeadsJobError.length > 60 ? addLeadsJobError.slice(0, 57) + '…' : addLeadsJobError}</span>
+              </button>
             ) : (
             <button
-              onClick={() => { setShowAddToList(true); setAddLeadsStep('source'); setAddLeadsSource(null); setAddLeadsError('') }}
+              onClick={() => { setAddLeadsJobError(null); setShowAddToList(true); setAddLeadsStep('source'); setAddLeadsSource(null); setAddLeadsError('') }}
               className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors"
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1134,6 +1150,7 @@ export function Leads() {
               const { job_id } = await scrapeIntoList(listId!, { search_url: addLeadsUrl, account_id: addLeadsAccountId, max_leads: addLeadsMax, source_type: addLeadsSource! })
               setAddLeadsJobId(job_id)
               setAddLeadsProgress(0)
+              setAddLeadsJobError(null)
               setShowAddToList(false)
               localStorage.setItem(lsScrapeKey, JSON.stringify({ jobId: job_id }))
               addLeadsPollRef.current = setInterval(async () => {
@@ -1144,6 +1161,9 @@ export function Leads() {
                     clearInterval(addLeadsPollRef.current!); addLeadsPollRef.current = null
                     localStorage.removeItem(lsScrapeKey)
                     setAddLeadsJobId(null); setAddLeadsProgress(0)
+                    if (s.state === 'failed') {
+                      setAddLeadsJobError(s.error ?? 'Scrape job failed. Check your account session.')
+                    }
                     void queryClient.invalidateQueries({ queryKey: ['leads'] })
                     void queryClient.invalidateQueries({ queryKey: ['lead-list', listId] })
                   }
