@@ -167,21 +167,42 @@ interface DisabledEntry { type: StepType; reason: string }
 /** Rules that apply when entering a specific fork branch */
 function forkBranchDisabled(condition: ForkCondition | undefined, branch: 'if_yes' | 'if_no'): DisabledEntry[] {
   const d: DisabledEntry[] = []
+
   if (condition === 'connected') {
     if (branch === 'if_yes') {
-      d.push({ type: 'connect',  reason: 'Already connected — a 2nd request is impossible' })
-      d.push({ type: 'inmail',   reason: 'InMail is for non-connections — use Message instead' })
-      d.push({ type: 'follow',   reason: 'LinkedIn auto-follows when you connect' })
+      // YES = confirmed connected
+      d.push({ type: 'connect', reason: 'Already connected — a 2nd request is impossible' })
+      d.push({ type: 'inmail',  reason: 'InMail is for non-connections — use Message instead' })
+      // follow block moved to chainDisabled (under 'connect') — it belongs to the action, not the branch
     } else {
-      d.push({ type: 'message',  reason: "Not connected — can't DM yet. Send a request first." })
+      // NO = confirmed NOT connected
+      d.push({ type: 'message', reason: "Not connected — can't DM yet. Send a connection request first." })
     }
   }
+
+  if (condition === 'not_connected') {
+    if (branch === 'if_yes') {
+      // YES = confirmed NOT connected (inverse fork)
+      d.push({ type: 'message', reason: "Not connected — can't DM yet. Send a connection request first." })
+    } else {
+      // NO = confirmed connected (inverse fork)
+      d.push({ type: 'connect', reason: 'Already connected — a 2nd request is impossible' })
+      d.push({ type: 'inmail',  reason: 'InMail is for non-connections — use Message instead' })
+    }
+  }
+
   if (condition === 'replied') {
     if (branch === 'if_yes') {
-      d.push({ type: 'connect',  reason: 'They replied — they are already a connection' })
-      d.push({ type: 'inmail',   reason: 'They already replied — reply back with a Message' })
+      // YES = replied → definitely connected, can message back
+      d.push({ type: 'connect', reason: 'They replied — they are already a connection' })
+      d.push({ type: 'inmail',  reason: 'Lead is connected — reply with a Message, not InMail' })
+    } else {
+      // NO = no reply yet, but lead IS connected (a message was sent to get here)
+      d.push({ type: 'connect', reason: 'Lead is already connected — use Message for follow-ups' })
+      d.push({ type: 'inmail',  reason: 'Lead is already connected — use Message for follow-ups' })
     }
   }
+
   return d
 }
 
@@ -196,7 +217,8 @@ function chainDisabled(chainTypes: StepType[]): DisabledEntry[] {
       // Connection not yet accepted at this point in the chain
       d.push({ type: 'message', reason: 'Request not yet accepted — add a fork (Is connected?) first' })
     }
-    d.push({ type: 'inmail', reason: "Don't mix Connection Request and InMail in the same branch" })
+    d.push({ type: 'inmail',  reason: "Don't mix Connection Request and InMail in the same branch" })
+    d.push({ type: 'follow',  reason: 'LinkedIn auto-follows when you connect — no need to follow separately' })
   }
 
   if (has('message')) {
@@ -235,9 +257,14 @@ function getBlockedForkConditions(step: SequenceStep, allSteps: SequenceStep[]):
     const parent = allSteps.find(s => s.id === parentId)
     if (!parent) break
 
-    if (parent.type === 'fork' && branch === 'if_yes') {
+    if (parent.type === 'fork') {
       const cond = parent.condition?.type as ForkCondition | undefined
-      if (cond === 'connected' || cond === 'not_connected') {
+      // if_yes of connected/replied → lead confirmed connected → block another connected fork
+      if (branch === 'if_yes' && (cond === 'connected' || cond === 'replied')) {
+        blocked.push('connected', 'not_connected')
+      }
+      // if_no of not_connected → also confirmed connected → same block
+      if (branch === 'if_no' && cond === 'not_connected') {
         blocked.push('connected', 'not_connected')
       }
     }
@@ -354,14 +381,21 @@ function buildLayout(allSteps: SequenceStep[], cb: Callbacks): { nodes: Node[]; 
         const branchY = y + NH + VG
         const forkCond = step.condition?.type as ForkCondition | undefined
 
-        // For a "connected?" fork: the YES branch confirms connection — UNBLOCK message
-        // by removing any inherited message restriction before adding branch rules.
-        // All other fork branches keep message blocked (message only flows after connection confirmed).
-        const baseForYes = (forkCond === 'connected' || forkCond === 'not_connected')
+        // Unblock message only when we can confirm the lead IS connected:
+        //   connected?  → YES branch (confirmed connected)
+        //   not_connected? → NO branch (confirmed connected, inverse logic)
+        //   replied?    → YES branch (they replied, so definitely connected)
+        // Every other branch keeps message blocked.
+        const yesIsConnected = forkCond === 'connected' || forkCond === 'replied'
+        const noIsConnected  = forkCond === 'not_connected'
+        const baseForYes = yesIsConnected
+          ? inheritedDisabled.filter(e => e.type !== 'message')
+          : inheritedDisabled
+        const baseForNo = noIsConnected
           ? inheritedDisabled.filter(e => e.type !== 'message')
           : inheritedDisabled
         const yesInherited = mergeDisabled(baseForYes, forkBranchDisabled(forkCond, 'if_yes'))
-        const noInherited  = mergeDisabled(inheritedDisabled, forkBranchDisabled(forkCond, 'if_no'))
+        const noInherited  = mergeDisabled(baseForNo,  forkBranchDisabled(forkCond, 'if_no'))
 
         const yesRes = layoutList(node.ifYes ?? [], cx - BX, branchY, step.id, 'yes', '✓ Yes', '#16A34A', yesInherited)
         const noRes  = layoutList(node.ifNo  ?? [], cx + BX, branchY, step.id, 'no',  '✗ No',  '#DC2626', noInherited)
