@@ -198,6 +198,19 @@ app.get('/api/system/status', requireAuth, async (req, res) => {
   }
 })
 
+// POST /api/system/clear-failed — drain failed jobs from the sequence runner queue
+app.post('/api/system/clear-failed', requireAuth, async (_req, res) => {
+  try {
+    const [seqRemoved, scraperRemoved] = await Promise.all([
+      sequenceRunnerQueue.clean(0, 1000, 'failed'),
+      salesNavScraperQueue.clean(0, 1000, 'failed'),
+    ])
+    res.json({ cleared: seqRemoved.length + scraperRemoved.length })
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message })
+  }
+})
+
 // Extension status endpoints (no auth required — extension status is non-sensitive)
 app.get('/api/extension/status', (req, res) => {
   const userId = (req as { user?: { id?: string } }).user?.id

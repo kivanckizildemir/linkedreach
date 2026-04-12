@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { useForm } from 'react-hook-form'
-import { fetchCampaigns, createCampaign, updateCampaign, deleteCampaign } from '../api/campaigns'
+import { fetchCampaigns, createCampaign, updateCampaign, deleteCampaign, duplicateCampaign } from '../api/campaigns'
 import type { Campaign } from '../api/campaigns'
 import { apiFetch } from '../lib/fetchJson'
 
@@ -83,7 +83,7 @@ export function Campaigns() {
   })
 
   const duplicateMutation = useMutation({
-    mutationFn: (c: Campaign) => createCampaign(c.name + ' (copy)'),
+    mutationFn: (c: Campaign) => duplicateCampaign(c.id),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['campaigns'] }),
   })
 

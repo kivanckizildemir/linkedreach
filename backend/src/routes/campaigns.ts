@@ -69,6 +69,129 @@ campaignsRouter.get('/:id', async (req: Request, res: Response) => {
   res.json({ data })
 })
 
+// POST /api/campaigns/:id/duplicate — deep copy: settings + sequence steps + leads
+campaignsRouter.post('/:id/duplicate', async (req: Request, res: Response) => {
+  // 1. Load the source campaign
+  const { data: src, error: srcErr } = await supabase
+    .from('campaigns')
+    .select('*')
+    .eq('id', req.params.id)
+    .eq('user_id', req.user.id)
+    .single()
+
+  if (srcErr || !src) { res.status(404).json({ error: 'Campaign not found' }); return }
+
+  // 2. Create the new campaign (same settings, status = draft, name gets " (copy)")
+  const { data: newCamp, error: campErr } = await supabase
+    .from('campaigns')
+    .insert({
+      user_id:               req.user.id,
+      name:                  `${(src as Record<string, unknown>).name} (copy)`,
+      status:                'draft',
+      icp_config:            (src as Record<string, unknown>).icp_config ?? {},
+      daily_connection_limit:(src as Record<string, unknown>).daily_connection_limit ?? 25,
+      daily_message_limit:   (src as Record<string, unknown>).daily_message_limit ?? 100,
+      schedule_start_hour:   (src as Record<string, unknown>).schedule_start_hour ?? 9,
+      schedule_end_hour:     (src as Record<string, unknown>).schedule_end_hour ?? 17,
+      schedule_days:         (src as Record<string, unknown>).schedule_days ?? [1,2,3,4,5],
+      schedule_timezone:     (src as Record<string, unknown>).schedule_timezone ?? 'UTC',
+      account_id:            (src as Record<string, unknown>).account_id ?? null,
+      min_icp_score:         (src as Record<string, unknown>).min_icp_score ?? 0,
+      connection_note:       (src as Record<string, unknown>).connection_note ?? null,
+      target_audience:       (src as Record<string, unknown>).target_audience ?? null,
+      product_id:            (src as Record<string, unknown>).product_id ?? null,
+      lead_priority:         (src as Record<string, unknown>).lead_priority ?? null,
+    })
+    .select()
+    .single()
+
+  if (campErr || !newCamp) { res.status(500).json({ error: campErr?.message ?? 'Failed to create campaign' }); return }
+
+  const newCampId = (newCamp as Record<string, unknown>).id as string
+
+  // 3. Copy sequence + steps (if any)
+  const { data: sequences } = await supabase
+    .from('sequences')
+    .select('*, sequence_steps(*)')
+    .eq('campaign_id', req.params.id)
+    .limit(1)
+
+  const srcSeq = sequences?.[0] as (Record<string, unknown> & { sequence_steps: Record<string, unknown>[] }) | undefined
+  if (srcSeq) {
+    // 3a. Create new sequence
+    const { data: newSeq, error: seqErr } = await supabase
+      .from('sequences')
+      .insert({ campaign_id: newCampId, name: (srcSeq.name as string) ?? 'Sequence' })
+      .select()
+      .single()
+
+    if (seqErr || !newSeq) { res.status(500).json({ error: seqErr?.message ?? 'Failed to create sequence' }); return }
+
+    const newSeqId = (newSeq as Record<string, unknown>).id as string
+    const srcSteps = (srcSeq.sequence_steps ?? []) as Record<string, unknown>[]
+
+    if (srcSteps.length > 0) {
+      // 3b. Insert steps WITHOUT parent_step_id first, collect old→new ID map
+      const idMap: Record<string, string> = {}
+
+      // Sort by step_order so parents are always inserted before children
+      const sorted = [...srcSteps].sort((a, b) => (a.step_order as number) - (b.step_order as number))
+
+      for (const step of sorted) {
+        const { data: newStep, error: stepErr } = await supabase
+          .from('sequence_steps')
+          .insert({
+            sequence_id:      newSeqId,
+            step_order:       step.step_order,
+            type:             step.type,
+            message_template: step.message_template ?? null,
+            subject:          step.subject ?? null,
+            wait_days:        step.wait_days ?? null,
+            condition:        step.condition ?? null,
+            branch:           step.branch ?? 'main',
+            ai_generation_mode: step.ai_generation_mode ?? false,
+            // parent_step_id set in next pass
+          })
+          .select('id')
+          .single()
+
+        if (stepErr || !newStep) { res.status(500).json({ error: stepErr?.message ?? 'Failed to copy step' }); return }
+        idMap[step.id as string] = (newStep as Record<string, unknown>).id as string
+      }
+
+      // 3c. Second pass: set parent_step_id using the old→new map
+      for (const step of sorted) {
+        if (!step.parent_step_id) continue
+        const newParentId = idMap[step.parent_step_id as string]
+        if (!newParentId) continue
+        await supabase
+          .from('sequence_steps')
+          .update({ parent_step_id: newParentId })
+          .eq('id', idMap[step.id as string])
+      }
+    }
+  }
+
+  // 4. Copy campaign leads (reset progress — status=pending, current_step=0)
+  const { data: srcLeads } = await supabase
+    .from('campaign_leads')
+    .select('lead_id, account_id')
+    .eq('campaign_id', req.params.id)
+
+  if (srcLeads && srcLeads.length > 0) {
+    const leadRows = (srcLeads as Record<string, unknown>[]).map(l => ({
+      campaign_id:  newCampId,
+      lead_id:      l.lead_id,
+      account_id:   l.account_id ?? null,
+      status:       'pending',
+      current_step: 0,
+    }))
+    await supabase.from('campaign_leads').insert(leadRows)
+  }
+
+  res.status(201).json({ data: newCamp })
+})
+
 // POST /api/campaigns
 campaignsRouter.post('/', async (req: Request, res: Response) => {
   const {

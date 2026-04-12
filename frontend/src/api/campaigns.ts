@@ -136,6 +136,13 @@ export async function removeCampaignLead(campaignId: string, clId: string): Prom
   if (!res.ok) throw new Error(await parseErrorResponse(res))
 }
 
+export async function duplicateCampaign(id: string): Promise<Campaign> {
+  const res = await apiFetch(`/api/campaigns/${id}/duplicate`, { method: 'POST' })
+  if (!res.ok) throw new Error(await parseErrorResponse(res))
+  const { data } = await res.json() as { data: Campaign }
+  return data
+}
+
 export async function deleteCampaign(id: string): Promise<void> {
   const res = await apiFetch(`/api/campaigns/${id}`, { method: 'DELETE' })
   if (!res.ok) throw new Error(await parseErrorResponse(res))

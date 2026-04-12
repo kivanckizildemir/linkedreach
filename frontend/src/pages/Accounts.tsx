@@ -294,18 +294,40 @@ export function Accounts() {
             {/* Sequence worker */}
             <div className="flex items-center gap-3 bg-white border border-gray-200 rounded-xl px-4 py-3">
               <span className={`h-2.5 w-2.5 rounded-full shrink-0 ${seqStatus.dot}`} />
-              <div className="min-w-0">
+              <div className="min-w-0 flex-1">
                 <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Sequence worker</p>
-                <p className={`text-xs font-semibold ${seqStatus.text} truncate`}>{seqStatus.label}</p>
+                <div className="flex items-center gap-2">
+                  <p className={`text-xs font-semibold ${seqStatus.text} truncate`}>{seqStatus.label}</p>
+                  {failedJobs > 0 && (
+                    <button
+                      onClick={async () => {
+                        await apiFetch('/api/system/clear-failed', { method: 'POST' })
+                        void queryClient.invalidateQueries({ queryKey: ['system-status'] })
+                      }}
+                      className="text-[10px] text-red-500 underline hover:text-red-700 shrink-0"
+                    >Clear</button>
+                  )}
+                </div>
               </div>
             </div>
 
             {/* Scraper worker */}
             <div className="flex items-center gap-3 bg-white border border-gray-200 rounded-xl px-4 py-3">
               <span className={`h-2.5 w-2.5 rounded-full shrink-0 ${scraperStatus.dot}`} />
-              <div className="min-w-0">
+              <div className="min-w-0 flex-1">
                 <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Scraper worker</p>
-                <p className={`text-xs font-semibold ${scraperStatus.text} truncate`}>{scraperStatus.label}</p>
+                <div className="flex items-center gap-2">
+                  <p className={`text-xs font-semibold ${scraperStatus.text} truncate`}>{scraperStatus.label}</p>
+                  {scraperFailed > 0 && (
+                    <button
+                      onClick={async () => {
+                        await apiFetch('/api/system/clear-failed', { method: 'POST' })
+                        void queryClient.invalidateQueries({ queryKey: ['system-status'] })
+                      }}
+                      className="text-[10px] text-red-500 underline hover:text-red-700 shrink-0"
+                    >Clear</button>
+                  )}
+                </div>
               </div>
             </div>
 
