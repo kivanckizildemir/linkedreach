@@ -7,6 +7,7 @@ import { startLogin, startManualSession, submitVerificationCode, getLoginStatus,
 import { isExtensionOnline, sendActionToExtension } from '../lib/extensionHub'
 import { extractCookies, getProfileDir } from '../linkedin/session'
 import { forceReleaseAccountLock, isAccountLocked } from '../lib/accountLock'
+import { reconnectWithPersistentProfile, closeBrowserSession } from '../lib/browserPool'
 import { generateFingerprint } from '../lib/fingerprint'
 import { chromium } from 'playwright'
 import * as fsSync from 'fs'
@@ -340,6 +341,44 @@ accountsRouter.post('/:id/health-check', async (req: Request, res: Response) => 
   } catch (err) {
     res.json({ ok: false, message: `Health check failed: ${(err as Error).message}` })
   }
+})
+
+// POST /api/accounts/:id/reconnect — headless auto-login using stored credentials
+// Closes any pooled session, then launches a headless browser, logs in, saves new cookies.
+accountsRouter.post('/:id/reconnect', async (req: Request, res: Response) => {
+  const id = String(req.params.id)
+  const { data: account, error } = await supabase
+    .from('linkedin_accounts')
+    .select('id, linkedin_email, linkedin_password, proxy_id, totp_secret')
+    .eq('id', id)
+    .eq('user_id', req.user.id)
+    .single()
+
+  if (error || !account) { res.status(404).json({ ok: false, message: 'Account not found' }); return }
+
+  const { linkedin_email: email, linkedin_password: password, proxy_id: proxyId, totp_secret: totpSecret } = account as {
+    linkedin_email: string | null; linkedin_password: string | null; proxy_id: string | null; totp_secret: string | null
+  }
+
+  if (!email || !password) {
+    res.status(422).json({ ok: false, message: 'No credentials stored — use "Set Session" to connect manually.' })
+    return
+  }
+
+  // Close any existing pooled session so reconnect gets a clean start
+  await closeBrowserSession(id)
+
+  // Respond immediately and run reconnect in background
+  res.json({ ok: true, message: 'Reconnect started — check account status in ~60s' })
+
+  ;(async () => {
+    try {
+      await reconnectWithPersistentProfile(id, email, password, proxyId, totpSecret)
+      console.log(`[reconnect] ✓ ${id} reconnected successfully`)
+    } catch (e) {
+      console.error(`[reconnect] ✗ ${id} failed: ${(e as Error).message}`)
+    }
+  })()
 })
 
 // POST /api/accounts/:id/unlock — force-release a stale Redis lock left by a crashed job
