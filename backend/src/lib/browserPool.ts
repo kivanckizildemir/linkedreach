@@ -121,10 +121,13 @@ export async function getOrCreateBrowserSession(account: AccountRecord): Promise
       const isOnLoginPage = currentUrl.includes('/login') || currentUrl.includes('/authwall')
                          || currentUrl.includes('/checkpoint') || currentUrl.includes('/uas/login')
       if (isOnLoginPage) {
-        console.warn(`[browser-pool] Warm session for ${account.id} is on a login/challenge page (${currentUrl.substring(0, 60)}) — invalidating`)
+        // Clear the stale session from the pool but DO NOT trigger auto-reconnect.
+        // Auto-reconnect creates a new browser which fires LinkedIn "new device login"
+        // notifications and causes a pause loop. The runner will pause the account
+        // and the user can re-activate it manually via Accounts → Set Session.
+        console.warn(`[browser-pool] Warm session for ${account.id} is on a login/challenge page (${currentUrl.substring(0, 60)}) — clearing session, user must re-activate`)
         pool.delete(account.id)
         await closeSession(existing.browser).catch(() => null)
-        invalidateBrowserSession(account.id)
         throw new Error('SESSION_EXPIRED: Pooled session was stranded on login page')
       }
       void readyState // used for liveness check
@@ -444,4 +447,16 @@ export async function closeBrowserSession(accountId: string): Promise<void> {
 /** How many sessions are currently pooled (for diagnostics). */
 export function poolSize(): number {
   return pool.size
+}
+
+/**
+ * Returns the existing BrowserContext for an account if one is currently pooled
+ * and not invalidated. Returns null if no live session exists.
+ * Used by the inbox poller to make authenticated API requests via the browser session
+ * without creating a new browser (which would be expensive for a read-only poll).
+ */
+export function getExistingContext(accountId: string): import('playwright').BrowserContext | null {
+  const entry = pool.get(accountId)
+  if (!entry || entry.invalidated) return null
+  return entry.context
 }

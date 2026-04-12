@@ -24,17 +24,15 @@ export async function schedulePendingLeads(): Promise<void> {
   if (!campaigns || campaigns.length === 0) return
 
   for (const campaign of campaigns as Array<{ id: string; account_id: string | null; lead_priority: string | null }>) {
-    const priority = campaign.lead_priority ?? 'high_icp'
+    const rawPriority = campaign.lead_priority ?? null
+    // Decode the combined priority string into two independent flags
+    const wantHighIcp  = rawPriority === 'high_icp' || rawPriority === 'high_icp+warm'
+    const wantWarm     = rawPriority === 'warm'      || rawPriority === 'high_icp+warm'
 
-    // Join leads table to get icp_score for ordering
-    const now = new Date().toISOString()
-    // Use last_action_at (the actual DB column) for scheduling.
-    // A lead is "due" if it has never been acted on (null) or was last acted on
-    // enough time ago (the wait_days logic is handled inside the sequence runner).
-    // We simply re-enqueue all eligible leads; the runner guards against double-actions.
+    // Join leads table to get icp_score + icp_flag for ordering
     const { data: leads, error: leadsErr } = await supabase
       .from('campaign_leads')
-      .select('id, account_id, leads(icp_score)')
+      .select('id, account_id, leads(icp_score, icp_flag)')
       .eq('campaign_id', campaign.id)
       .in('status', ['pending', 'connection_sent', 'connected', 'messaged'])
       .limit(50)   // process up to 50 per cycle per campaign
@@ -46,16 +44,20 @@ export async function schedulePendingLeads(): Promise<void> {
 
     if (!leads || leads.length === 0) continue
 
-    type RawLead = { id: string; account_id: string | null; leads: { icp_score: number | null } | { icp_score: number | null }[] | null }
+    type RawLead = { id: string; account_id: string | null; leads: { icp_score: number | null; icp_flag: string | null } | { icp_score: number | null; icp_flag: string | null }[] | null }
 
     // Resolve each lead's effective account_id: use the lead's own, fall back to campaign's
     const resolvedLeads = (leads as RawLead[])
-      .map(l => ({
-        id: l.id,
-        effective_account_id: l.account_id ?? campaign.account_id,
-        icp_score: (Array.isArray(l.leads) ? l.leads[0]?.icp_score : l.leads?.icp_score) ?? null,
-      }))
-      .filter(l => l.effective_account_id !== null) as Array<{ id: string; effective_account_id: string; icp_score: number | null }>
+      .map(l => {
+        const leadData = Array.isArray(l.leads) ? l.leads[0] : l.leads
+        return {
+          id: l.id,
+          effective_account_id: l.account_id ?? campaign.account_id,
+          icp_score: leadData?.icp_score ?? null,
+          icp_flag:  leadData?.icp_flag  ?? null,
+        }
+      })
+      .filter(l => l.effective_account_id !== null) as Array<{ id: string; effective_account_id: string; icp_score: number | null; icp_flag: string | null }>
 
     if (resolvedLeads.length === 0) continue
 
@@ -72,18 +74,29 @@ export async function schedulePendingLeads(): Promise<void> {
     const jobs = resolvedLeads
       .filter(l => activeSet.has(l.effective_account_id))
       .map(l => {
-        // Map ICP score → BullMQ priority (1 = highest priority, 100 = lowest).
-        // This ensures ordering is respected across scheduler cycles, not just
-        // within a single addBulk batch.
-        let bullPriority: number
-        if (priority === 'fifo') {
-          bullPriority = 50  // all equal — FIFO order preserved naturally
-        } else {
-          const score = l.icp_score ?? 50  // unscored leads land in the middle
-          bullPriority = priority === 'high_icp'
-            ? Math.max(1, 100 - score)   // score 100 → priority 1 (first)
-            : Math.max(1, score + 1)     // score 0   → priority 1 (first)
+        // BullMQ priority: 1 = highest (runs first), 100 = lowest.
+        // Start at 100 and subtract bonuses for each active toggle.
+        // Both toggles off → all leads get priority 50 (FIFO-like within a batch).
+        let bullPriority = 50  // neutral baseline when no toggles are active
+
+        if (wantHighIcp || wantWarm) {
+          let p = 100  // start at lowest
+
+          // High ICP bonus: score 100 → -50, score 0 → -0
+          if (wantHighIcp) {
+            const score = l.icp_score ?? 50
+            p -= Math.round(score / 2)  // max 50-point reduction for perfect ICP
+          }
+
+          // Warm leads bonus: hot/warm flag gets a flat -30 boost
+          if (wantWarm) {
+            const isWarm = l.icp_flag === 'hot' || l.icp_flag === 'warm'
+            if (isWarm) p -= 30
+          }
+
+          bullPriority = Math.max(1, p)
         }
+
         return {
           name: 'run',
           data: { campaign_lead_id: l.id },

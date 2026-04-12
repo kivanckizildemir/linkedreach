@@ -60,17 +60,22 @@ const ICP_LABELS: Record<string, string> = {
 }
 
 // ── Action labels & icons for the activity feed ──────────────────────────────
-const ACTION_META: Record<string, { label: string; icon: string; color: string }> = {
-  view_profile:    { label: 'Viewed profile',       icon: '👁',  color: 'text-gray-500' },
-  connect:         { label: 'Connection sent',       icon: '🔗',  color: 'text-blue-600' },
-  connection_sent: { label: 'Connection sent',       icon: '🔗',  color: 'text-blue-600' },
-  message:         { label: 'Message sent',          icon: '💬',  color: 'text-purple-600' },
-  message_sent:    { label: 'Message sent',          icon: '💬',  color: 'text-purple-600' },
-  follow:          { label: 'Followed',              icon: '➕',  color: 'text-indigo-500' },
-  react_post:      { label: 'Reacted to post',       icon: '👍',  color: 'text-pink-500' },
-  inmail:          { label: 'InMail sent',           icon: '✉️',  color: 'text-teal-600' },
-  reply_received:  { label: 'Reply received',        icon: '📩',  color: 'text-green-600' },
-  connected:       { label: 'Connected',             icon: '✅',  color: 'text-green-600' },
+const ACTION_META: Record<string, { label: string; icon: string; color: string; bg?: string }> = {
+  view_profile:       { label: 'Viewed profile',        icon: '👁',  color: 'text-gray-500' },
+  connect:            { label: 'Connection sent',        icon: '🔗',  color: 'text-blue-600' },
+  connection_sent:    { label: 'Connection sent',        icon: '🔗',  color: 'text-blue-600' },
+  message:            { label: 'Message sent',           icon: '💬',  color: 'text-purple-600' },
+  message_sent:       { label: 'Message sent',           icon: '💬',  color: 'text-purple-600' },
+  follow:             { label: 'Followed',               icon: '➕',  color: 'text-indigo-500' },
+  react_post:         { label: 'Reacted to post',        icon: '👍',  color: 'text-pink-500' },
+  inmail:             { label: 'InMail sent',            icon: '✉️',  color: 'text-teal-600' },
+  reply_received:     { label: 'Reply received',         icon: '📩',  color: 'text-green-600' },
+  connected:          { label: 'Connected',              icon: '✅',  color: 'text-green-600' },
+  // ── Failure / warning entries ──────────��──────────────────────────────────
+  failed:             { label: 'Action failed',          icon: '❌',  color: 'text-red-600',    bg: 'bg-red-50' },
+  session_expired:    { label: 'Session expired',        icon: '🔒',  color: 'text-orange-600', bg: 'bg-orange-50' },
+  security_challenge: { label: 'Security challenge',     icon: '⚠️',  color: 'text-orange-600', bg: 'bg-orange-50' },
+  limit_reached:      { label: 'Daily limit reached',    icon: '🚫',  color: 'text-yellow-700', bg: 'bg-yellow-50' },
 }
 
 function timeAgo(iso: string): string {
@@ -95,16 +100,17 @@ function ActivityFeed({ entries }: { entries: CampaignActivityEntry[] }) {
         <div className="divide-y divide-gray-50 max-h-80 overflow-y-auto">
           {entries.map(e => {
             const meta = ACTION_META[e.action] ?? { label: e.action.replace(/_/g, ' '), icon: '·', color: 'text-gray-600' }
+            const isError = !!meta.bg
             return (
-              <div key={e.id} className="flex items-center gap-3 py-2.5">
-                <span className="text-base w-5 text-center shrink-0">{meta.icon}</span>
+              <div key={e.id} className={`flex items-start gap-3 py-2.5 px-2 rounded-lg ${isError ? `${meta.bg} -mx-2` : ''}`}>
+                <span className="text-base w-5 text-center shrink-0 mt-0.5">{meta.icon}</span>
                 <div className="flex-1 min-w-0">
                   <span className={`text-xs font-semibold ${meta.color}`}>{meta.label}</span>
                   {e.detail && (
-                    <span className="text-xs text-gray-400 ml-1.5 truncate">{e.detail}</span>
+                    <p className={`text-xs mt-0.5 ${isError ? 'text-gray-500' : 'text-gray-400'} break-words`}>{e.detail}</p>
                   )}
                 </div>
-                <span className="text-[10px] text-gray-300 shrink-0 tabular-nums">{timeAgo(e.created_at)}</span>
+                <span className="text-[10px] text-gray-300 shrink-0 tabular-nums mt-0.5">{timeAgo(e.created_at)}</span>
               </div>
             )
           })}
@@ -1375,7 +1381,17 @@ function CampaignSettings({
   }
 
   const [accountId, setAccountId] = useState(campaign.account_id ?? '')
-  const [leadPriority, setLeadPriority] = useState<'high_icp' | 'low_icp' | 'fifo'>((campaign as unknown as Record<string, unknown>).lead_priority as 'high_icp' | 'low_icp' | 'fifo' ?? 'high_icp')
+  // Decode the stored lead_priority into two independent boolean toggles
+  const storedPriority = (campaign as unknown as Record<string, unknown>).lead_priority as string | null ?? null
+  const [priorityHighIcp,  setPriorityHighIcp]  = useState(storedPriority === 'high_icp' || storedPriority === 'high_icp+warm')
+  const [priorityWarmLeads, setPriorityWarmLeads] = useState(storedPriority === 'warm'    || storedPriority === 'high_icp+warm')
+  /** Encode the two toggles back to a stored value */
+  function encodePriority(highIcp: boolean, warm: boolean): string | null {
+    if (highIcp && warm) return 'high_icp+warm'
+    if (highIcp) return 'high_icp'
+    if (warm)    return 'warm'
+    return null
+  }
   const [connLimit, setConnLimit] = useState(campaign.daily_connection_limit)
   const [msgLimit, setMsgLimit] = useState(campaign.daily_message_limit)
   const [scheduleDays, setScheduleDays] = useState<number[]>(campaign.schedule_days ?? [1,2,3,4,5])
@@ -1415,7 +1431,7 @@ function CampaignSettings({
 
   const isDirty =
     accountId !== (campaign.account_id ?? '') ||
-    leadPriority !== (((campaign as unknown as Record<string, unknown>).lead_priority as string | undefined) ?? 'high_icp') ||
+    encodePriority(priorityHighIcp, priorityWarmLeads) !== (storedPriority ?? null) ||
     connLimit !== campaign.daily_connection_limit ||
     msgLimit !== campaign.daily_message_limit ||
     JSON.stringify(selectedProductIds) !== JSON.stringify(icp.selected_product_ids ?? []) ||
@@ -1435,7 +1451,7 @@ function CampaignSettings({
   function handleSave() {
     onSave({
       account_id: accountId || null,
-      lead_priority: leadPriority,
+      lead_priority: encodePriority(priorityHighIcp, priorityWarmLeads) as Campaign['lead_priority'],
       daily_connection_limit: connLimit,
       daily_message_limit: msgLimit,
       schedule_days: scheduleDays,
@@ -1703,26 +1719,38 @@ function CampaignSettings({
         {/* Sequence Priority */}
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Sequence Priority</label>
-          <p className="text-xs text-gray-400 mb-2">Determines the order leads are worked through the sequence.</p>
-          <div className="flex flex-col gap-2 max-w-sm">
+          <p className="text-xs text-gray-400 mb-2">Determines the order leads are worked through the sequence. Toggles can be combined.</p>
+          <div className="flex flex-col gap-3 max-w-sm">
             {([
-              { value: 'high_icp', label: '⬆ Prioritise high ICP score', desc: 'Best-fit leads go first' },
-              { value: 'low_icp',  label: '⬇ Prioritise low ICP score',  desc: 'Lower-fit leads go first' },
-              { value: 'fifo',     label: '↕ Wait for others (FIFO)',      desc: 'Process in the order leads were added' },
-            ] as const).map(opt => (
+              {
+                key:   'highIcp' as const,
+                label: 'Prioritise high ICP score',
+                desc:  'Best-fit leads (highest qualification score) go first',
+                value:  priorityHighIcp,
+                toggle: (v: boolean) => setPriorityHighIcp(v),
+              },
+              {
+                key:   'warm' as const,
+                label: 'Prioritise warm leads',
+                desc:  'Hot / warm-flagged leads go before cold ones',
+                value:  priorityWarmLeads,
+                toggle: (v: boolean) => setPriorityWarmLeads(v),
+              },
+            ]).map(opt => (
               <button
-                key={opt.value}
+                key={opt.key}
                 type="button"
-                onClick={() => setLeadPriority(opt.value)}
+                onClick={() => opt.toggle(!opt.value)}
                 className={[
-                  'flex items-start gap-3 px-4 py-3 rounded-xl border-2 text-sm text-left transition-all',
-                  leadPriority === opt.value
+                  'flex items-center gap-3 px-4 py-3 rounded-xl border-2 text-sm text-left transition-all',
+                  opt.value
                     ? 'border-rose-400 bg-rose-50'
                     : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50',
                 ].join(' ')}
               >
-                <span className={`mt-0.5 w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 ${leadPriority === opt.value ? 'border-rose-500 bg-rose-500' : 'border-gray-300'}`}>
-                  {leadPriority === opt.value && <span className="w-1.5 h-1.5 rounded-full bg-white block" />}
+                {/* Toggle pill */}
+                <span className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${opt.value ? 'bg-rose-500' : 'bg-gray-200'}`}>
+                  <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform ${opt.value ? 'translate-x-4' : 'translate-x-1'}`} />
                 </span>
                 <div>
                   <p className="font-semibold text-gray-800">{opt.label}</p>

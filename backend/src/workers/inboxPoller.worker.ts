@@ -22,6 +22,10 @@ import { supabase } from '../lib/supabase'
 import { extractCookies } from '../linkedin/session'
 import { classifyReply } from '../ai/classify'
 import { acquireAccountLock } from '../lib/accountLock'
+import { ProxyAgent, fetch as undiciFetch } from 'undici'
+import { getExistingContext, getOrCreateBrowserSession, invalidateBrowserSession } from '../lib/browserPool'
+import type { AccountRecord } from '../linkedin/session'
+import type { BrowserContext } from 'playwright'
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -59,26 +63,93 @@ interface VoyagerMessage {
 
 // ── Voyager API helpers ───────────────────────────────────────────────────────
 
-function buildVoyagerHeaders(liAt: string, csrfToken: string) {
+function buildVoyagerHeaders(
+  allCookies: Array<{ name: string; value: string }>,
+  csrfToken: string
+) {
+  // Build Cookie header from ALL stored cookies — LinkedIn's messaging API requires
+  // more than just li_at+JSESSIONID (bcookie, bscookie, lidc, lang, etc.)
+  // Format: name=value pairs separated by "; "
+  // JSESSIONID value may be stored with outer quotes ("ajax:XXX") — strip them for the Cookie header
+  const cookieHeader = allCookies
+    .map(c => {
+      const val = c.name === 'JSESSIONID'
+        ? c.value.replace(/^"|"$/g, '')   // strip outer quotes → ajax:XXX
+        : c.value
+      return `${c.name}=${val}`
+    })
+    .join('; ')
+
   return {
-    'Cookie':                      `li_at=${liAt}; JSESSIONID="${csrfToken}"`,
+    'Cookie':                      cookieHeader,
     'Csrf-Token':                  `ajax:${csrfToken}`,
     'User-Agent':                  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
     'Accept':                      'application/vnd.linkedin.normalized+json+2.1',
     'Accept-Language':             'en-US,en;q=0.9',
+    'Accept-Encoding':             'gzip, deflate, br',
     'x-li-lang':                   'en_US',
     'x-li-track':                  JSON.stringify({ clientVersion: '2024.4.0', osName: 'web', timezoneOffset: 0 }),
     'x-restli-protocol-version':   '2.0.0',
-    'x-li-page-instance':          'urn:li:page:messaging_thread;',
+    'x-li-page-instance':          'urn:li:page:d_flagship3_messaging;',
     'Referer':                     'https://www.linkedin.com/messaging/',
+    'Origin':                      'https://www.linkedin.com',
+    'sec-fetch-site':              'same-origin',
+    'sec-fetch-mode':              'cors',
+    'sec-fetch-dest':              'empty',
+    'sec-ch-ua':                   '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    'sec-ch-ua-mobile':            '?0',
+    'sec-ch-ua-platform':          '"Windows"',
+    'dnt':                         '1',
   }
 }
 
-async function voyagerGet(path: string, headers: Record<string, string>): Promise<unknown> {
-  const res = await fetch(`https://www.linkedin.com${path}`, { headers })
+/**
+ * Make a Voyager API request using the Playwright browser context.
+ * This uses the browser's own authenticated session, which has all the
+ * correct cookies and session state that LinkedIn requires.
+ */
+async function voyagerGetViaContext(
+  path: string,
+  csrfToken: string,
+  context: BrowserContext
+): Promise<unknown> {
+  console.log(`[inbox] GET ${path} via playwright-context`)
+  const res = await context.request.get(`https://www.linkedin.com${path}`, {
+    headers: {
+      'Accept':                    'application/vnd.linkedin.normalized+json+2.1',
+      'Accept-Language':           'en-US,en;q=0.9',
+      'x-li-lang':                 'en_US',
+      'x-li-track':                JSON.stringify({ clientVersion: '2024.4.0', osName: 'web', timezoneOffset: 0 }),
+      'x-restli-protocol-version': '2.0.0',
+      'x-li-page-instance':        'urn:li:page:d_flagship3_messaging;',
+      'Csrf-Token':                `ajax:${csrfToken}`,
+      'Referer':                   'https://www.linkedin.com/messaging/',
+      'Origin':                    'https://www.linkedin.com',
+    },
+  })
+  console.log(`[inbox] context-request response: ${res.status()} for ${path}`)
+  if (res.status() === 401) throw new Error('SESSION_EXPIRED')
+  if (!res.ok()) {
+    const body = await res.text().catch(() => '')
+    throw new Error(`Voyager ${path} → ${res.status()} | ${body.slice(0, 300)}`)
+  }
+  const text = await res.text()
+  try { return JSON.parse(text) }
+  catch { throw new Error(`Voyager: invalid JSON from ${path}`) }
+}
 
+async function voyagerGet(path: string, headers: Record<string, string>, proxyUrl?: string): Promise<unknown> {
+  const dispatcher = proxyUrl ? new ProxyAgent(proxyUrl) : undefined
+  const fetchFn = dispatcher ? undiciFetch : fetch
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const res = await (fetchFn as any)(`https://www.linkedin.com${path}`, { headers, dispatcher })
   if (res.status === 401 || res.redirected) throw new Error('SESSION_EXPIRED')
-  if (!res.ok) throw new Error(`Voyager ${path} → ${res.status}`)
+  if (!res.ok) {
+    const body = await res.text().catch(() => '')
+    const preview = body.slice(0, 300)
+    throw new Error(`Voyager ${path} → ${res.status} | ${preview}`)
+  }
 
   const text = await res.text()
   // Voyager returns normalized+json: strip the outer wrapper if present
@@ -109,57 +180,143 @@ function getMessageText(event: VoyagerMessage): string {
 // ── Core per-account poll ─────────────────────────────────────────────────────
 
 async function pollAccountInbox(account: Account): Promise<void> {
+  // ── 0. Resolve proxy URL for this account ─────────────────────────────────
+  // The li_at session is bound to the proxy IP. Voyager requests must use the
+  // same proxy — otherwise LinkedIn rejects messaging endpoints with 500.
+  let proxyUrl: string | undefined
+  if (account.proxy_id && process.env.DISABLE_PROXY !== 'true') {
+    try {
+      const { data: proxyRow } = await supabase
+        .from('proxies').select('proxy_url').eq('id', account.proxy_id).single()
+      if (proxyRow) proxyUrl = (proxyRow as { proxy_url: string }).proxy_url
+    } catch { /* proxy fetch failure is non-fatal — proceed without proxy */ }
+  }
+
   // ── 1. Extract session credentials ────────────────────────────────────────
-  const cookies = extractCookies(account.cookies)
-  const liAt = cookies.find(c => c.name === 'li_at')?.value
+  const allCookies = extractCookies(account.cookies)
+  const liAt = allCookies.find(c => c.name === 'li_at')?.value
   if (!liAt) {
     console.log(`[inbox] No li_at for account ${account.id} — skipping`)
     return
   }
 
-  // JSESSIONID value is used as the CSRF token (without the "ajax:" prefix in the cookie value)
-  const jsessionid = cookies.find(c => c.name === 'JSESSIONID')?.value
+  // CSRF token comes from JSESSIONID: strip outer quotes and "ajax:" prefix.
+  // The Csrf-Token header needs just the numeric part.
+  const jsessionid = allCookies.find(c => c.name === 'JSESSIONID')?.value
   if (!jsessionid) {
     console.log(`[inbox] No JSESSIONID for account ${account.id} — skipping`)
     return
   }
-  // JSESSIONID is stored as "ajax:XXXXXXXXXX" in the cookie; strip the quotes if present
-  const csrfToken = jsessionid.replace(/^"|"$/g, '').replace(/^ajax:/, '')
+  const jsessionidUnquoted = jsessionid.replace(/^"|"$/g, '')  // → "ajax:XXXXXXXXXX"
+  const csrfToken = jsessionidUnquoted.replace(/^ajax:/, '')   // → "XXXXXXXXXX" (numeric only)
 
-  const headers = buildVoyagerHeaders(liAt, csrfToken)
+  const headers = buildVoyagerHeaders(allCookies, csrfToken)
 
   // ── 2. Identify self (to skip own messages when parsing threads) ───────────
   let myMemberUrn = ''
+  let myPlainId = 0
   try {
-    const me = await voyagerGet('/voyager/api/me', headers) as { miniProfile?: { objectUrn?: string } }
-    myMemberUrn = me?.miniProfile?.objectUrn ?? ''
+    // /me response uses normalized format: data['*miniProfile'] = urn, plainId = numeric
+    const me = await voyagerGet('/voyager/api/me', headers, proxyUrl) as {
+      data?: { plainId?: number; '*miniProfile'?: string; miniProfile?: { objectUrn?: string } }
+      miniProfile?: { objectUrn?: string }
+    }
+    // New format: data.plainId is the numeric member ID, build the urn manually
+    if (me?.data?.plainId) {
+      myMemberUrn = `urn:li:member:${me.data.plainId}`
+      myPlainId = me.data.plainId
+    } else {
+      myMemberUrn = me?.data?.miniProfile?.objectUrn ?? me?.miniProfile?.objectUrn ?? ''
+    }
   } catch (err) {
     const msg = (err as Error).message
-    if (msg.includes('SESSION_EXPIRED')) {
-      console.warn(`[inbox] Session expired for ${account.id}`)
-      await supabase.from('linkedin_accounts').update({ status: 'paused' }).eq('id', account.id)
-      return
-    }
-    // Non-fatal — we can still poll without knowing our own URN
-    console.warn(`[inbox] Could not fetch /me for ${account.id}: ${msg}`)
+    // Non-fatal — we can still poll without knowing our own URN.
+    // Session management is the responsibility of the sequence runner and keep-alive worker.
+    console.warn(`[inbox] Could not fetch /me for ${account.id}: ${msg.slice(0, 150)}`)
   }
 
   // ── 3. Fetch conversations ─────────────────────────────────────────────────
+  // Strategy A: use the Playwright browser context.
+  // Prefer an existing warm session; if none exists, create one — this is the
+  // most reliable approach since the browser carries the full session state that
+  // LinkedIn's messaging API requires (which raw HTTP requests cannot replicate).
+  // Only use an existing warm browser context — NEVER create a new session here.
+  // Creating a new browser session triggers a LinkedIn "new device login" notification
+  // and holds the account lock unnecessarily. If no session exists, fall through to
+  // direct HTTP (Strategy B). The sequence runner creates sessions when it needs them.
+  const browserCtx: BrowserContext | null = getExistingContext(account.id)
   let conversations: VoyagerConversation[] = []
-  try {
-    const resp = await voyagerGet(
+  let convFetched = false
+
+  if (browserCtx) {
+    const mailboxUrn = myPlainId ? encodeURIComponent(`urn:li:mailbox:${myPlainId}`) : ''
+    const ctxEndpoints = [
+      ...(mailboxUrn ? [`/voyager/api/messaging/conversations?mailboxUrn=${mailboxUrn}&start=0&count=20`] : []),
       '/voyager/api/messaging/conversations?keyVersion=LEGACY_INBOX&start=0&count=20',
-      headers
-    ) as { elements?: VoyagerConversation[] }
-    conversations = resp?.elements ?? []
-  } catch (err) {
-    const msg = (err as Error).message
-    if (msg.includes('SESSION_EXPIRED')) {
-      console.warn(`[inbox] Session expired for ${account.id} — pausing`)
-      await supabase.from('linkedin_accounts').update({ status: 'paused' }).eq('id', account.id)
-      return
+      '/voyager/api/messaging/conversations?start=0&count=20',
+    ]
+    for (const endpoint of ctxEndpoints) {
+      try {
+        const resp = await voyagerGetViaContext(endpoint, csrfToken, browserCtx) as { elements?: VoyagerConversation[] }
+        conversations = resp?.elements ?? []
+        convFetched = true
+        console.log(`[inbox] Context-based fetch succeeded: ${conversations.length} conversations`)
+        break
+      } catch (err) {
+        const msg = (err as Error).message
+        if (msg.includes('SESSION_EXPIRED')) {
+          // Browser context confirmed session is expired — trigger background reconnect
+          // but don't pause the account here (keep-alive handles reconnection)
+          console.warn(`[inbox] Browser context got 401 for ${account.id} — invalidating session for reconnect`)
+          invalidateBrowserSession(account.id)
+          break
+        }
+        // LinkedIn returns 500 for accounts with empty inboxes — treat as no conversations
+        if (msg.includes('→ 500') && msg.includes('{"data":{"status":500}')) {
+          console.log(`[inbox] Conversations endpoint returned 500 — likely empty inbox for ${account.id}`)
+          convFetched = true  // mark as "fetched" so we don't retry unnecessarily
+          break
+        }
+        console.warn(`[inbox] Context endpoint ${endpoint} failed: ${msg.slice(0, 150)}`)
+      }
     }
-    console.error(`[inbox] Conversation fetch failed for ${account.id}: ${msg}`)
+  }
+
+  // Strategy B: direct HTTP with manually built cookie header (fallback)
+  if (!convFetched) {
+    const mailboxUrn = myPlainId ? encodeURIComponent(`urn:li:mailbox:${myPlainId}`) : ''
+    const convEndpoints = [
+      ...(mailboxUrn ? [`/voyager/api/messaging/conversations?mailboxUrn=${mailboxUrn}&start=0&count=20`] : []),
+      '/voyager/api/messaging/conversations?keyVersion=LEGACY_INBOX&start=0&count=20',
+      '/voyager/api/messaging/conversations?start=0&count=20',
+    ]
+    for (const endpoint of convEndpoints) {
+      try {
+        const resp = await voyagerGet(endpoint, headers, proxyUrl) as { elements?: VoyagerConversation[] }
+        conversations = resp?.elements ?? []
+        convFetched = true
+        if (conversations.length > 0) break
+      } catch (err) {
+        const msg = (err as Error).message
+        if (msg.includes('SESSION_EXPIRED')) {
+          // Direct HTTP getting 401 is less reliable than browser context (anti-bot, stale cookies).
+          // Don't pause — just skip this endpoint and continue.
+          console.warn(`[inbox] Direct HTTP got SESSION_EXPIRED for ${account.id} — skipping endpoint`)
+          continue
+        }
+        // LinkedIn returns 500 for accounts with empty inboxes — treat as no conversations
+        if (msg.includes('→ 500') && msg.includes('{"data":{"status":500}')) {
+          console.log(`[inbox] Conversations endpoint returned 500 — likely empty inbox for ${account.id}`)
+          convFetched = true
+          break
+        }
+        console.warn(`[inbox] Direct endpoint ${endpoint} failed: ${msg.slice(0, 150)}`)
+      }
+    }
+  }
+
+  if (!convFetched) {
+    console.error(`[inbox] All conversation fetch strategies failed for ${account.id}`)
     return
   }
 
@@ -195,12 +352,18 @@ async function pollAccountInbox(account: Account): Promise<void> {
 
     // Fetch messages in this conversation
     const convUrnEncoded = encodeURIComponent(conv.entityUrn)
+    const eventsPath = `/voyager/api/messaging/conversations/${convUrnEncoded}/events?count=20`
     let events: VoyagerMessage[] = []
     try {
-      const eventsResp = await voyagerGet(
-        `/voyager/api/messaging/conversations/${convUrnEncoded}/events?count=20`,
-        headers
-      ) as { elements?: VoyagerMessage[] }
+      let eventsResp: { elements?: VoyagerMessage[] } | null = null
+      if (browserCtx) {
+        try {
+          eventsResp = await voyagerGetViaContext(eventsPath, csrfToken, browserCtx) as { elements?: VoyagerMessage[] }
+        } catch { /* fall through to direct */ }
+      }
+      if (!eventsResp) {
+        eventsResp = await voyagerGet(eventsPath, headers, proxyUrl) as { elements?: VoyagerMessage[] }
+      }
       events = eventsResp?.elements ?? []
     } catch (err) {
       console.warn(`[inbox] Could not fetch events for conv ${conv.entityUrn}: ${(err as Error).message}`)

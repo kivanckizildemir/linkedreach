@@ -324,7 +324,13 @@ function buildLayout(allSteps: SequenceStep[], cb: Callbacks): { nodes: Node[]; 
         const branchY = y + NH + VG
         const forkCond = step.condition?.type as ForkCondition | undefined
 
-        const yesInherited = mergeDisabled(inheritedDisabled, forkBranchDisabled(forkCond, 'if_yes'))
+        // For a "connected?" fork: the YES branch confirms connection — UNBLOCK message
+        // by removing any inherited message restriction before adding branch rules.
+        // All other fork branches keep message blocked (message only flows after connection confirmed).
+        const baseForYes = (forkCond === 'connected' || forkCond === 'not_connected')
+          ? inheritedDisabled.filter(e => e.type !== 'message')
+          : inheritedDisabled
+        const yesInherited = mergeDisabled(baseForYes, forkBranchDisabled(forkCond, 'if_yes'))
         const noInherited  = mergeDisabled(inheritedDisabled, forkBranchDisabled(forkCond, 'if_no'))
 
         const yesRes = layoutList(node.ifYes ?? [], cx - BX, branchY, step.id, 'yes', '✓ Yes', '#16A34A', yesInherited)
@@ -381,7 +387,13 @@ function buildLayout(allSteps: SequenceStep[], cb: Callbacks): { nodes: Node[]; 
     return { endY: y - VG, lastId: prevId, lastHandle: prevHandle, chainDisabledForNext: chainDisabled(chainTypes) }
   }
 
-  const { endY, lastId, lastHandle, chainDisabledForNext: mainChainDisabled } = layoutList(tree, 0, NH + VG, '__start')
+  // Message is only valid inside the YES branch of a connected check.
+  // Block it globally and let forkBranchDisabled unblock it in the right context.
+  const messageNeedsConnectionFork: DisabledEntry = {
+    type: 'message',
+    reason: 'Message can only be sent to confirmed connections — add an "Is Connected?" fork first, then put Message in the Yes branch',
+  }
+  const { endY, lastId, lastHandle, chainDisabledForNext: mainChainDisabled } = layoutList(tree, 0, NH + VG, '__start', undefined, undefined, undefined, [messageNeedsConnectionFork])
 
   // Don't show a main-chain add button when the last step is a fork —
   // forks terminate the flow; new steps go into the YES or NO branches only.
@@ -422,7 +434,10 @@ function mapLeadToStepId(lead: CampaignLead, steps: SequenceStep[]): string | nu
       return mainSteps.find(s => s.type === 'wait')?.id ?? null
     }
     case 'connected': {
-      // Past connection — show on the first fork (connected?) or first if_yes step
+      // Primary: show at the step matching current_step (e.g. message step they're waiting for)
+      const atStep = mainSteps.find(s => s.step_order === lead.current_step)
+      if (atStep) return atStep.id
+      // Secondary: past connection — show on the first fork (connected?) or first if_yes step
       const fork = steps.find(s => s.type === 'fork' && (s.condition as Record<string,unknown>)?.type === 'connected')
       if (fork) return fork.id
       return steps.find(s => s.branch === 'if_yes' && s.step_order === 0)?.id ?? null

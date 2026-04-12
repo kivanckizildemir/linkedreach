@@ -8,12 +8,11 @@
  */
 
 import { Worker } from 'bullmq'
-import { randomUUID } from 'crypto'
 import { connection } from '../lib/queue'
 import { supabase } from '../lib/supabase'
 import { persistCookies } from '../linkedin/session'
 import { acquireAccountLock } from '../lib/accountLock'
-import { getOrCreateBrowserSession, invalidateBrowserSession } from '../lib/browserPool'
+import { getOrCreateBrowserSession } from '../lib/browserPool'
 import {
   viewProfile,
   sendConnectionRequest,
@@ -27,13 +26,90 @@ import {
 } from '../linkedin/actions'
 import { warmupConnectionLimit } from './warmup.worker'
 import { personaliseOpeningLine } from '../ai/personalise'
-import { isExtensionOnline, sendActionToExtension, type ExtensionJob } from '../lib/extensionHub'
+import {
+  generateSequenceMessage,
+} from '../ai/generate-sequence-message'
+import type {
+  LeadContext,
+  ProductContext,
+  SenderContext as AiSenderContext,
+} from '../ai/generate-sequence-message'
 import type {
   CampaignLeadStatus,
   StepType,
   ReactionType,
   ReplyClassification,
 } from '../types'
+
+// ── AI context loader ─────────────────────────────────────────────────────────
+
+interface CampaignAiContext {
+  product: ProductContext | null
+  sender: AiSenderContext | null
+  icpNotes: string | undefined
+  approach: string | null
+  tone: string | null
+}
+
+async function loadCampaignAiContext(
+  campaignId: string,
+  userId: string,
+  accountId: string
+): Promise<CampaignAiContext> {
+  // Load campaign ICP config for approach/tone/product
+  const { data: camp } = await supabase
+    .from('campaigns')
+    .select('product_id, icp_config')
+    .eq('id', campaignId)
+    .single()
+
+  const icp = (camp as any)?.icp_config as Record<string, unknown> | null
+  const approach = (icp?.message_approach as string) ?? null
+  const tone     = (icp?.message_tone     as string) ?? null
+  const productId = (camp as any)?.product_id
+    ?? (icp?.selected_product_ids as string[] | undefined)?.[0]
+    ?? null
+
+  // Load product from user_settings
+  let product: ProductContext | null = null
+  if (productId) {
+    const { data: settings } = await supabase
+      .from('user_settings')
+      .select('icp_config')
+      .eq('user_id', userId)
+      .single()
+    const cfg = (settings as any)?.icp_config as { products_services?: Array<{ id: string } & ProductContext> } | null
+    product = cfg?.products_services?.find(p => p.id === productId) ?? null
+  }
+
+  // Load ICP notes
+  const { data: settingsForNotes } = await supabase
+    .from('user_settings')
+    .select('icp_config')
+    .eq('user_id', userId)
+    .single()
+  const icpNotes = ((settingsForNotes as any)?.icp_config as { notes?: string } | null)?.notes ?? undefined
+
+  // Load sender context
+  let sender: AiSenderContext | null = null
+  const { data: acc } = await supabase
+    .from('linkedin_accounts')
+    .select('sender_name, sender_headline, sender_about, sender_experience, sender_skills, sender_recent_posts')
+    .eq('id', accountId)
+    .single()
+  if (acc && (acc as any).sender_name) {
+    sender = {
+      name:         (acc as any).sender_name         as string,
+      headline:     (acc as any).sender_headline     as string | null,
+      about:        (acc as any).sender_about        as string | null,
+      experience:   (acc as any).sender_experience   as string | null,
+      skills:       (acc as any).sender_skills       as string[] | undefined,
+      recent_posts: (acc as any).sender_recent_posts as string[] | undefined,
+    }
+  }
+
+  return { product, sender, icpNotes, approach, tone }
+}
 
 interface RunJob {
   campaign_lead_id: string
@@ -306,39 +382,23 @@ async function runSequenceStep(campaignLeadId: string): Promise<void> {
     currentStep = nextStep
   }
 
-  // 7. Extension-first routing — check if account owner has extension connected
-  const useExtension = isExtensionOnline(account.user_id)
-  const via = useExtension ? 'extension' : 'playwright'
-  console.log(`[runner] ${currentStep.type} for lead ${leadData.first_name} → ${via.toUpperCase()}`)
-
-  // For fork steps and inmail we always need Playwright.
-  // For all other action steps, extension handles it entirely.
-  const needsPlaywright = !useExtension || currentStep.type === 'fork' || currentStep.type === 'inmail'
+  // 7. Playwright routing — always use Playwright for all actions
+  const via = 'playwright'
+  console.log(`[runner] ${currentStep.type} for lead ${leadData.first_name} → PLAYWRIGHT`)
 
   let context: Awaited<ReturnType<typeof getOrCreateBrowserSession>>['context'] | null = null
   let page:    Awaited<ReturnType<typeof getOrCreateBrowserSession>>['page']    | null = null
   let release: (() => Promise<void>) | null = null
 
-  // Use a short TTL — sequence steps take at most 3 minutes. A 30-min TTL
-  // causes long idle periods when a worker is killed before releasing the lock.
   const STEP_LOCK_TTL = 5 * 60  // 5 minutes
-  if (needsPlaywright) {
-    release = await acquireAccountLock(account.id, STEP_LOCK_TTL)
-    if (!release) {
-      console.log(`[runner] Account ${account.id} locked by another worker — will retry`)
-      throw new Error(`Account ${account.id} is currently in use — retrying`)
-    }
-    const session = await getOrCreateBrowserSession(account)
-    context = session.context
-    page    = session.page
-  } else {
-    // Still acquire the lock to serialise per-account actions (no Playwright needed)
-    release = await acquireAccountLock(account.id, STEP_LOCK_TTL)
-    if (!release) {
-      console.log(`[runner] Account ${account.id} locked by another worker — will retry`)
-      throw new Error(`Account ${account.id} is currently in use — retrying`)
-    }
+  release = await acquireAccountLock(account.id, STEP_LOCK_TTL)
+  if (!release) {
+    console.log(`[runner] Account ${account.id} locked by another worker — will retry`)
+    throw new Error(`Account ${account.id} is currently in use — retrying`)
   }
+  const session = await getOrCreateBrowserSession(account)
+  context = session.context
+  page    = session.page
 
   try {
     // 8. Handle fork — evaluate condition and route to branch
@@ -372,6 +432,59 @@ async function runSequenceStep(campaignLeadId: string): Promise<void> {
     // 9. Execute the action step
     const tmpl = currentStep.message_template ?? ''
 
+    // Guard: if this is a message/connect step with no template and no AI mode, skip and warn
+    // rather than hanging Playwright trying to send an empty message.
+    if ((currentStep.type === 'message' || currentStep.type === 'connect')
+        && tmpl.trim() === ''
+        && !currentStep.ai_generation_mode) {
+      console.warn(`[runner] Step ${currentStep.id} (${currentStep.type}) has no message_template — skipping lead ${leadData.first_name}. Add a template in the Sequence Builder.`)
+      if (context) await persistCookies(context, account.id)
+      return
+    }
+
+    // AI-generation mode: generate a fully personalised message per-lead using Claude
+    let aiGeneratedMessage = ''
+    if ((currentStep.type === 'message' || currentStep.type === 'connect' || currentStep.type === 'inmail')
+        && currentStep.ai_generation_mode
+        && tmpl.trim() === '') {
+      try {
+        console.log(`[runner] AI mode — generating message for ${leadData.first_name} (${currentStep.type})`)
+        const ctx = await loadCampaignAiContext(campaignLead.campaign_id, account.user_id, account.id)
+        if (!ctx.product) {
+          console.warn(`[runner] AI mode — no product found for campaign ${campaignLead.campaign_id}, falling back to generic`)
+        }
+        const leadCtx: LeadContext = {
+          first_name:             leadData.first_name,
+          last_name:              leadData.last_name,
+          title:                  leadData.title ?? null,
+          company:                leadData.company ?? null,
+          industry:               null,
+          about:                  leadData.about ?? null,
+          experience_description: leadData.experience_description ?? null,
+          skills:                 leadData.skills ?? undefined,
+          recent_posts:           leadData.recent_posts ?? undefined,
+        }
+        const result = await generateSequenceMessage({
+          step_type:            currentStep.type as 'connect' | 'message' | 'inmail',
+          position_in_sequence: 1,
+          product:              ctx.product ?? { name: 'our product' },
+          sender:               ctx.sender,
+          lead:                 leadCtx,
+          prior_messages:       [],
+          icp_notes:            ctx.icpNotes,
+          resolve_variables:    true,
+          approach:             ctx.approach,
+          tone:                 ctx.tone,
+        })
+        aiGeneratedMessage = result.body
+        console.log(`[runner] AI message generated for ${leadData.first_name}: "${aiGeneratedMessage.slice(0, 80)}..."`)
+      } catch (aiErr) {
+        console.error(`[runner] AI message generation failed for ${leadData.first_name}:`, (aiErr as Error).message)
+        if (context) await persistCookies(context, account.id)
+        return
+      }
+    }
+
     // Generate AI opening line if template uses {{ai_opening}} or {{opening_line}}
     let aiOpening = ''
     if (tmpl.includes('{{ai_opening}}') || tmpl.includes('{{opening_line}}')) {
@@ -393,7 +506,8 @@ async function runSequenceStep(campaignLeadId: string): Promise<void> {
       }
     }
 
-    const personalised = personaliseTemplate(tmpl, {
+    // Use AI-generated message if available, otherwise personalise the template
+    const personalised = aiGeneratedMessage || personaliseTemplate(tmpl, {
       first_name:   leadData.first_name,
       last_name:    leadData.last_name,
       company:      leadData.company      ?? undefined,
@@ -404,67 +518,7 @@ async function runSequenceStep(campaignLeadId: string): Promise<void> {
 
     let newStatus: CampaignLeadStatus | null = null
 
-    // ── Extension path ────────────────────────────────────────────────────────
-    if (useExtension && currentStep.type !== 'inmail') {
-      const supportedByExtension: StepType[] = ['view_profile', 'connect', 'message', 'follow', 'react_post']
-
-      if ((supportedByExtension as string[]).includes(currentStep.type)) {
-        // Daily limit checks (still enforced server-side)
-        if (currentStep.type === 'connect') {
-          const allowed = await checkDailyLimit(account.id, 'connection', account.warmup_day ?? 0, account.status)
-          if (!allowed) { console.log(`[runner] Connection cap reached — skipping`); return }
-        }
-        if (currentStep.type === 'message') {
-          const allowed = await checkDailyLimit(account.id, 'message', 0, account.status)
-          if (!allowed) { console.log(`[runner] Message cap reached — skipping`); return }
-        }
-
-        const extJob: ExtensionJob = {
-          jobId:      randomUUID(),
-          action:     currentStep.type as ExtensionJob['action'],
-          accountId:  account.id,
-          profileUrl: leadData.linkedin_url,
-          note:       currentStep.type === 'connect' ? (personalised || undefined) : undefined,
-          message:    currentStep.type === 'message' ? personalised : undefined,
-          reaction:   currentStep.type === 'react_post'
-            ? (currentStep.ai_generation_mode
-                ? (['like', 'celebrate', 'insightful'] as const)[Math.floor(Math.random() * 3)]
-                : ((currentStep.condition?.reaction as string) ?? 'like'))
-            : undefined,
-        }
-
-        const extResult = await sendActionToExtension(account.user_id, extJob)
-        const res = extResult as { warning?: boolean; captcha?: boolean } | null
-
-        // Pause account if LinkedIn signals a problem
-        if (res?.warning || res?.captcha) {
-          await supabase.from('linkedin_accounts').update({ status: 'paused' }).eq('id', account.id)
-          throw new Error('LinkedIn warning/captcha detected — account paused')
-        }
-
-        if (currentStep.type === 'connect') newStatus = 'connection_sent'
-        if (currentStep.type === 'message') newStatus = 'messaged'
-
-        // Log activity
-        await supabase.from('activity_log').insert({
-          user_id:     account.user_id,
-          account_id:  account.id,
-          campaign_id: campaignLead.campaign_id,
-          lead_id:     campaignLead.lead_id,
-          action:      currentStep.type,
-          detail:      `${leadData.first_name} ${leadData.last_name}${leadData.company ? ` · ${leadData.company}` : ''}`,
-        }).then(({ error }) => { if (error) console.warn('[runner] activity_log insert failed:', error.message) })
-
-      } else if (currentStep.type === 'end') {
-        await supabase
-          .from('campaign_leads')
-          .update({ status: 'stopped', last_action_at: new Date().toISOString() })
-          .eq('id', campaignLeadId)
-        return
-      }
-
-    // ── Playwright path ───────────────────────────────────────────────────────
-    } else {
+    {
       if (!page) throw new Error('Playwright page not initialised')
 
       // Resolve Sales Nav URLs → real /in/ URL via three-dot → "View LinkedIn profile".
@@ -495,14 +549,50 @@ async function runSequenceStep(campaignLeadId: string): Promise<void> {
         case 'connect': {
           const allowed = await checkDailyLimit(account.id, 'connection', account.warmup_day ?? 0, account.status)
           if (!allowed) throw new Error('Daily connection limit reached')
-          await sendConnectionRequest(page, effectiveUrl, account.id, personalised || null)
-          newStatus = 'connection_sent'
+          try {
+            await sendConnectionRequest(page, effectiveUrl, account.id, personalised || null)
+            newStatus = 'connection_sent'
+          } catch (connectErr) {
+            const connectMsg = (connectErr as Error).message
+            if (connectMsg === 'ALREADY_CONNECTED') {
+              // Lead is already a 1st-degree connection — mark connected and advance
+              console.log(`[runner] Lead ${campaignLeadId} already connected — marking connected`)
+              newStatus = 'connected'
+            } else if (connectMsg === 'CONNECTION_PENDING') {
+              // Connection request already sent in a previous run — treat as sent
+              console.log(`[runner] Lead ${campaignLeadId} connection already pending — marking connection_sent`)
+              newStatus = 'connection_sent'
+            } else if (connectMsg === 'FOLLOW_ONLY_PROFILE') {
+              // Profile only allows following, not connecting — advance without changing status
+              console.log(`[runner] Lead ${campaignLeadId} is follow-only — advancing step without connection`)
+              // Don't set newStatus — leave as 'pending'; advance the step below
+            } else {
+              throw connectErr
+            }
+          }
           break
         }
 
         case 'message': {
           const allowed = await checkDailyLimit(account.id, 'message', 0, account.status)
           if (!allowed) throw new Error('Daily message limit reached')
+
+          // If the DB status is still 'connection_sent', check the ACTUAL LinkedIn
+          // connection status. The connection request may have been accepted since
+          // we last checked — navigating to the profile is the only way to know.
+          if (campaignLead.status === 'pending' || campaignLead.status === 'connection_sent') {
+            const liveStatus = await checkConnectionStatus(page, effectiveUrl, account.id)
+            if (liveStatus !== 'connected') {
+              console.log(`[runner] message step skipped — lead ${campaignLead.id} is ${liveStatus} on LinkedIn (DB: ${campaignLead.status})`)
+              // Persist fresh cookies before returning so we don't waste the browser navigation
+              if (context) await persistCookies(context, account.id)
+              return
+            }
+            // Connection was accepted — update DB status before sending
+            console.log(`[runner] Lead ${campaignLead.id} connection accepted — updating to connected`)
+            await supabase.from('campaign_leads').update({ status: 'connected' }).eq('id', campaignLeadId)
+          }
+
           await sendMessage(page, effectiveUrl, account.id, personalised)
           newStatus = 'messaged'
           supabase.from('messages').insert({
@@ -566,17 +656,15 @@ async function runSequenceStep(campaignLeadId: string): Promise<void> {
       }
     }
 
-    // 10. Log activity (Playwright path — extension path logs above)
-    if (via !== 'extension') {
-      await supabase.from('activity_log').insert({
-        user_id:     account.user_id,
-        account_id:  account.id,
-        campaign_id: campaignLead.campaign_id,
-        lead_id:     campaignLead.lead_id,
-        action:      currentStep.type,
-        detail:      `${leadData.first_name} ${leadData.last_name}${leadData.company ? ` · ${leadData.company}` : ''}`,
-      }).then(({ error }) => { if (error) console.warn('[runner] activity_log insert failed:', error.message) })
-    }
+    // 10. Log activity
+    await supabase.from('activity_log').insert({
+      user_id:     account.user_id,
+      account_id:  account.id,
+      campaign_id: campaignLead.campaign_id,
+      lead_id:     campaignLead.lead_id,
+      action:      currentStep.type,
+      detail:      `${leadData.first_name} ${leadData.last_name}${leadData.company ? ` · ${leadData.company}` : ''}`,
+    }).then(({ error }) => { if (error) console.warn('[runner] activity_log insert failed:', error.message) })
 
     // 11. Advance to next step
     const nextStep = resolveNextStep(
@@ -587,7 +675,6 @@ async function runSequenceStep(campaignLeadId: string): Promise<void> {
     const update: Record<string, unknown> = {
       current_step:    nextStep?.step_order ?? currentStep.step_order,
       last_action_at:  new Date().toISOString(),
-      next_action_at:  null,  // clear any failure backoff
     }
     if (newStatus) update.status = newStatus
 
@@ -600,28 +687,55 @@ async function runSequenceStep(campaignLeadId: string): Promise<void> {
     await randomDelay()
 
     console.log(
-      `[runner] ${currentStep.type} done for lead ${leadData.first_name} ${leadData.last_name} (via ${via})`
+      `[runner] ${currentStep.type} done for lead ${leadData.first_name} ${leadData.last_name}`
     )
   } catch (err) {
     const msg = (err as Error).message ?? ''
     if (msg.includes('SESSION_EXPIRED')) {
-      // Mark paused immediately so the UI reflects the broken state.
+      // Mark paused so the UI reflects the broken state.
+      // DO NOT call invalidateBrowserSession — that triggers a background reconnect which
+      // opens a new browser, causing LinkedIn to send "new device login" notifications.
+      // The user should manually refresh the session via Accounts → Set Session.
       try { await supabase.from('linkedin_accounts').update({ status: 'paused' }).eq('id', account.id) } catch {}
-      // Trigger background reconnect and defer this step so reconnect can finish first
-      if (page) invalidateBrowserSession(account.id)
-      console.warn(`[runner] Session expired for ${account.id} — pausing account, deferring step 3min for reconnect`)
-      try {
-        await supabase
-          .from('campaign_leads')
-          .update({ next_action_at: new Date(Date.now() + 3 * 60 * 1000).toISOString() })
-          .eq('id', campaignLeadId)
-      } catch { /* non-fatal — scheduler will retry */ }
-      // Don't rethrow — scheduler will re-queue from next_action_at
+      console.warn(`[runner] Session expired for ${account.id} — pausing account. Refresh via Accounts → Set Session.`)
+      // Log session expiry to activity feed
+      try { await supabase.from('activity_log').insert({
+        user_id: account.user_id, account_id: account.id,
+        campaign_id: campaignLead.campaign_id, lead_id: campaignLead.lead_id,
+        action: 'session_expired',
+        detail: `Account paused — session expired. Re-activate via Accounts → Set Session.`,
+      }) } catch {}
       return
     }
     if (msg.includes('SECURITY_CHALLENGE')) {
-      if (page) invalidateBrowserSession(account.id)
+      // Same: pause but don't reconnect — let the user handle the security challenge manually.
+      console.warn(`[runner] Security challenge for ${account.id} — account paused. Handle challenge manually then re-activate.`)
+      // Log security challenge to activity feed
+      try { await supabase.from('activity_log').insert({
+        user_id: account.user_id, account_id: account.id,
+        campaign_id: campaignLead.campaign_id, lead_id: campaignLead.lead_id,
+        action: 'security_challenge',
+        detail: `Account paused — LinkedIn security challenge. Handle it manually then re-activate.`,
+      }) } catch {}
     }
+
+    // Log non-retryable failures to activity feed so they appear in the UI.
+    // Skip "currently in use" — those are lock-contention retries, not real failures.
+    const isLockContention = msg.includes('currently in use')
+    if (!isLockContention) {
+      const stepLabel = currentStep?.type ?? 'step'
+      const leadLabel = leadData ? `${leadData.first_name} ${leadData.last_name}` : 'lead'
+      const shortMsg  = msg.replace(/^[A-Z_]+:\s*/, '').slice(0, 140)  // strip error prefix, trim
+      try { await supabase.from('activity_log').insert({
+        user_id:    account.user_id,
+        account_id: account.id,
+        campaign_id: campaignLead.campaign_id,
+        lead_id:    campaignLead.lead_id,
+        action:     'failed',
+        detail:     `${stepLabel} for ${leadLabel} — ${shortMsg}`,
+      }) } catch {}
+    }
+
     throw err
   } finally {
     if (release) await release()
@@ -646,16 +760,8 @@ sequenceRunnerWorker.on('failed', async (job, err) => {
   } else {
     console.error(`[runner] Job ${job?.id} failed:`, msg)
   }
-  // Back off this lead for 5 minutes so cold leads get a chance to run.
-  // Without this, failed warm leads (high ICP priority) would monopolise the queue.
-  if (job?.data?.campaign_lead_id) {
-    const nextRetry = new Date(Date.now() + 5 * 60 * 1000).toISOString()
-    try {
-      await supabase.from('campaign_leads')
-        .update({ next_action_at: nextRetry })
-        .eq('id', job.data.campaign_lead_id)
-    } catch { /* non-fatal */ }
-  }
+  // Failed jobs are removed from queue (removeOnFail: true) so the scheduler
+  // can re-add them on the next cycle. No DB update needed here.
 })
 
 console.log('Sequence runner worker started')
