@@ -311,9 +311,17 @@ leadsRouter.delete('/scrape-status/:jobId', async (req: Request, res: Response) 
     const jobId = String(req.params.jobId)
     // Set a Redis cancellation flag so the worker can check it between steps
     await connection.set(`cancel:scrape:${jobId}`, '1', 'EX', 600)
-    // Also remove from queue if it hasn't started yet
     const job = await salesNavScraperQueue.getJob(jobId)
-    if (job) await job.remove().catch(() => null)
+    if (job) {
+      const state = await job.getState()
+      if (state === 'active') {
+        // moveToFailed forces the job out of active state so the worker stops and
+        // the next status poll returns 'failed' instead of hanging in 'active'
+        await job.moveToFailed(new Error('Cancelled by user'), job.token ?? '0', true).catch(() => null)
+      } else {
+        await job.remove().catch(() => null)
+      }
+    }
     return res.json({ ok: true })
   } catch (err) {
     return res.status(500).json({ error: (err as Error).message })

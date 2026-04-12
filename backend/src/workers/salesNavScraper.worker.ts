@@ -34,12 +34,18 @@ interface SalesNavJob {
   source_type?: string   // 'sales_nav' | 'linkedin_search' | 'post_reactors' | 'event_attendees'
 }
 
+async function isCancelled(jobId: string): Promise<boolean> {
+  const flag = await connection.get(`cancel:scrape:${jobId}`)
+  return flag === '1'
+}
+
 export const salesNavScraperWorker = new Worker<SalesNavJob>(
   'sales-nav-scraper',
   async (job) => {
     const { search_url, account_id, user_id, max_leads, list_id, source_type } = job.data
 
     await job.updateProgress(5)
+    if (await isCancelled(job.id!)) throw new Error('Cancelled by user')
 
     // ── Post Reactors — Voyager reactions + comments API ─────────────────────
     if (source_type === 'post_reactors') {
@@ -428,6 +434,7 @@ export const salesNavScraperWorker = new Worker<SalesNavJob>(
 
         console.log(`[sales-nav] Page ${pageNum + 1}: ${pageLeads.length} items (${newOnPage} new), total: ${leads.length}`)
         await job.updateProgress(Math.min(85, 15 + Math.round((leads.length / max_leads) * 70)))
+        if (await isCancelled(job.id!)) { console.log('[sales-nav] Job cancelled by user'); break }
 
         // Stop if this page had no new unique results — pagination wraparound detected
         if (newOnPage === 0) {
