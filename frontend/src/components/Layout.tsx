@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useAuth } from '../contexts/AuthContext'
 import { fetchUnreadCount } from '../api/inbox'
 import { supabase } from '../lib/supabase'
+import { sendToExtension } from '../lib/extensionBridge'
 
 const PAGE_TITLES: Record<string, string> = {
   '/': 'Dashboard',
@@ -13,31 +14,6 @@ const PAGE_TITLES: Record<string, string> = {
   '/accounts': 'Accounts',
   '/blacklist': 'Blacklist',
   '/settings': 'Settings',
-}
-
-// Extension ID — must match the installed extension.
-// In production the extension is loaded unpacked (developer mode) so the ID is
-// generated from the key field or auto-assigned. We try to send; if the extension
-// isn't installed the chrome API call just fails silently.
-declare const chrome: {
-  runtime?: {
-    sendMessage: (extId: string | undefined, msg: unknown, cb?: (r: unknown) => void) => void
-    lastError?: { message?: string }
-  }
-} | undefined
-
-async function pushTokenToExtension(token: string, user: { id: string; email?: string }): Promise<boolean> {
-  return new Promise((resolve) => {
-    if (typeof chrome === 'undefined' || !chrome?.runtime?.sendMessage) { resolve(false); return }
-    try {
-      // undefined extId = send to self (works when page IS the extension popup;
-      // for externally_connectable web pages Chrome routes it to the extension).
-      chrome.runtime.sendMessage(undefined, { type: 'RECEIVE_AUTH_TOKEN', token, user }, (res) => {
-        if (chrome?.runtime?.lastError) { resolve(false); return }
-        resolve(!!(res as { ok?: boolean })?.ok)
-      })
-    } catch { resolve(false) }
-  })
 }
 
 export function Layout() {
@@ -78,11 +54,12 @@ export function Layout() {
     try {
       const { data: { session } } = await supabase.auth.getSession()
       if (!session?.access_token) throw new Error('No session')
-      const ok = await pushTokenToExtension(session.access_token, {
-        id: session.user.id,
-        email: session.user.email,
+      const res = await sendToExtension({
+        type: 'RECEIVE_AUTH_TOKEN',
+        token: session.access_token,
+        user: { id: session.user.id, email: session.user.email },
       })
-      setExtLinkState(ok ? 'done' : 'error')
+      setExtLinkState(res?.ok ? 'done' : 'error')
       setTimeout(() => setExtLinkState('idle'), 3000)
     } catch {
       setExtLinkState('error')

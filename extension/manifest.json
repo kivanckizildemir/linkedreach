@@ -24,6 +24,17 @@
       "js": ["content.js"],
       "run_at": "document_start",
       "all_frames": false
+    },
+    {
+      "matches": [
+        "https://linkedreach.pages.dev/*",
+        "https://*.linkedreach.pages.dev/*",
+        "http://localhost:5173/*",
+        "http://localhost:5174/*"
+      ],
+      "js": ["content_webapp.js"],
+      "run_at": "document_idle",
+      "all_frames": false
     }
   ],
   "web_accessible_resources": [

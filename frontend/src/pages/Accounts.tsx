@@ -1,12 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react'
-
-// Chrome extension messaging — same pattern as Layout.tsx
-declare const chrome: {
-  runtime?: {
-    sendMessage: (extId: string | undefined, msg: unknown, cb?: (r: unknown) => void) => void
-    lastError?: { message?: string }
-  }
-} | undefined
+import { sendToExtension as extSend } from '../lib/extensionBridge'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useForm } from 'react-hook-form'
 import { useAuth } from '../contexts/AuthContext'
@@ -1097,41 +1090,19 @@ export function ConnectModal({
     }
   }
 
-  // Ask the extension directly (chrome.runtime.sendMessage) — no WebSocket needed.
-  // The extension grabs LinkedIn cookies from the browser and PATCHes the account.
-  function sendToExtension(msg: unknown): Promise<{ ok?: boolean; cookieCount?: number; error?: string }> {
-    return new Promise((resolve) => {
-      if (typeof chrome === 'undefined' || !chrome?.runtime?.sendMessage) {
-        resolve({ error: 'no_extension' }); return
-      }
-      try {
-        chrome.runtime.sendMessage(undefined, msg, (res) => {
-          if (chrome?.runtime?.lastError) { resolve({ error: chrome.runtime.lastError.message ?? 'extension_error' }); return }
-          resolve((res as { ok?: boolean; cookieCount?: number; error?: string }) ?? { error: 'no_response' })
-        })
-      } catch { resolve({ error: 'no_extension' }) }
-    })
-  }
-
   async function handleConnectViaExtension() {
     setError(''); setStep('extension_waiting')
     try {
-      // Primary path: message extension directly (no server WebSocket required)
-      const result = await sendToExtension({ type: 'EXPORT_SESSION', accountId, tabId: 0 })
-
+      // Message the extension via window.postMessage bridge (content_webapp.js)
+      const result = await extSend({ type: 'EXPORT_SESSION', accountId, tabId: 0 })
       if (result.ok) {
         setStep('done'); setTimeout(onSaved, 1500)
-        return
+      } else {
+        throw new Error(result.error ?? 'Extension returned an error')
       }
-
-      // Extension returned an error — distinguish "not installed" from LinkedIn errors
-      if (result.error === 'no_extension' || result.error === 'no_response') {
-        throw new Error('extension_offline')
-      }
-      throw new Error(result.error ?? 'Extension returned an error')
     } catch (err) {
       const msg = (err as Error).message
-      if (msg === 'extension_offline') {
+      if (msg === 'no_response') {
         setError('Extension not reachable. Make sure: (1) the extension is installed & reloaded in chrome://extensions, (2) you clicked "Link Extension" in the sidebar.')
       } else {
         setError(msg)
