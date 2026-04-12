@@ -315,6 +315,12 @@ export const salesNavScraperWorker = new Worker<SalesNavJob>(
         { timeout: 20_000 }
       ).catch(() => null)
 
+      // Expand viewport to 1920x1080 so Sales Nav's virtual scroll renders more cards
+      // at once. A small fingerprint viewport (e.g. 1366x768) only shows ~3 cards
+      // and virtual scrolling may not trigger for the rest.
+      await page.setViewportSize({ width: 1920, height: 1080 })
+      await delay(800)  // brief settle after resize
+
       // Sales Nav uses virtual scrolling — cards are added/removed from the DOM
       // as you scroll. We must collect leads DURING the scroll, not after.
       // Scroll in steps, extract visible cards at each position, deduplicate by URL.
