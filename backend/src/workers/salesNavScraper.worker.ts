@@ -210,6 +210,10 @@ export const salesNavScraperWorker = new Worker<SalesNavJob>(
           throw new Error('SESSION_EXPIRED: LinkedIn redirected to login. Please reconnect from the Accounts page.')
         }
         console.log(`[sales-nav] Feed loaded (${feedUrl.substring(0, 80)}), warming up Sales Nav session...`)
+        // Persist fresh cookies immediately — LinkedIn rotates cookies on every page load.
+        // If the job fails later, we still have the refreshed session in DB so the next
+        // job (or keep-alive) doesn't start from stale cookies.
+        await persistCookies(context, account_id).catch(() => null)
       } catch (feedErr) {
         const feedMsg = (feedErr as Error).message ?? ''
         if (feedMsg.includes('SESSION_EXPIRED')) throw feedErr
@@ -629,11 +633,17 @@ export const salesNavScraperWorker = new Worker<SalesNavJob>(
       throw err
     } finally {
       page.off('response', apiHandler)
-      // BrightData sessions are ephemeral — close after each job
       if (brightDataBrowser) {
+        // BrightData sessions are ephemeral — close after each job
         try { await persistCookies(context, account_id) } catch { /* non-fatal */ }
         await brightDataBrowser.close().catch(() => {})
         console.log('[sales-nav] BrightData browser closed')
+      } else {
+        // Pool session: always save cookies on the way out, even on failure.
+        // The browser collected fresh LinkedIn cookies during the job (feed load,
+        // Sales Nav home, etc.) — persisting them means the next job starts with
+        // a valid session instead of stale DB cookies.
+        await persistCookies(context, account_id).catch(() => null)
       }
       await release()
     }
