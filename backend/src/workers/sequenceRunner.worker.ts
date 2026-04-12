@@ -215,29 +215,29 @@ interface Account {
 }
 
 /**
- * Evaluate a fork condition against the current lead state.
+ * Evaluate a fork condition purely from the lead's DB state.
  * Returns 'if_yes' or 'if_no' branch name.
+ *
+ * connected condition  → lead status shows they accepted the connection request
+ * replied   condition  → lead has sent a reply (reply_classification set, or status=replied)
  */
 function evaluateFork(
   condition: Record<string, unknown>,
-  leadStatus: CampaignLeadStatus,
-  replyClassification: ReplyClassification,
-  isConnected: boolean
+  campaignLead: { status: CampaignLeadStatus; reply_classification: ReplyClassification }
 ): 'if_yes' | 'if_no' {
   const type = condition.type as string
+  const { status, reply_classification } = campaignLead
 
-  if (type === 'replied') {
-    return replyClassification !== 'none' ? 'if_yes' : 'if_no'
-  }
-  if (type === 'not_replied') {
-    return replyClassification === 'none' ? 'if_yes' : 'if_no'
-  }
-  if (type === 'connected') {
-    return isConnected ? 'if_yes' : 'if_no'
-  }
-  if (type === 'not_connected') {
-    return !isConnected ? 'if_yes' : 'if_no'
-  }
+  // A lead is "connected" once they accepted — these statuses all imply that happened
+  const isConnected = ['connected', 'messaged', 'replied', 'converted'].includes(status)
+
+  // A lead has "replied" if their reply was classified or their status tracks it
+  const hasReplied = reply_classification !== 'none' || status === 'replied'
+
+  if (type === 'replied')     return hasReplied   ? 'if_yes' : 'if_no'
+  if (type === 'not_replied') return !hasReplied  ? 'if_yes' : 'if_no'
+  if (type === 'connected')   return isConnected  ? 'if_yes' : 'if_no'
+  if (type === 'not_connected') return !isConnected ? 'if_yes' : 'if_no'
 
   return 'if_yes'
 }
@@ -421,22 +421,9 @@ async function runSequenceStep(campaignLeadId: string): Promise<void> {
   page    = session.page
 
   try {
-    // 8. Handle fork — evaluate condition and route to branch
+    // 8. Handle fork — evaluate condition from DB state and route to branch
     if (currentStep.type === 'fork') {
-      // Trust the DB status when it already tells us the lead is connected.
-      // Only do a live Playwright check when status is ambiguous (pending/connection_sent).
-      const alreadyConnectedByStatus = ['connected', 'messaged', 'replied', 'stopped', 'converted'].includes(campaignLead.status)
-      const isConnected = alreadyConnectedByStatus
-        ? true
-        : page
-          ? await checkConnectionStatus(page, leadData.linkedin_url, account.id) === 'connected'
-          : false   // fallback: assume not connected when no browser
-      const branch = evaluateFork(
-        currentStep.condition ?? {},
-        campaignLead.status,
-        campaignLead.reply_classification,
-        isConnected
-      )
+      const branch = evaluateFork(currentStep.condition ?? {}, campaignLead)
 
       // Find first step in the chosen branch
       const branchSteps = allSteps
