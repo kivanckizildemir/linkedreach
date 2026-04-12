@@ -242,9 +242,28 @@ export const salesNavScraperWorker = new Worker<SalesNavJob>(
       console.log(`[sales-nav] Sales Nav home loaded (title=${salesHomeTitle}), navigating to search...`)
       await job.updateProgress(9)
 
-      // Step 2: Navigate to Sales Navigator search URL
+      // Step 2: Navigate to Sales Navigator search URL.
+      // Sales Nav is a React SPA — when already on /sales/*, page.goto() often throws
+      // net::ERR_ABORTED because the SPA's client-side router intercepts the navigation
+      // via pushState and aborts the HTTP request. The page still loads correctly.
+      // We catch ERR_ABORTED and verify the URL/content afterwards.
       console.log(`[sales-nav] Navigating to: ${cleanUrl.substring(0, 120)}`)
-      await page.goto(cleanUrl, { waitUntil: 'domcontentloaded', timeout: 45_000 })
+      try {
+        await page.goto(cleanUrl, { waitUntil: 'domcontentloaded', timeout: 45_000 })
+      } catch (navErr) {
+        const navMsg = (navErr as Error).message ?? ''
+        if (navMsg.includes('ERR_ABORTED')) {
+          // SPA client-side routing — wait for URL to settle then check if we landed correctly
+          console.log('[sales-nav] ERR_ABORTED (SPA routing) — waiting for URL to settle...')
+          await page.waitForURL(
+            (u: URL) => u.toString().includes('/sales/search') || u.toString().includes('/sales/login'),
+            { timeout: 10_000 }
+          ).catch(() => null)
+          console.log(`[sales-nav] URL after SPA nav: ${page.url().substring(0, 120)}`)
+        } else {
+          throw navErr   // real error (timeout, proxy failure, etc.)
+        }
+      }
       await job.updateProgress(10)
 
       let currentUrl = page.url()
