@@ -341,14 +341,22 @@ export const salesNavScraperWorker = new Worker<SalesNavJob>(
 
           // Sales Nav 2024/2025 uses data-view-name="search-results-lead-result" on each card.
           // Older versions used [data-anonymize="person-name"] or .result-lockup__name.
-          // We anchor on the widest possible set and deduplicate by crawling up to the card root.
-          const nameEls = Array.from(document.querySelectorAll<HTMLElement>(
-            '[data-anonymize="person-name"], .result-lockup__name, [data-view-name="search-results-lead-result"] [data-anonymize="person-name"]'
-          ))
+          // Strategy: first collect ALL card roots directly via data-view-name, then also
+          // collect via name-element anchors for older layouts — union into one Set.
           const itemSet = new Set<Element>()
+
+          // Primary: query card roots directly (catches ALL cards regardless of inner attrs)
+          const cardRoots = Array.from(document.querySelectorAll<HTMLElement>(
+            '[data-view-name="search-results-lead-result"]'
+          ))
+          for (const card of cardRoots) itemSet.add(card)
+
+          // Fallback: anchor on name elements and walk up (for older layouts)
+          const nameEls = Array.from(document.querySelectorAll<HTMLElement>(
+            '[data-anonymize="person-name"], .result-lockup__name'
+          ))
           for (const el of nameEls) {
-            // Walk up to the nearest card root: li, [data-view-name="search-results-lead-result"],
-            // .result-lockup, or the artdeco card container
+            // Walk up to the nearest card root
             const card =
               el.closest('[data-view-name="search-results-lead-result"]') ??
               el.closest('li.artdeco-list__item') ??

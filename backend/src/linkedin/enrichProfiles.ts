@@ -246,7 +246,13 @@ export async function scrapeLinkedInProfile(page: Page, linkedinUrl: string): Pr
       // non-fatal
     }
   } catch (err) {
-    console.warn(`[enrich] Profile visit failed for ${linkedinUrl}: ${(err as Error).message}`)
+    const msg = (err as Error).message ?? ''
+    console.warn(`[enrich] Profile visit failed for ${linkedinUrl}: ${msg}`)
+    // Re-throw renderer/page crashes so the caller (enrichLeads) can replace the page.
+    // All other errors (navigation timeout, selector not found, etc.) are swallowed.
+    if (msg.includes('crashed') || msg.includes('Target crashed') || msg.includes('Target closed')) {
+      throw err
+    }
   }
 
   return result
@@ -261,6 +267,16 @@ export async function enrichLeads(
 ): Promise<{ sessionExpired: boolean; cancelled?: boolean }> {
   let consecutiveSessionExpiries = 0
   let page = initialPage
+
+  // Block images, fonts, video and other heavy resources to reduce memory pressure.
+  // LinkedIn profile pages are very heavy — without blocking, Chromium crashes OOM
+  // on resource-constrained Railway containers.
+  const blockResources = async (p: typeof initialPage) => {
+    await p.route('**/*.{png,jpg,jpeg,gif,webp,svg,ico,woff,woff2,ttf,eot,otf,mp4,webm,ogg,avi}', r => r.abort()).catch(() => null)
+    await p.route('**/*googlesyndication*', r => r.abort()).catch(() => null)
+    await p.route('**/*doubleclick*', r => r.abort()).catch(() => null)
+  }
+  await blockResources(page)
 
   for (let i = 0; i < leads.length; i++) {
     if (isCancelled && await isCancelled()) {
@@ -349,7 +365,9 @@ export async function enrichLeads(
         console.warn('[enrich] Page crashed — opening new page on existing context')
         try {
           page = await page.context().newPage()
+          await blockResources(page)
           console.warn('[enrich] New page opened — continuing batch')
+          // Don't retry the crashed lead — just move on
         } catch (newPageErr) {
           console.warn(`[enrich] Could not open new page: ${(newPageErr as Error).message} — stopping batch`)
           return { sessionExpired: false }
