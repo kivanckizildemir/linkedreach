@@ -24,6 +24,7 @@
 import type { Browser, BrowserContext, Page } from 'playwright'
 import { createSession, closeSession, getProfileDir, persistCookies } from '../linkedin/session'
 import type { AccountRecord } from '../linkedin/session'
+import { makeStickyUsernameForPool } from '../linkedin/session'
 import { supabase } from '../lib/supabase'
 import * as fs from 'fs'
 import { chromium } from 'playwright'
@@ -185,12 +186,23 @@ export async function reconnectWithPersistentProfile(
   try {
     let proxySettings: { server: string; username?: string; password?: string } | undefined
     if (proxyId) {
-      const { data: proxy } = await supabase.from('proxies').select('proxy_url').eq('id', proxyId).single()
+      const { data: proxy } = await supabase.from('proxies').select('proxy_url, proxy_type').eq('id', proxyId).single()
       if (proxy) {
-        const url = new URL((proxy as any).proxy_url)
+        const url    = new URL((proxy as any).proxy_url)
+        const server = `${url.protocol}//${url.host}`
+        let username = decodeURIComponent(url.username) || undefined
+
+        // Pin rotating residential proxies to a stable session so LinkedIn
+        // always sees the same IP for this account.
+        // Default to 'residential' if proxy_type column not yet migrated.
+        const pType = (proxy as any).proxy_type ?? 'residential'
+        if (username && pType === 'residential') {
+          username = makeStickyUsernameForPool(username, server, accountId)
+        }
+
         proxySettings = {
-          server:   `${url.protocol}//${url.host}`,
-          username: decodeURIComponent(url.username) || undefined,
+          server,
+          username,
           password: decodeURIComponent(url.password) || undefined,
         }
       }

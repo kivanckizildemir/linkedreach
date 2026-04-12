@@ -8,6 +8,7 @@ export interface Proxy {
   is_available: boolean
   created_at: string
   country: string | null     // ISO 3166-1 alpha-2 (e.g. 'gb') for BrightData geo-targeting
+  proxy_type: 'isp' | 'residential' | 'datacenter'  // 'residential' = rotating, needs sticky session
 }
 
 export interface BulkImportResult {
@@ -24,11 +25,22 @@ export async function fetchProxies(): Promise<Proxy[]> {
   return data
 }
 
-export async function addProxy(proxy_url: string, label?: string, country?: string): Promise<Proxy> {
+export async function addProxy(proxy_url: string, label?: string, country?: string, proxy_type?: string): Promise<Proxy> {
   const res = await apiFetch('/api/proxies', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ proxy_url, label: label || undefined, country: country?.toLowerCase() || undefined }),
+    body: JSON.stringify({ proxy_url, label: label || undefined, country: country?.toLowerCase() || undefined, proxy_type: proxy_type || undefined }),
+  })
+  if (!res.ok) throw new Error(await parseErrorResponse(res))
+  const { data } = await res.json() as { data: Proxy }
+  return data
+}
+
+export async function updateProxyType(id: string, proxy_type: string): Promise<Proxy> {
+  const res = await apiFetch(`/api/proxies/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ proxy_type }),
   })
   if (!res.ok) throw new Error(await parseErrorResponse(res))
   const { data } = await res.json() as { data: Proxy }
@@ -46,11 +58,11 @@ export async function updateProxyCountry(id: string, country: string | null): Pr
   return data
 }
 
-export async function bulkImportProxies(lines: string, label_prefix?: string): Promise<BulkImportResult> {
+export async function bulkImportProxies(lines: string, label_prefix?: string, proxy_type?: string): Promise<BulkImportResult> {
   const res = await apiFetch('/api/proxies/bulk', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ lines, label_prefix: label_prefix || undefined }),
+    body: JSON.stringify({ lines, label_prefix: label_prefix || undefined, proxy_type: proxy_type || undefined }),
   })
   if (!res.ok) throw new Error(await parseErrorResponse(res))
   return res.json() as Promise<BulkImportResult>

@@ -24,6 +24,7 @@ import {
   bulkImportProxies,
   updateProxyLabel,
   updateProxyCountry,
+  updateProxyType,
   assignProxy,
   testProxy,
   deleteProxy,
@@ -661,7 +662,7 @@ function ProxiesPanel({ accounts }: { accounts: LinkedInAccount[] }) {
   })
 
   const addMutation = useMutation({
-    mutationFn: ({ proxy_url, label, country }: { proxy_url: string; label?: string; country?: string }) => addProxy(proxy_url, label, country),
+    mutationFn: ({ proxy_url, label, country, proxy_type }: { proxy_url: string; label?: string; country?: string; proxy_type?: string }) => addProxy(proxy_url, label, country, proxy_type),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['proxies'] })
       setShowAdd(false)
@@ -669,8 +670,8 @@ function ProxiesPanel({ accounts }: { accounts: LinkedInAccount[] }) {
   })
 
   const bulkMutation = useMutation({
-    mutationFn: ({ lines, label_prefix }: { lines: string; label_prefix?: string }) =>
-      bulkImportProxies(lines, label_prefix),
+    mutationFn: ({ lines, label_prefix, proxy_type }: { lines: string; label_prefix?: string; proxy_type?: string }) =>
+      bulkImportProxies(lines, label_prefix, proxy_type),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['proxies'] })
       setShowAdd(false)
@@ -704,11 +705,18 @@ function ProxiesPanel({ accounts }: { accounts: LinkedInAccount[] }) {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['proxies'] }),
   })
 
+  const typeMutation = useMutation({
+    mutationFn: ({ id, proxy_type }: { id: string; proxy_type: string }) => updateProxyType(id, proxy_type),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['proxies'] }),
+  })
+
   async function handleTest(proxy: Proxy) {
     setTestResults(r => ({ ...r, [proxy.id]: { ok: false, result: '', loading: true } }))
     try {
       const result = await testProxy(proxy.id)
       setTestResults(r => ({ ...r, [proxy.id]: { ...result, loading: false } }))
+      // Auto-refresh proxies list in case country was just detected
+      void queryClient.invalidateQueries({ queryKey: ['proxies'] })
     } catch (e) {
       setTestResults(r => ({ ...r, [proxy.id]: { ok: false, result: (e as Error).message, loading: false } }))
     }
@@ -742,6 +750,7 @@ function ProxiesPanel({ accounts }: { accounts: LinkedInAccount[] }) {
           <thead className="bg-gray-50 border-b border-gray-200">
             <tr>
               <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Label / URL</th>
+              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Type</th>
               <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Country</th>
               <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
               <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Assigned Account</th>
@@ -783,6 +792,18 @@ function ProxiesPanel({ accounts }: { accounts: LinkedInAccount[] }) {
                         className="text-xs font-medium text-gray-800 bg-transparent border-b border-transparent hover:border-gray-300 focus:border-blue-500 focus:outline-none w-full pb-0.5 mb-1"
                       />
                       <p className="font-mono text-[10px] text-gray-400 truncate">{proxy.proxy_url}</p>
+                    </td>
+                    <td className="px-4 py-3">
+                      <select
+                        value={proxy.proxy_type ?? 'isp'}
+                        onChange={e => typeMutation.mutate({ id: proxy.id, proxy_type: e.target.value })}
+                        className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        title={proxy.proxy_type === 'residential' ? 'Sticky session auto-applied (BrightData/Oxylabs)' : 'Static IP — used as-is'}
+                      >
+                        <option value="residential">🔄 Rotating</option>
+                        <option value="isp">📌 ISP/Static</option>
+                        <option value="datacenter">🏢 Datacenter</option>
+                      </select>
                     </td>
                     <td className="px-4 py-3">
                       <select
@@ -871,8 +892,8 @@ function ProxiesPanel({ accounts }: { accounts: LinkedInAccount[] }) {
       {showAdd && (
         <AddProxyModal
           onClose={() => setShowAdd(false)}
-          onAdd={(proxy_url, label, country) => addMutation.mutate({ proxy_url, label, country })}
-          onBulk={(lines, label_prefix) => bulkMutation.mutate({ lines, label_prefix })}
+          onAdd={(proxy_url, label, country, proxy_type) => addMutation.mutate({ proxy_url, label, country, proxy_type })}
+          onBulk={(lines, label_prefix, proxy_type) => bulkMutation.mutate({ lines, label_prefix, proxy_type })}
           isLoading={addMutation.isPending || bulkMutation.isPending}
           error={addMutation.error?.message ?? bulkMutation.error?.message ?? null}
           bulkResult={bulkMutation.data ?? null}
@@ -891,8 +912,8 @@ function AddProxyModal({
   bulkResult,
 }: {
   onClose: () => void
-  onAdd: (proxy_url: string, label?: string, country?: string) => void
-  onBulk: (lines: string, label_prefix?: string) => void
+  onAdd: (proxy_url: string, label?: string, country?: string, proxy_type?: string) => void
+  onBulk: (lines: string, label_prefix?: string, proxy_type?: string) => void
   isLoading: boolean
   error: string | null
   bulkResult: { imported: number; skipped: number; invalid: string[] } | null
@@ -901,15 +922,16 @@ function AddProxyModal({
   const [proxyUrl, setProxyUrl] = useState('')
   const [label, setLabel] = useState('')
   const [country, setCountry] = useState('')
+  const [proxyType, setProxyType] = useState<'residential' | 'isp'>('residential')
   const [bulkLines, setBulkLines] = useState('')
   const [labelPrefix, setLabelPrefix] = useState('')
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (mode === 'single') {
-      if (proxyUrl.trim()) onAdd(proxyUrl.trim(), label.trim() || undefined, country || undefined)
+      if (proxyUrl.trim()) onAdd(proxyUrl.trim(), label.trim() || undefined, country || undefined, proxyType)
     } else {
-      if (bulkLines.trim()) onBulk(bulkLines.trim(), labelPrefix.trim() || undefined)
+      if (bulkLines.trim()) onBulk(bulkLines.trim(), labelPrefix.trim() || undefined, proxyType)
     }
   }
 
@@ -973,6 +995,35 @@ function AddProxyModal({
                 </div>
               </div>
               <div>
+                <label className="block text-xs font-medium text-gray-700 mb-1">Proxy Type</label>
+                <div className="flex gap-2">
+                  {([
+                    { value: 'residential', label: '🔄 Rotating Residential', hint: 'BrightData, Oxylabs, Smartproxy — sticky session auto-applied' },
+                    { value: 'isp', label: '📌 ISP / Static', hint: 'Dedicated static IP — same IP every session' },
+                  ] as const).map(opt => (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      onClick={() => setProxyType(opt.value)}
+                      title={opt.hint}
+                      className={[
+                        'flex-1 py-2 px-3 rounded-lg border text-xs font-medium transition-colors',
+                        proxyType === opt.value
+                          ? 'border-blue-500 bg-blue-50 text-blue-700'
+                          : 'border-gray-200 text-gray-600 hover:border-gray-300',
+                      ].join(' ')}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+                {proxyType === 'residential' && (
+                  <p className="text-[10px] text-amber-600 mt-1">
+                    Session pinning enabled — BrightData/Oxylabs will route this account to the same IP every time
+                  </p>
+                )}
+              </div>
+              <div>
                 <label className="block text-xs font-medium text-gray-700 mb-1">Proxy URL</label>
                 <input
                   value={proxyUrl}
@@ -981,7 +1032,7 @@ function AddProxyModal({
                   autoFocus
                   className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
-                <p className="text-[10px] text-gray-400 mt-1">Supports http://, https://, socks5://</p>
+                <p className="text-[10px] text-gray-400 mt-1">Country auto-detected from outbound IP on save · Supports http://, https://, socks5://</p>
               </div>
             </>
           ) : (

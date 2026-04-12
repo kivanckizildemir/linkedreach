@@ -90,6 +90,43 @@ export function extractCookies(cookiesStr: string): Array<{ name: string; value:
 
 export interface ProxyRecord {
   proxy_url: string        // e.g. http://user:pass@host:port
+  proxy_type?: string      // 'isp' | 'residential' | 'datacenter'
+}
+
+/**
+ * Make a rotating residential proxy sticky for this account.
+ * BrightData: append -session-XXXXXXXX to the username — the provider will
+ * always route the same session tag to the same residential IP.
+ * This turns a rotating proxy into an effectively static one per account.
+ * Exported so browserPool.ts can use it during headless reconnect.
+ */
+export function makeStickyUsernameForPool(username: string, server: string, accountId: string): string {
+  return makeStickyUsername(username, server, accountId)
+}
+
+function makeStickyUsername(username: string, server: string, accountId: string): string {
+  // Derive a stable 8-char tag from the account UUID (no hyphens, lowercase)
+  const tag = accountId.replace(/-/g, '').slice(0, 8)
+  const host = server.replace(/^https?:\/\//, '').split(':')[0].toLowerCase()
+
+  // BrightData / Luminati
+  if (host.includes('superproxy.io') || host.includes('brightdata.com') || host.includes('lum-superproxy.io')) {
+    return `${username}-session-${tag}`
+  }
+  // Oxylabs
+  if (host.includes('oxylabs.io')) {
+    return `${username}-sessid-${tag}`
+  }
+  // Smartproxy
+  if (host.includes('smartproxy.com')) {
+    return `${username}-session-${tag}`
+  }
+  // IPRoyal
+  if (host.includes('iproyal.com')) {
+    return `${username}_session-${tag}`
+  }
+  // Unknown provider — can't safely modify; use as-is
+  return username
 }
 
 export async function createSession(account: AccountRecord): Promise<{
@@ -110,15 +147,32 @@ export async function createSession(account: AccountRecord): Promise<{
   if (!DISABLE_PROXY && account.proxy_id) {
     const { data: proxy } = await supabase
       .from('proxies')
-      .select('proxy_url')
+      .select('proxy_url, proxy_type')
       .eq('id', account.proxy_id)
       .single()
 
     if (proxy) {
-      const url = new URL((proxy as ProxyRecord).proxy_url)
+      const rec = proxy as ProxyRecord
+      const url = new URL(rec.proxy_url)
+      const server   = `${url.protocol}//${url.host}`
+      let   username = decodeURIComponent(url.username) || undefined
+
+      // For rotating residential proxies, append a stable session tag so the
+      // provider (BrightData, Oxylabs, etc.) always routes this account through
+      // the same IP.  ISP/datacenter proxies are already static — no change needed.
+      // Default to 'residential' if proxy_type column not yet migrated (safe fallback).
+      const proxyType = rec.proxy_type ?? 'residential'
+      if (username && proxyType === 'residential') {
+        const sticky = makeStickyUsername(username, server, account.id)
+        if (sticky !== username) {
+          console.log(`[session] Residential proxy — pinning to sticky session for ${account.id}`)
+          username = sticky
+        }
+      }
+
       proxySettings = {
-        server:   `${url.protocol}//${url.host}`,
-        username: decodeURIComponent(url.username) || undefined,
+        server,
+        username,
         password: decodeURIComponent(url.password) || undefined,
       }
     }

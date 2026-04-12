@@ -3,6 +3,7 @@ import type { Request, Response } from 'express'
 import { supabase } from '../lib/supabase'
 import { requireAuth } from '../middleware/auth'
 import { ProxyAgent } from 'undici'
+import { reconnectWithPersistentProfile } from '../lib/browserPool'
 
 export const proxiesRouter = Router()
 proxiesRouter.use(requireAuth)
@@ -23,7 +24,14 @@ function maskUrl(raw: string): string {
  * Test a proxy by making a real HTTP request through it.
  * Uses the same HttpsProxyAgent approach as the rest of the app.
  */
-async function testProxyUrl(rawUrl: string): Promise<{ ok: boolean; result: string }> {
+interface TestResult {
+  ok: boolean
+  result: string
+  ip?: string
+  country?: string   // ISO 3166-1 alpha-2, auto-detected from outbound IP
+}
+
+async function testProxyUrl(rawUrl: string): Promise<TestResult> {
   // Auto-prepend http:// if no scheme given; preserve socks4:// and socks5:// as-is
   const proxyUrl = /^(https?|socks[45]):\/\//i.test(rawUrl) ? rawUrl : `http://${rawUrl}`
   try {
@@ -44,11 +52,24 @@ async function testProxyUrl(rawUrl: string): Promise<{ ok: boolean; result: stri
       dispatcher: agent,
       signal: AbortSignal.timeout(10_000),
     } as RequestInit)
-    if (res.ok) {
-      const { ip } = await res.json() as { ip: string }
-      return { ok: true, result: `Connected — outbound IP: ${ip}` }
-    }
-    return { ok: false, result: `HTTP ${res.status} from proxy` }
+    if (!res.ok) return { ok: false, result: `HTTP ${res.status} from proxy` }
+
+    const { ip } = await res.json() as { ip: string }
+
+    // Auto-detect country from outbound IP using ip-api.com (free, no auth)
+    let country: string | undefined
+    try {
+      const geoRes = await fetch(`http://ip-api.com/json/${ip}?fields=countryCode`, {
+        signal: AbortSignal.timeout(5_000),
+      })
+      if (geoRes.ok) {
+        const geo = await geoRes.json() as { countryCode?: string }
+        if (geo.countryCode) country = geo.countryCode.toLowerCase()
+      }
+    } catch { /* geo lookup is best-effort */ }
+
+    const countryLabel = country ? ` (${country.toUpperCase()})` : ''
+    return { ok: true, result: `Connected — outbound IP: ${ip}${countryLabel}`, ip, country }
   } catch (e) {
     const err = e as Error & { cause?: unknown }
     const cause = err.cause instanceof Error ? err.cause.message : JSON.stringify(err.cause ?? '')
@@ -62,7 +83,7 @@ async function testProxyUrl(rawUrl: string): Promise<{ ok: boolean; result: stri
 proxiesRouter.get('/', async (req: Request, res: Response) => {
   const { data, error } = await supabase
     .from('proxies')
-    .select('id, label, proxy_url, assigned_account_id, is_available, created_at, country')
+    .select('id, label, proxy_url, assigned_account_id, is_available, created_at, country, proxy_type')
     .eq('user_id', req.user.id)
     .order('created_at', { ascending: false })
 
@@ -75,7 +96,7 @@ proxiesRouter.get('/', async (req: Request, res: Response) => {
 
 // POST /api/proxies — add a single proxy
 proxiesRouter.post('/', async (req: Request, res: Response) => {
-  const { proxy_url, label, country } = req.body as { proxy_url?: string; label?: string; country?: string }
+  const { proxy_url, label, country, proxy_type } = req.body as { proxy_url?: string; label?: string; country?: string; proxy_type?: string }
 
   if (!proxy_url) { res.status(400).json({ error: 'proxy_url is required' }); return }
 
@@ -86,16 +107,30 @@ proxiesRouter.post('/', async (req: Request, res: Response) => {
     return
   }
 
+  const validTypes = ['isp', 'residential', 'datacenter']
+  const resolvedType = proxy_type && validTypes.includes(proxy_type) ? proxy_type : 'isp'
+
+  // Auto-detect country from outbound IP if not provided by the user
+  let resolvedCountry = country?.toLowerCase().trim() || null
+  if (!resolvedCountry) {
+    const testResult = await testProxyUrl(normalizedUrl)
+    if (testResult.ok && testResult.country) {
+      resolvedCountry = testResult.country
+      console.log(`[proxies] Auto-detected country '${resolvedCountry}' for new proxy`)
+    }
+  }
+
   const { data, error } = await supabase
     .from('proxies')
     .insert({
       proxy_url: normalizedUrl,
       label: label?.trim() || null,
-      country: country?.toLowerCase().trim() || null,
+      country: resolvedCountry,
+      proxy_type: resolvedType,
       user_id: req.user.id,
       is_available: true,
     })
-    .select('id, label, proxy_url, assigned_account_id, is_available, created_at, country')
+    .select('id, label, proxy_url, assigned_account_id, is_available, created_at, country, proxy_type')
     .single()
 
   if (error) { res.status(500).json({ error: error.message }); return }
@@ -104,16 +139,19 @@ proxiesRouter.post('/', async (req: Request, res: Response) => {
 
 // POST /api/proxies/bulk — import multiple proxies from newline-separated list
 proxiesRouter.post('/bulk', async (req: Request, res: Response) => {
-  const { lines, label_prefix } = req.body as { lines?: string; label_prefix?: string }
+  const { lines, label_prefix, proxy_type } = req.body as { lines?: string; label_prefix?: string; proxy_type?: string }
 
   if (!lines?.trim()) { res.status(400).json({ error: 'lines is required' }); return }
+
+  const validTypes = ['isp', 'residential', 'datacenter']
+  const resolvedType = proxy_type && validTypes.includes(proxy_type) ? proxy_type : 'isp'
 
   const urls = lines
     .split('\n')
     .map(l => l.trim())
     .filter(l => l.length > 0)
 
-  const valid: { proxy_url: string; label: string | null; user_id: string; is_available: boolean }[] = []
+  const valid: { proxy_url: string; label: string | null; user_id: string; is_available: boolean; proxy_type: string }[] = []
   const invalid: string[] = []
 
   urls.forEach((url, i) => {
@@ -124,6 +162,7 @@ proxiesRouter.post('/bulk', async (req: Request, res: Response) => {
         label: label_prefix ? `${label_prefix} ${i + 1}` : null,
         user_id: req.user.id,
         is_available: true,
+        proxy_type: resolvedType,
       })
     } catch {
       invalid.push(url)
@@ -150,20 +189,24 @@ proxiesRouter.post('/bulk', async (req: Request, res: Response) => {
   })
 })
 
-// PATCH /api/proxies/:id — update label and/or country
+// PATCH /api/proxies/:id — update label, country, and/or proxy_type
 proxiesRouter.patch('/:id', async (req: Request, res: Response) => {
-  const { label, country } = req.body as { label?: string; country?: string | null }
+  const { label, country, proxy_type } = req.body as { label?: string; country?: string | null; proxy_type?: string }
 
+  const validTypes = ['isp', 'residential', 'datacenter']
   const updates: Record<string, unknown> = {}
-  if ('label'   in req.body) updates.label   = label?.trim() || null
-  if ('country' in req.body) updates.country = typeof country === 'string' ? country.toLowerCase().trim() || null : null
+  if ('label'      in req.body) updates.label      = label?.trim() || null
+  if ('country'    in req.body) updates.country    = typeof country === 'string' ? country.toLowerCase().trim() || null : null
+  if ('proxy_type' in req.body && proxy_type && validTypes.includes(proxy_type)) {
+    updates.proxy_type = proxy_type
+  }
 
   const { data, error } = await supabase
     .from('proxies')
     .update(updates)
     .eq('id', req.params.id)
     .eq('user_id', req.user.id)
-    .select('id, label, proxy_url, assigned_account_id, is_available, created_at, country')
+    .select('id, label, proxy_url, assigned_account_id, is_available, created_at, country, proxy_type')
     .single()
 
   if (error) { res.status(500).json({ error: error.message }); return }
@@ -214,6 +257,27 @@ proxiesRouter.post('/:id/assign', async (req: Request, res: Response) => {
       .eq('id', account_id)
       .eq('user_id', req.user.id)
 
+    // Kick off auto-reconnect in the background so the account immediately
+    // establishes a session through the new proxy without manual intervention.
+    ;(async () => {
+      try {
+        const { data: acc } = await supabase
+          .from('linkedin_accounts')
+          .select('linkedin_email, linkedin_password, totp_secret')
+          .eq('id', account_id)
+          .single()
+        const email      = (acc as any)?.linkedin_email as string | undefined
+        const passwd     = (acc as any)?.linkedin_password as string | undefined
+        const totpSecret = (acc as any)?.totp_secret as string | null ?? null
+        if (email && passwd) {
+          console.log(`[proxies] Auto-reconnect triggered for ${account_id} after proxy assignment`)
+          await reconnectWithPersistentProfile(account_id, email, passwd, String(req.params.id), totpSecret)
+        }
+      } catch (e) {
+        console.warn(`[proxies] Auto-reconnect after proxy assignment failed for ${account_id}: ${(e as Error).message}`)
+      }
+    })()
+
   } else {
     // Unassign
     const oldAccountId = (proxy as { assigned_account_id: string | null }).assigned_account_id
@@ -238,15 +302,25 @@ proxiesRouter.get('/:id/test', async (req: Request, res: Response) => {
   // Fetch raw proxy_url (not masked) directly from DB
   const { data: proxy, error } = await supabase
     .from('proxies')
-    .select('proxy_url')
+    .select('proxy_url, country')
     .eq('id', req.params.id)
     .eq('user_id', req.user.id)
     .single()
 
   if (error || !proxy) { res.status(404).json({ error: 'Proxy not found' }); return }
 
-  const { ok, result } = await testProxyUrl((proxy as { proxy_url: string }).proxy_url)
-  res.json({ ok, result })
+  const testResult = await testProxyUrl((proxy as { proxy_url: string; country: string | null }).proxy_url)
+
+  // Auto-save detected country if none was set or if we just discovered it
+  if (testResult.ok && testResult.country && !(proxy as any).country) {
+    await supabase
+      .from('proxies')
+      .update({ country: testResult.country })
+      .eq('id', req.params.id)
+      .eq('user_id', req.user.id)
+  }
+
+  res.json({ ok: testResult.ok, result: testResult.result, country: testResult.country })
 })
 
 // DELETE /api/proxies/:id
