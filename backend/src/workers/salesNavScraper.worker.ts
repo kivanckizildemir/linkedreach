@@ -426,8 +426,25 @@ export const salesNavScraperWorker = new Worker<SalesNavJob>(
       }
 
       // Collect all leads by scrolling incrementally through the page.
-      // Sales Nav virtual scrolling renders cards only when they enter the viewport,
-      // so we must pause long enough at each position for new cards to appear.
+      // Sales Nav renders results inside a fixed-height scrollable container (not window),
+      // so we must scroll that container. We detect it once before the loop.
+      const scrollContainerSel: string = await page.evaluate(`(function() {
+        // Candidates in priority order — find the first one that is actually scrollable
+        var candidates = [
+          '[data-view-name="search-results-list"]',
+          '.search-results-container',
+          '.scaffold-layout__main',
+          '[class*="search-results"]',
+          'main'
+        ];
+        for (var i = 0; i < candidates.length; i++) {
+          var el = document.querySelector(candidates[i]);
+          if (el && el.scrollHeight > el.clientHeight + 50) return candidates[i];
+        }
+        return '';  // fallback: window scroll
+      })()`) as string
+      console.log(`[sales-nav] Scroll container: ${scrollContainerSel || 'window'}`)
+
       const allRawLeads = new Map<string, RawLead>()  // keyed by salesNavUrl for dedup
       let scrollY = 0
       const SCROLL_STEP = 400   // px per step — larger = reach more of the page faster
@@ -446,7 +463,15 @@ export const salesNavScraperWorker = new Worker<SalesNavJob>(
         console.log(`[sales-nav] Scroll step ${s + 1}: y=${scrollY} leads=${allRawLeads.size} noNew=${noNewCount}`)
 
         scrollY += SCROLL_STEP
-        await page.evaluate(`window.scrollTo(0, ${scrollY})`)
+        if (scrollContainerSel) {
+          // Scroll the Sales Nav results container directly
+          await page.evaluate(`(function(sel, y) {
+            var el = document.querySelector(sel);
+            if (el) el.scrollTop = y;
+          })(${JSON.stringify(scrollContainerSel)}, ${scrollY})`)
+        } else {
+          await page.evaluate(`window.scrollTo(0, ${scrollY})`)
+        }
         await delay(1200 + Math.random() * 600)  // longer dwell for virtual scroll to render
       }
 
@@ -481,7 +506,11 @@ export const salesNavScraperWorker = new Worker<SalesNavJob>(
             if (pageRaw.size === before) pgNoNew++
             else pgNoNew = 0
             pgScrollY += SCROLL_STEP
-            await page.evaluate(`window.scrollTo(0, ${pgScrollY})`)
+            if (scrollContainerSel) {
+              await page.evaluate(`(function(sel, y) { var el = document.querySelector(sel); if (el) el.scrollTop = y; })(${JSON.stringify(scrollContainerSel)}, ${pgScrollY})`)
+            } else {
+              await page.evaluate(`window.scrollTo(0, ${pgScrollY})`)
+            }
             await delay(1200 + Math.random() * 600)
           }
           pageLeads = Array.from(pageRaw.values())
