@@ -440,8 +440,28 @@ async function runSequenceStep(campaignLeadId: string): Promise<void> {
   page    = session.page
 
   try {
-    // 8. Handle fork — evaluate condition from DB state and route to branch
+    // 8. Handle fork — evaluate condition and route to branch
     if (currentStep.type === 'fork') {
+      const conditionType = (currentStep.condition?.type as string) ?? ''
+
+      // For connection forks: DB status is authoritative when the lead has clearly
+      // progressed past connection. When status is still pending/connection_sent we
+      // don't know yet — do a live Playwright check and update DB so future steps
+      // don't have to repeat the check.
+      if (
+        (conditionType === 'connected' || conditionType === 'not_connected') &&
+        (campaignLead.status === 'pending' || campaignLead.status === 'connection_sent')
+      ) {
+        const liveStatus = page
+          ? await checkConnectionStatus(page, leadData.linkedin_url, account.id)
+          : 'not_connected'
+        if (liveStatus === 'connected') {
+          console.log(`[runner] Fork live-check: lead ${campaignLeadId} is connected on LinkedIn — updating DB`)
+          await supabase.from('campaign_leads').update({ status: 'connected' }).eq('id', campaignLeadId)
+          campaignLead.status = 'connected'   // update local so evaluateFork sees it
+        }
+      }
+
       const branch = evaluateFork(currentStep.condition ?? {}, campaignLead)
 
       // Find first step in the chosen branch
