@@ -345,12 +345,17 @@ accountsRouter.post('/:id/health-check', async (req: Request, res: Response) => 
 
     // First attempt (with proxy if available)
     let probe = await attemptProbe(agent)
+    let probeBody = ''
+    try { probeBody = await probe.clone().text() } catch { /* non-fatal */ }
+    console.log(`[health-check] ${req.params.id} status=${probe.status} jsessionid=${jsessionid ? 'yes' : 'no'} hasProxy=${!!agent} body=${probeBody.slice(0, 200)}`)
 
     // If proxy returned 999/blocked AND we had a proxy, retry without it — direct call
     // might succeed since Voyager API is more permissive than browser-facing endpoints
     if (probe.status === 999 && agent) {
       console.log(`[health-check] ${req.params.id} proxy returned 999 — retrying direct`)
       probe = await attemptProbe(undefined)
+      try { probeBody = await probe.clone().text() } catch { /* non-fatal */ }
+      console.log(`[health-check] ${req.params.id} retry status=${probe.status} body=${probeBody.slice(0, 200)}`)
     }
 
     // 400 after bootstrap = bad CSRF token or malformed cookies → treat as expired
@@ -361,7 +366,7 @@ accountsRouter.post('/:id/health-check', async (req: Request, res: Response) => 
       res.json({ ok: true, message: 'Session is active ✓' })
     } else if (probe.status === 401 || probe.status === 403 || probe.status === 400) {
       await supabase.from('linkedin_accounts').update({ status: 'paused' }).eq('id', req.params.id)
-      res.json({ ok: false, message: 'Session expired or invalid — please reconnect the account.' })
+      res.json({ ok: false, message: `Session invalid (HTTP ${probe.status}) — please reconnect the account.` })
     } else {
       // Non-200/4xx (e.g. 429 rate limit, 999 bot block) — don't mark as expired, just warn
       res.json({ ok: false, message: `LinkedIn returned ${probe.status} — try again in a moment.` })
