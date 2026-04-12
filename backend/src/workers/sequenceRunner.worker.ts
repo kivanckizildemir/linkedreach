@@ -453,6 +453,31 @@ async function runSequenceStep(campaignLeadId: string): Promise<void> {
         if (!ctx.product) {
           console.warn(`[runner] AI mode — no product found for campaign ${campaignLead.campaign_id}, falling back to generic`)
         }
+
+        // Load the full message thread for this lead so the AI can reference prior messages
+        // and avoid repeating hooks, CTAs, or angles already used.
+        const { data: priorMsgs } = await supabase
+          .from('messages')
+          .select('direction, content, step_id')
+          .eq('campaign_lead_id', campaignLead.id)
+          .order('created_at', { ascending: true })
+
+        const priorMessages = (priorMsgs ?? []).map(m => {
+          // Look up the step type for sent messages so the AI knows what it was
+          const stepType = m.step_id
+            ? allSteps.find(s => s.id === m.step_id)?.type ?? undefined
+            : undefined
+          return {
+            direction: m.direction as 'sent' | 'received',
+            content:   m.content as string,
+            step_type: stepType,
+          }
+        })
+
+        // Compute position: count message-type steps that have already been sent
+        const sentStepCount = priorMessages.filter(m => m.direction === 'sent').length
+        const positionInSequence = sentStepCount + 1
+
         const leadCtx: LeadContext = {
           first_name:             leadData.first_name,
           last_name:              leadData.last_name,
@@ -466,18 +491,18 @@ async function runSequenceStep(campaignLeadId: string): Promise<void> {
         }
         const result = await generateSequenceMessage({
           step_type:            currentStep.type as 'connect' | 'message' | 'inmail',
-          position_in_sequence: 1,
+          position_in_sequence: positionInSequence,
           product:              ctx.product ?? { name: 'our product' },
           sender:               ctx.sender,
           lead:                 leadCtx,
-          prior_messages:       [],
+          prior_messages:       priorMessages,
           icp_notes:            ctx.icpNotes,
           resolve_variables:    true,
           approach:             ctx.approach,
           tone:                 ctx.tone,
         })
         aiGeneratedMessage = result.body
-        console.log(`[runner] AI message generated for ${leadData.first_name}: "${aiGeneratedMessage.slice(0, 80)}..."`)
+        console.log(`[runner] AI message generated for ${leadData.first_name} (pos ${positionInSequence}, ${priorMessages.length} prior msgs): "${aiGeneratedMessage.slice(0, 80)}..."`)
       } catch (aiErr) {
         console.error(`[runner] AI message generation failed for ${leadData.first_name}:`, (aiErr as Error).message)
         if (context) await persistCookies(context, account.id)
