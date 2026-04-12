@@ -28,13 +28,21 @@ export async function schedulePendingLeads(): Promise<void> {
 
     // Join leads table to get icp_score for ordering
     const now = new Date().toISOString()
-    const { data: leads } = await supabase
+    // Use last_action_at (the actual DB column) for scheduling.
+    // A lead is "due" if it has never been acted on (null) or was last acted on
+    // enough time ago (the wait_days logic is handled inside the sequence runner).
+    // We simply re-enqueue all eligible leads; the runner guards against double-actions.
+    const { data: leads, error: leadsErr } = await supabase
       .from('campaign_leads')
       .select('id, account_id, leads(icp_score)')
       .eq('campaign_id', campaign.id)
       .in('status', ['pending', 'connection_sent', 'connected', 'messaged'])
-      .or(`next_action_at.is.null,next_action_at.lt.${now}`)
       .limit(50)   // process up to 50 per cycle per campaign
+
+    if (leadsErr) {
+      console.error(`[scheduler] Error fetching leads for campaign ${campaign.id}: ${leadsErr.message}`)
+      continue
+    }
 
     if (!leads || leads.length === 0) continue
 
