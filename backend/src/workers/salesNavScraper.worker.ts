@@ -140,30 +140,38 @@ export const salesNavScraperWorker = new Worker<SalesNavJob>(
             userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
           })
 
-      // Inject the account's stored LinkedIn cookies into the clean BrightData browser
+      // Inject the account's stored LinkedIn cookies into the clean BrightData browser.
+      // Add one-by-one so a single malformed cookie doesn't abort the whole set.
       if (acc.cookies) {
         const rawCookies = extractCookies(acc.cookies as string)
-        if (rawCookies.length > 0) {
-          await context.addCookies(
-            rawCookies.map(c => ({
+        let injected = 0
+        for (const c of rawCookies) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const ca = c as any
+          // Normalise domain: CDP requires leading dot for domain cookies
+          let domain: string = ca.domain || '.linkedin.com'
+          if (domain && !domain.startsWith('.') && !domain.startsWith('http')) {
+            domain = '.' + domain
+          }
+          try {
+            await context.addCookies([{
               name:     c.name,
               value:    c.value,
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              domain:   (c as any).domain   || '.linkedin.com',
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              path:     (c as any).path     || '/',
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              expires:  (c as any).expires  ?? -1,
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              httpOnly: (c as any).httpOnly ?? false,
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              secure:   (c as any).secure   ?? true,
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              sameSite: ((c as any).sameSite ?? 'None') as 'Strict' | 'Lax' | 'None',
-            }))
-          )
-          console.log(`[sales-nav] Injected ${rawCookies.length} cookies into BrightData browser`)
+              domain,
+              path:     ca.path     || '/',
+              expires:  typeof ca.expires === 'number' ? ca.expires : -1,
+              httpOnly: ca.httpOnly ?? false,
+              secure:   ca.secure   ?? true,
+              sameSite: (ca.sameSite ?? 'None') as 'Strict' | 'Lax' | 'None',
+            }])
+            injected++
+          } catch (cookieErr) {
+            console.warn(`[sales-nav] Skipped cookie "${c.name}": ${(cookieErr as Error).message.slice(0, 100)}`)
+          }
         }
+        console.log(`[sales-nav] Injected ${injected}/${rawCookies.length} cookies into BrightData browser`)
+        const hasLiAt = rawCookies.some(c => c.name === 'li_at')
+        if (!hasLiAt) throw new Error('SESSION_EXPIRED: li_at cookie missing — please reconnect from the Accounts page.')
       }
 
       page = context.pages()[0] ?? await context.newPage()
