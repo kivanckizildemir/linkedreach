@@ -25,6 +25,8 @@ const speakeasy = require('speakeasy') as {
 }
 import { supabase } from '../lib/supabase'
 import { solveRecaptchaV2 } from '../lib/captchaSolver'
+import { createBrightDataTunnel } from './proxy-tunnel'
+import type { ProxyTunnel } from './proxy-tunnel'
 
 import { chromium } from 'playwright'
 
@@ -387,6 +389,7 @@ async function runLogin(key: string, email: string, password: string): Promise<v
   if (!session) return
 
   let browser: Browser | undefined
+  let tunnel:  ProxyTunnel | undefined
   try {
     // Use BrightData Scraping Browser for login — it's the only thing that loads LinkedIn
     // reliably from Railway. CDP password typing is blocked, but page.route() interception
@@ -459,8 +462,23 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       // ── Strategy 2: playwright-extra + stealth + proxy ───────────────────
       // Uses chromiumExtra (playwright-extra) instead of raw chromium so the
       // stealth plugin runs its patches before any page script executes.
-      const proxy = await resolveProxy(session.accountId)
-      console.log('[login] resolvedProxy:', proxy ? `server=${proxy.server} user=${proxy.username}` : 'none')
+      const rawProxy = await resolveProxy(session.accountId)
+      console.log('[login] resolvedProxy:', rawProxy ? `server=${rawProxy.server} user=${rawProxy.username}` : 'none')
+
+      // If BrightData uses port 33335 (SSL proxy), Playwright/Chromium can't speak
+      // HTTPS proxy directly. Spin up a local plain-HTTP tunnel that bridges to it.
+      let proxy = rawProxy
+      if (rawProxy?.server.startsWith('https://')) {
+        const u = new URL(rawProxy.server)
+        tunnel = await createBrightDataTunnel(
+          u.hostname,
+          parseInt(u.port || '33335', 10),
+          rawProxy.username ?? '',
+          rawProxy.password ?? '',
+        )
+        proxy = { server: `http://127.0.0.1:${tunnel.port}` }
+        console.log(`[login] BrightData SSL tunnel ready — Playwright → http://127.0.0.1:${tunnel.port} → ${u.hostname}:${u.port} (TLS)`)
+      }
 
       // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
       browser = await (chromiumExtra as unknown as typeof chromium).launch({
@@ -2213,6 +2231,8 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       s.error  = err instanceof Error ? err.message : 'Unknown error'
     }
     await browser?.close().catch(() => {})
+  } finally {
+    tunnel?.close()
   }
 }
 
