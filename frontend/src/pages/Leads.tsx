@@ -11,8 +11,8 @@ import { scrapeIntoList, importExcelIntoList, fetchLeadList, cancelScrapeJob, ge
 import * as XLSX from 'xlsx'
 
 const FLAG_COLORS: Record<NonNullable<Lead['icp_flag']>, string> = {
-  hot:          'bg-red-100 text-red-700 border-red-200',
-  warm:         'bg-orange-100 text-orange-700 border-orange-200',
+  hot:          'bg-violet-100 text-violet-700 border-violet-200',
+  warm:         'bg-green-100 text-green-700 border-green-200',
   cold:         'bg-blue-100 text-blue-700 border-blue-200',
   disqualified: 'bg-gray-100 text-gray-500 border-gray-200',
 }
