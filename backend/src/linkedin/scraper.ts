@@ -179,7 +179,7 @@ async function openScraperSession(accountId: string): Promise<{
     if (BD_PROXY_URL) {
       const pUrl = new URL(BD_PROXY_URL)
       proxySettings = {
-        server:   `http://${pUrl.hostname}:${pUrl.port || '33335'}`,
+        server:   `${(pUrl.port || '33335') === '33335' ? 'https' : 'http'}://${pUrl.hostname}:${pUrl.port || '33335'}`,
         username: decodeURIComponent(pUrl.username) || undefined,
         password: decodeURIComponent(pUrl.password) || undefined,
       }

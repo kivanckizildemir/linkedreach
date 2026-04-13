@@ -328,8 +328,9 @@ async function resolveProxy(accountId: string): Promise<
       ? `${baseUsernameClean}-country-${country.toLowerCase()}`
       : baseUsernameClean
     const proxyPort = port || '33335'
+    const proxyScheme = proxyPort === '33335' ? 'https' : 'http'
     const envResolved = {
-      server:   `http://${host}:${proxyPort}`,
+      server:   `${proxyScheme}://${host}:${proxyPort}`,
       username,
       password: decodeURIComponent(url.password) || undefined,
     }
