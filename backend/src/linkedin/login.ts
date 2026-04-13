@@ -240,10 +240,18 @@ async function resolveBrowserEndpoint(accountId: string): Promise<string | null>
   if (!browserUrl) return null
 
   try {
-    // Always use BrightData Scraping Browser for login — GB location + built-in CAPTCHA
-    // solver configured on BrightData dashboard. Account's proxy_id is used by automation
-    // workers only; login always goes through BrightData.
-    const country = process.env.BRIGHTDATA_DEFAULT_COUNTRY ?? 'gb'
+    // Read proxy_country from the account — set by the user (or auto-detected) in the connect modal.
+    // Falls back to BRIGHTDATA_DEFAULT_COUNTRY env var, then 'gb'.
+    const { data: account } = await supabase
+      .from('linkedin_accounts')
+      .select('proxy_country')
+      .eq('id', accountId)
+      .single()
+
+    const country = (account as { proxy_country?: string | null } | null)?.proxy_country
+      ?? process.env.BRIGHTDATA_DEFAULT_COUNTRY
+      ?? 'gb'
+
     const url = new URL(browserUrl)
     const baseUser = decodeURIComponent(url.username)
     // Strip any -country-xx already baked into the env var so we never double-append

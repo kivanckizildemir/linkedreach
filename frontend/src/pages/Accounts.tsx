@@ -1142,8 +1142,18 @@ export function ConnectModal({
   const [sessionKey, setSessionKey] = useState('')
   const [error, setError]           = useState('')
   const [requestingCode, setRequestingCode] = useState(false)
+  const [country, setCountry]       = useState<string>(account.proxy_country ?? 'gb')
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // Auto-detect user's IP country on mount
+  useEffect(() => {
+    if (account.proxy_country) return // already set, respect the saved value
+    fetch('https://ipinfo.io/country?token=')
+      .then(r => r.text())
+      .then(code => { const c = code.trim().toLowerCase(); if (c.length === 2) setCountry(c) })
+      .catch(() => {}) // silently fall back to 'gb'
+  }, [account.proxy_country])
 
   useEffect(() => {
     return () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null } }
@@ -1179,6 +1189,8 @@ export function ConnectModal({
     e.preventDefault()
     setStep('connecting'); setError('')
     try {
+      // Save proxy_country before login so BrightData uses the right exit IP
+      if (country) await updateAccount(accountId, { proxy_country: country }).catch(() => {})
       const secret = totpSecret.trim() || undefined
       const result = await connectAccount(accountId, account.linkedin_email, password, secret)
       setSessionKey(result.session_key)
@@ -1266,6 +1278,39 @@ export function ConnectModal({
                   placeholder="••••••••"
                   className="w-full px-3.5 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 />
+              </div>
+
+              {/* Proxy country — auto-detected from IP, overridable */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                  Proxy country
+                  <span className="ml-1.5 text-xs font-normal text-gray-400">auto-detected from your IP</span>
+                </label>
+                <select
+                  value={country}
+                  onChange={e => setCountry(e.target.value)}
+                  className="w-full px-3.5 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                >
+                  {[
+                    ['gb', '🇬🇧 United Kingdom'],
+                    ['us', '🇺🇸 United States'],
+                    ['de', '🇩🇪 Germany'],
+                    ['fr', '🇫🇷 France'],
+                    ['nl', '🇳🇱 Netherlands'],
+                    ['ca', '🇨🇦 Canada'],
+                    ['au', '🇦🇺 Australia'],
+                    ['sg', '🇸🇬 Singapore'],
+                    ['ae', '🇦🇪 UAE'],
+                    ['tr', '🇹🇷 Turkey'],
+                    ['in', '🇮🇳 India'],
+                    ['it', '🇮🇹 Italy'],
+                    ['es', '🇪🇸 Spain'],
+                    ['se', '🇸🇪 Sweden'],
+                    ['pl', '🇵🇱 Poland'],
+                  ].map(([code, label]) => (
+                    <option key={code} value={code}>{label}</option>
+                  ))}
+                </select>
               </div>
 
               {/* Optional 2FA secret */}
