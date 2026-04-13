@@ -309,38 +309,10 @@ async function resolveProxy(accountId: string): Promise<
     }
   }
 
-  if (BD_PROXY_URL) {
-    const url = new URL(BD_PROXY_URL)
-    const host = url.hostname
-    const port = url.port
-    // Country targeting: read from the assigned proxy record (proxies.country)
-    const baseUsername = decodeURIComponent(url.username) || undefined
-    let country: string | null = null
-    if ((account as { proxy_id?: string | null })?.proxy_id) {
-      const { data: proxyRow } = await supabase
-        .from('proxies')
-        .select('country')
-        .eq('id', (account as { proxy_id: string }).proxy_id)
-        .single()
-      country = (proxyRow as { country?: string | null } | null)?.country ?? null
-    }
-    // Strip any -country-xx already baked into the env var username so the DB value wins.
-    const baseUsernameClean = baseUsername?.replace(/-country-[a-z]{2,3}/gi, '')
-    const username = baseUsernameClean && country
-      ? `${baseUsernameClean}-country-${country.toLowerCase()}`
-      : baseUsernameClean
-    const proxyPort = port || '33335'
-    const proxyScheme = proxyPort === '33335' ? 'https' : 'http'
-    const envResolved = {
-      server:   `${proxyScheme}://${host}:${proxyPort}`,
-      username,
-      password: decodeURIComponent(url.password) || undefined,
-    }
-    console.log(`[login] resolveProxy: using env-var proxy for account ${accountId} — server=${envResolved.server} user=${envResolved.username ?? '(none)'}`)
-    return envResolved
-  }
-
-  console.log(`[login] resolveProxy: NO proxy configured for account ${accountId} — set proxy in Accounts & Proxies or via PROXY_HOST env var`)
+  // No DB proxy assigned — do NOT fall back to env-var proxy.
+  // Each account must have its own proxy assigned in the Accounts UI.
+  // Falling back to a shared env proxy would mix credentials across users.
+  console.log(`[login] resolveProxy: NO proxy configured for account ${accountId} — assign a proxy in Accounts & Proxies`)
   return undefined
 }
 

@@ -174,14 +174,28 @@ async function openScraperSession(accountId: string): Promise<{
     // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
     chromiumExtra.use(StealthPlugin())
 
-    const BD_PROXY_URL = process.env.BRIGHTDATA_PROXY_URL ?? ''
+    // Use the account's own assigned proxy — never fall back to shared env-var credentials
     let proxySettings: { server: string; username?: string; password?: string } | undefined
-    if (BD_PROXY_URL) {
-      const pUrl = new URL(BD_PROXY_URL)
-      proxySettings = {
-        server:   `${(pUrl.port || '33335') === '33335' ? 'https' : 'http'}://${pUrl.hostname}:${pUrl.port || '33335'}`,
-        username: decodeURIComponent(pUrl.username) || undefined,
-        password: decodeURIComponent(pUrl.password) || undefined,
+    const { data: proxyAccount } = await supabase
+      .from('linkedin_accounts')
+      .select('proxy_id')
+      .eq('id', accountId)
+      .single()
+    if (proxyAccount?.proxy_id) {
+      const { data: proxyRow } = await supabase
+        .from('proxies')
+        .select('proxy_url')
+        .eq('id', proxyAccount.proxy_id)
+        .single()
+      if (proxyRow?.proxy_url) {
+        const raw = proxyRow.proxy_url as string
+        const normalized = /^(https?|socks[45]):\/\//i.test(raw) ? raw : `http://${raw}`
+        const pUrl = new URL(normalized)
+        proxySettings = {
+          server:   `${pUrl.protocol}//${pUrl.host}`,
+          username: decodeURIComponent(pUrl.username) || undefined,
+          password: decodeURIComponent(pUrl.password) || undefined,
+        }
       }
     }
 
