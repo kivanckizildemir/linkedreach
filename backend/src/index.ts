@@ -13,6 +13,7 @@ import cors from 'cors'
 import dotenv from 'dotenv'
 // override: true forces .env values to win over any empty/stale shell env vars
 import { authRouter } from './routes/auth'
+import { microsoftRouter } from './routes/microsoft'
 import { accountsRouter } from './routes/accounts'
 import { campaignsRouter } from './routes/campaigns'
 import { leadsRouter } from './routes/leads'
@@ -156,6 +157,7 @@ app.use('/api/proxies', proxiesRouter)
 app.use('/api/lead-lists', leadListsRouter)
 app.use('/api/scraper', scraperRouter)
 app.use('/api/sequence-ai', sequenceAiRouter)
+app.use('/api/microsoft', microsoftRouter)
 
 // GET /api/system/status — live queue + worker health (authenticated)
 app.get('/api/system/status', requireAuth, async (req, res) => {

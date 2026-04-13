@@ -1451,6 +1451,7 @@ function CampaignSettings({
     meeting_type: 'online' | 'face_to_face' | 'either'
     meeting_platform: 'zoom' | 'google_meet' | 'teams' | 'phone'
     meeting_link: string
+    teams_auto_generate: boolean
     meeting_duration_minutes: number
     warmth_threshold_for_meeting: number
     not_interested_action: 'pause' | 'end'
@@ -1469,6 +1470,7 @@ function CampaignSettings({
   const [agentMeetingType,       setAgentMeetingType]       = useState<'online' | 'face_to_face' | 'either'>(storedAgent.meeting_type ?? 'online')
   const [agentMeetingPlatform,   setAgentMeetingPlatform]   = useState<'zoom' | 'google_meet' | 'teams' | 'phone'>(storedAgent.meeting_platform ?? 'zoom')
   const [agentMeetingLink,       setAgentMeetingLink]       = useState(storedAgent.meeting_link ?? '')
+  const [agentTeamsAutoGen,      setAgentTeamsAutoGen]      = useState(storedAgent.teams_auto_generate ?? false)
   const [agentMeetingDuration,   setAgentMeetingDuration]   = useState(storedAgent.meeting_duration_minutes ?? 30)
   const [agentWarmthThreshold,   setAgentWarmthThreshold]   = useState(storedAgent.warmth_threshold_for_meeting ?? 70)
   const [agentNIAction,          setAgentNIAction]          = useState<'pause' | 'end'>(storedAgent.not_interested_action ?? 'pause')
@@ -1482,6 +1484,14 @@ function CampaignSettings({
       const res = await apiFetch('/api/settings')
       const { data } = await res.json() as { data: { icp_config?: { products_services?: GlobalProduct[] } } }
       return data
+    },
+  })
+
+  const { data: msStatus } = useQuery({
+    queryKey: ['microsoft-status'],
+    queryFn: async () => {
+      const res = await apiFetch('/api/microsoft/status')
+      return res.json() as Promise<{ connected: boolean; ms_email: string | null }>
     },
   })
   const globalProducts: GlobalProduct[] = (globalSettings?.icp_config?.products_services ?? []) as GlobalProduct[]
@@ -1523,6 +1533,7 @@ function CampaignSettings({
       meeting_type:                 agentMeetingType,
       meeting_platform:             agentMeetingPlatform,
       meeting_link:                 agentMeetingLink,
+      teams_auto_generate:          agentTeamsAutoGen,
       meeting_duration_minutes:     agentMeetingDuration,
       warmth_threshold_for_meeting: agentWarmthThreshold,
       not_interested_action:        agentNIAction,
@@ -2035,12 +2046,46 @@ function CampaignSettings({
                           {[15, 20, 30, 45, 60].map(d => <option key={d} value={d}>{d} min</option>)}
                         </select>
                       </div>
-                      <div>
-                        <label className="text-xs text-gray-500 block mb-1">Calendar link (optional)</label>
-                        <input type="url" placeholder="https://calendly.com/your-link"
-                          value={agentMeetingLink} onChange={e => setAgentMeetingLink(e.target.value)}
-                          className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm" />
-                      </div>
+                      {agentMeetingPlatform === 'teams' ? (
+                        <div className="space-y-2">
+                          {msStatus?.connected ? (
+                            <div className="flex items-center justify-between px-3 py-2 bg-sky-50 border border-sky-200 rounded-lg">
+                              <div>
+                                <p className="text-xs font-medium text-sky-800">Auto-generate Teams link</p>
+                                <p className="text-xs text-sky-600 mt-0.5">Creates a fresh meeting link per conversation via Microsoft Graph</p>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => setAgentTeamsAutoGen(v => !v)}
+                                className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${agentTeamsAutoGen ? 'bg-sky-600' : 'bg-gray-200'}`}
+                              >
+                                <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${agentTeamsAutoGen ? 'translate-x-4' : 'translate-x-0'}`} />
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg">
+                              <p className="text-xs text-amber-800">
+                                <a href="/settings" className="underline font-medium">Connect your Microsoft account</a> in Settings to auto-generate Teams links.
+                              </p>
+                            </div>
+                          )}
+                          {(!agentTeamsAutoGen || !msStatus?.connected) && (
+                            <div>
+                              <label className="text-xs text-gray-500 block mb-1">Static Teams link (fallback)</label>
+                              <input type="url" placeholder="https://teams.microsoft.com/l/meetup-join/..."
+                                value={agentMeetingLink} onChange={e => setAgentMeetingLink(e.target.value)}
+                                className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm" />
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <div>
+                          <label className="text-xs text-gray-500 block mb-1">Calendar link (optional)</label>
+                          <input type="url" placeholder="https://calendly.com/your-link"
+                            value={agentMeetingLink} onChange={e => setAgentMeetingLink(e.target.value)}
+                            className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm" />
+                        </div>
+                      )}
                     </div>
                   )}
 

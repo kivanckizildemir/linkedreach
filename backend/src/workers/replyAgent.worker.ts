@@ -34,6 +34,7 @@ import { sendMessage } from '../linkedin/actions'
 import { analyzeReply } from '../ai/analyze-reply'
 import { matchF2FLocation } from '../lib/locations'
 import { generateSequenceMessage, MESSAGE_LENGTH_WORDS } from '../ai/generate-sequence-message'
+import { createTeamsMeeting } from '../lib/microsoftGraph'
 import type { F2FLocation } from '../lib/locations'
 import type { ProductContext, SenderContext as AiSenderContext, LeadContext, PriorMessage } from '../ai/generate-sequence-message'
 
@@ -53,6 +54,7 @@ interface AgentModeSettings {
   meeting_type:                  'online' | 'face_to_face' | 'either'
   meeting_platform:              'zoom' | 'google_meet' | 'teams' | 'phone' | null
   meeting_link:                  string | null
+  teams_auto_generate:           boolean
   meeting_duration_minutes:      number
   warmth_threshold_for_meeting:  number
   not_interested_action:         'pause' | 'end'
@@ -288,8 +290,28 @@ async function runReplyAgent(job: { data: ReplyAgentJob }): Promise<void> {
       }
     }
 
+    // Auto-generate a Teams meeting link if configured
+    let effectiveSettings = agentSettings
+    if (
+      agentSettings.meeting_platform === 'teams' &&
+      agentSettings.teams_auto_generate &&
+      !offerF2F
+    ) {
+      try {
+        const meeting = await createTeamsMeeting(
+          userId,
+          `Meeting with ${leadData.first_name}`,
+          agentSettings.meeting_duration_minutes ?? 30
+        )
+        effectiveSettings = { ...agentSettings, meeting_link: meeting.joinWebUrl }
+        console.log(`[agent] Teams meeting created for ${leadData.first_name}: ${meeting.joinWebUrl}`)
+      } catch (err) {
+        console.warn(`[agent] Teams meeting creation failed, falling back to static link:`, (err as Error).message)
+      }
+    }
+
     meetingInstruction = buildMeetingInstruction({
-      settings:          agentSettings,
+      settings:          effectiveSettings,
       offerF2F,
       leadLocationKnown: !!(analysis.location_mentioned ?? leadData.location),
       senderLocation:    agentSettings.sender_location ?? null,

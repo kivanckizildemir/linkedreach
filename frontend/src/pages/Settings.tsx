@@ -1,6 +1,9 @@
 import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '../lib/fetchJson'
+import { supabase } from '../lib/supabase'
+
+const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? ''
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -510,6 +513,47 @@ export function Settings() {
     }
   }, [settings])
 
+  // ── Microsoft connection ──────────────────────────────────────────────────
+  const [msNotice, setMsNotice] = useState<{ type: 'success' | 'error'; msg: string } | null>(null)
+
+  const { data: msStatus, refetch: refetchMs } = useQuery({
+    queryKey: ['microsoft-status'],
+    queryFn: async () => {
+      const res = await apiFetch('/api/microsoft/status')
+      return res.json() as Promise<{ connected: boolean; ms_email: string | null }>
+    },
+  })
+
+  const msDisconnectMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiFetch('/api/microsoft/disconnect', { method: 'DELETE' })
+      if (!res.ok) throw new Error('Disconnect failed')
+    },
+    onSuccess: () => {
+      void refetchMs()
+      setMsNotice({ type: 'success', msg: 'Microsoft account disconnected.' })
+    },
+  })
+
+  async function handleMsConnect() {
+    const { data: { session } } = await supabase.auth.getSession()
+    if (!session?.access_token) return
+    window.location.href = `${API_BASE}/api/microsoft/auth?token=${encodeURIComponent(session.access_token)}`
+  }
+
+  // Handle OAuth return params (?ms_connected=1 or ?ms_error=...)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    if (params.get('ms_connected') === '1') {
+      void refetchMs()
+      setMsNotice({ type: 'success', msg: 'Microsoft Teams connected successfully!' })
+      window.history.replaceState({}, '', window.location.pathname)
+    } else if (params.has('ms_error')) {
+      setMsNotice({ type: 'error', msg: `Microsoft connection failed: ${params.get('ms_error')}` })
+      window.history.replaceState({}, '', window.location.pathname)
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
   const saveMutation = useMutation({
     mutationFn: () => updateSettings({
       icp_config: icp,
@@ -785,6 +829,70 @@ export function Settings() {
             ))}
           </select>
           <p className="mt-1 text-xs text-gray-400">Used for scheduling — no actions sent outside 7am–11pm in this timezone</p>
+        </div>
+      </section>
+
+      {/* ── Integrations ── */}
+      <section className="bg-sky-50 rounded-xl border border-sky-100 p-6 space-y-5">
+        <SectionHeader
+          icon={
+            <svg className="w-5 h-5 text-sky-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+            </svg>
+          }
+          iconBg="bg-sky-50"
+          title="Integrations"
+          subtitle="Connect third-party tools used by Agent Mode for meeting scheduling."
+        />
+
+        {msNotice && (
+          <div className={`flex items-start gap-2 px-3 py-2.5 rounded-lg text-sm ${msNotice.type === 'success' ? 'bg-green-50 text-green-800 border border-green-200' : 'bg-red-50 text-red-800 border border-red-200'}`}>
+            <svg className="w-4 h-4 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              {msNotice.type === 'success'
+                ? <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                : <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              }
+            </svg>
+            <span>{msNotice.msg}</span>
+            <button type="button" onClick={() => setMsNotice(null)} className="ml-auto text-xs opacity-60 hover:opacity-100">✕</button>
+          </div>
+        )}
+
+        {/* Microsoft Teams */}
+        <div className="flex items-center justify-between gap-4 py-3 border-t border-sky-100">
+          <div className="flex items-center gap-3">
+            {/* Teams icon */}
+            <div className="w-9 h-9 rounded-xl bg-white border border-sky-200 flex items-center justify-center shrink-0">
+              <svg className="w-5 h-5 text-[#5b5ea6]" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M20.625 7.781A2.625 2.625 0 1 0 18 10.406a2.628 2.628 0 0 0 2.625-2.625zM7.5 10.5a3 3 0 1 0-3-3 3 3 0 0 0 3 3zm13.125 1.406H18a4.126 4.126 0 0 0-2.813 1.125 5.627 5.627 0 0 1 2.25 4.5v.938h4.219A1.407 1.407 0 0 0 23.062 17v-1.688a3.281 3.281 0 0 0-2.437-3.406zM7.5 11.813a4.5 4.5 0 0 0-4.5 4.5V17.25A1.406 1.406 0 0 0 4.406 18.656h6.188A1.406 1.406 0 0 0 12 17.25v-.937a4.5 4.5 0 0 0-4.5-4.5zm5.063-.657a3.375 3.375 0 1 0-3.375-3.375A3.379 3.379 0 0 0 12.563 11.156z" />
+              </svg>
+            </div>
+            <div>
+              <p className="text-sm font-medium text-gray-800">Microsoft Teams</p>
+              {msStatus?.connected
+                ? <p className="text-xs text-green-600 mt-0.5">Connected as <span className="font-medium">{msStatus.ms_email}</span></p>
+                : <p className="text-xs text-gray-500 mt-0.5">Auto-generate meeting links via Microsoft Graph API</p>
+              }
+            </div>
+          </div>
+          {msStatus?.connected ? (
+            <button
+              type="button"
+              onClick={() => msDisconnectMutation.mutate()}
+              disabled={msDisconnectMutation.isPending}
+              className="px-4 py-1.5 text-sm font-medium border border-red-200 text-red-600 rounded-lg hover:bg-red-50 disabled:opacity-50 transition-colors shrink-0"
+            >
+              {msDisconnectMutation.isPending ? 'Disconnecting…' : 'Disconnect'}
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => void handleMsConnect()}
+              className="px-4 py-1.5 text-sm font-medium bg-[#5b5ea6] text-white rounded-lg hover:bg-[#4a4d8e] transition-colors shrink-0"
+            >
+              Connect
+            </button>
+          )}
         </div>
       </section>
 
