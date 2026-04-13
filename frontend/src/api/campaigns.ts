@@ -81,6 +81,9 @@ export interface CampaignLead {
   engagement_trend: EngagementTrend | null
   engagement_reasoning: string | null
   engagement_updated_at: string | null
+  warmth_score: number | null
+  warmth_flag: 'hot' | 'warm' | 'neutral' | 'cold' | 'objection' | 'not_interested' | null
+  agent_mode_active: boolean
   created_at: string
   lead: {
     id: string

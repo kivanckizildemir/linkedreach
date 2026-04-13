@@ -21,11 +21,13 @@ import { startInboxPoller } from './inboxPoller.worker'
 import { salesNavScraperWorker } from './salesNavScraper.worker'
 import { profileEnrichWorker } from './profileEnrich.worker'
 import { startSessionKeepAlive } from './sessionKeepAlive.worker'
+import { startReplyAgentWorker } from './replyAgent.worker'
 
 startScheduler()
 startWarmupWorker()
 startInboxPoller()
 startSessionKeepAlive()
+const replyAgentWorker = startReplyAgentWorker()
 console.log('All workers started')
 
 // Graceful shutdown — drain active jobs before exiting
@@ -37,6 +39,7 @@ async function shutdown(signal: string) {
     sequenceRunnerWorker.close(),
     salesNavScraperWorker.close(),
     profileEnrichWorker.close(),
+    replyAgentWorker.close(),
   ])
   console.log('[workers] All workers closed')
   process.exit(0)

@@ -20,6 +20,8 @@ import { apiFetch } from '../lib/fetchJson'
 import { fetchSequences, createSequence, type SequenceStep } from '../api/sequences'
 import { FlowCanvas } from './SequenceBuilder'
 import { ChatSequenceBuilder } from '../components/ChatSequenceBuilder'
+import { LocationSelector } from '../components/LocationSelector'
+import type { F2FLocation } from '../components/LocationSelector'
 
 interface Lead {
   id: string
@@ -987,9 +989,26 @@ export function CampaignDetail() {
                       </span>
                     </td>
                     <td className="px-4 py-3.5">
-                      {cl.reply_classification && cl.reply_classification !== 'none' ? (
-                        <span className="text-xs text-gray-600 capitalize">{cl.reply_classification.replace(/_/g, ' ')}</span>
-                      ) : <span className="text-xs text-gray-300">—</span>}
+                      <div className="flex flex-col gap-1">
+                        {cl.reply_classification && cl.reply_classification !== 'none' ? (
+                          <span className="text-xs text-gray-600 capitalize">{cl.reply_classification.replace(/_/g, ' ')}</span>
+                        ) : <span className="text-xs text-gray-300">—</span>}
+                        {cl.warmth_flag && (
+                          <span className={`inline-flex items-center gap-1 w-fit px-1.5 py-0.5 rounded text-[10px] font-semibold ${
+                            cl.warmth_flag === 'hot'            ? 'bg-red-100 text-red-700' :
+                            cl.warmth_flag === 'warm'           ? 'bg-orange-100 text-orange-700' :
+                            cl.warmth_flag === 'neutral'        ? 'bg-gray-100 text-gray-500' :
+                            cl.warmth_flag === 'cold'           ? 'bg-blue-100 text-blue-500' :
+                            cl.warmth_flag === 'objection'      ? 'bg-yellow-100 text-yellow-700' :
+                            cl.warmth_flag === 'not_interested' ? 'bg-gray-100 text-gray-400' :
+                            'bg-gray-100 text-gray-400'
+                          }`}>
+                            {cl.agent_mode_active && <span title="Agent mode active">🤖</span>}
+                            {cl.warmth_flag.replace(/_/g, ' ')}
+                            {cl.warmth_score != null && <span className="opacity-60">· {cl.warmth_score}</span>}
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="px-4 py-3.5">
                       <NextActionCell cl={cl} steps={sequences[0]?.sequence_steps ?? []} />
@@ -1421,6 +1440,42 @@ function CampaignSettings({
   const [messageApproach, setMessageApproach] = useState<Approach | null>(icp.message_approach ?? null)
   const [messageTone, setMessageTone] = useState<string | null>(icp.message_tone ?? null)
 
+  // ── Agent Mode state ──────────────────────────────────────────────────────
+  type AgentSettings = {
+    enabled: boolean
+    match_tone: boolean
+    match_length: boolean
+    match_approach: boolean
+    reply_delay_minutes: { min: number; max: number }
+    meeting_scheduler_enabled: boolean
+    meeting_type: 'online' | 'face_to_face' | 'either'
+    meeting_platform: 'zoom' | 'google_meet' | 'teams' | 'phone'
+    meeting_link: string
+    meeting_duration_minutes: number
+    warmth_threshold_for_meeting: number
+    not_interested_action: 'pause' | 'end'
+    sender_location: string
+    f2f_location_mode: 'include' | 'exclude'
+    f2f_locations: F2FLocation[]
+  }
+  const storedAgent = ((campaign as unknown as Record<string, unknown>).agent_mode_settings ?? {}) as Partial<AgentSettings>
+  const [agentEnabled,           setAgentEnabled]           = useState(storedAgent.enabled ?? false)
+  const [agentMatchTone,         setAgentMatchTone]         = useState(storedAgent.match_tone ?? true)
+  const [agentMatchLength,       setAgentMatchLength]       = useState(storedAgent.match_length ?? true)
+  const [agentMatchApproach,     setAgentMatchApproach]     = useState(storedAgent.match_approach ?? true)
+  const [agentDelayMin,          setAgentDelayMin]          = useState(storedAgent.reply_delay_minutes?.min ?? 5)
+  const [agentDelayMax,          setAgentDelayMax]          = useState(storedAgent.reply_delay_minutes?.max ?? 30)
+  const [agentMeeting,           setAgentMeeting]           = useState(storedAgent.meeting_scheduler_enabled ?? false)
+  const [agentMeetingType,       setAgentMeetingType]       = useState<'online' | 'face_to_face' | 'either'>(storedAgent.meeting_type ?? 'online')
+  const [agentMeetingPlatform,   setAgentMeetingPlatform]   = useState<'zoom' | 'google_meet' | 'teams' | 'phone'>(storedAgent.meeting_platform ?? 'zoom')
+  const [agentMeetingLink,       setAgentMeetingLink]       = useState(storedAgent.meeting_link ?? '')
+  const [agentMeetingDuration,   setAgentMeetingDuration]   = useState(storedAgent.meeting_duration_minutes ?? 30)
+  const [agentWarmthThreshold,   setAgentWarmthThreshold]   = useState(storedAgent.warmth_threshold_for_meeting ?? 70)
+  const [agentNIAction,          setAgentNIAction]          = useState<'pause' | 'end'>(storedAgent.not_interested_action ?? 'pause')
+  const [agentSenderLocation,    setAgentSenderLocation]    = useState(storedAgent.sender_location ?? '')
+  const [agentF2FMode,           setAgentF2FMode]           = useState<'include' | 'exclude'>(storedAgent.f2f_location_mode ?? 'include')
+  const [agentF2FLocations,      setAgentF2FLocations]      = useState<F2FLocation[]>(storedAgent.f2f_locations ?? [])
+
   const { data: globalSettings } = useQuery({
     queryKey: ['settings'],
     queryFn: async () => {
@@ -1454,7 +1509,28 @@ function CampaignSettings({
     JSON.stringify(scheduleDays) !== JSON.stringify(campaign.schedule_days ?? [1,2,3,4,5]) ||
     scheduleStart !== (campaign.schedule_start_hour ?? 9) ||
     scheduleEnd !== (campaign.schedule_end_hour ?? 17) ||
-    scheduleTz !== (campaign.schedule_timezone ?? 'UTC')
+    scheduleTz !== (campaign.schedule_timezone ?? 'UTC') ||
+    agentEnabled !== (storedAgent.enabled ?? false)
+
+  function buildAgentSettings(): AgentSettings {
+    return {
+      enabled:                      agentEnabled,
+      match_tone:                   agentMatchTone,
+      match_length:                 agentMatchLength,
+      match_approach:               agentMatchApproach,
+      reply_delay_minutes:          { min: agentDelayMin, max: agentDelayMax },
+      meeting_scheduler_enabled:    agentMeeting,
+      meeting_type:                 agentMeetingType,
+      meeting_platform:             agentMeetingPlatform,
+      meeting_link:                 agentMeetingLink,
+      meeting_duration_minutes:     agentMeetingDuration,
+      warmth_threshold_for_meeting: agentWarmthThreshold,
+      not_interested_action:        agentNIAction,
+      sender_location:              agentSenderLocation,
+      f2f_location_mode:            agentF2FMode,
+      f2f_locations:                agentF2FLocations,
+    }
+  }
 
   function handleSave() {
     onSave({
@@ -1478,6 +1554,7 @@ function CampaignSettings({
         message_approach: messageApproach,
         message_tone: messageTone,
       },
+      agent_mode_settings: buildAgentSettings(),
     })
   }
 
@@ -1805,6 +1882,193 @@ function CampaignSettings({
           onEndHourChange={setScheduleEnd}
           onTimezoneChange={setScheduleTz}
         />
+      </CollapsibleSection>
+
+      {/* ── Panel 7: Agent Mode ── */}
+      <CollapsibleSection
+        title="Agent Mode"
+        subtitle={agentEnabled ? 'Active — AI handles replies automatically' : 'Off — scheduled sequence only'}
+        accentColor="border-l-violet-400"
+      >
+        {/* Master toggle */}
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <p className="text-sm font-medium text-gray-800">Enable Agent Mode</p>
+            <p className="text-xs text-gray-500 mt-0.5">When a lead replies, AI takes over and responds automatically instead of continuing the scheduled sequence.</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setAgentEnabled(v => !v)}
+            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${agentEnabled ? 'bg-violet-600' : 'bg-gray-200'}`}
+          >
+            <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${agentEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
+          </button>
+        </div>
+
+        {agentEnabled && (
+          <div className="space-y-5 border-t border-gray-100 pt-4">
+
+            {/* Matching behaviour */}
+            <div>
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Reply Matching</p>
+              <div className="space-y-2">
+                {(
+                  [
+                    ['Match tone',     agentMatchTone,     setAgentMatchTone,     'Mirror the lead\'s writing tone in each reply'] ,
+                    ['Match length',   agentMatchLength,   setAgentMatchLength,   'Match the lead\'s message word count'],
+                    ['Match approach', agentMatchApproach, setAgentMatchApproach, 'Adapt outreach strategy based on their intent'],
+                  ] as [string, boolean, (v: boolean) => void, string][]
+                ).map(([label, val, set, desc]) => (
+                  <div key={label} className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm text-gray-700">{label}</p>
+                      <p className="text-xs text-gray-400">{desc}</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => set(!val)}
+                      className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${val ? 'bg-violet-500' : 'bg-gray-200'}`}
+                    >
+                      <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${val ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Reply delay */}
+            <div>
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Reply Delay</p>
+              <div className="flex items-center gap-3">
+                <div className="flex items-center gap-1.5">
+                  <label className="text-xs text-gray-500">Min</label>
+                  <input type="number" min={1} max={120} value={agentDelayMin}
+                    onChange={e => setAgentDelayMin(Number(e.target.value))}
+                    className="w-16 border border-gray-300 rounded px-2 py-1 text-sm" />
+                  <span className="text-xs text-gray-400">min</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <label className="text-xs text-gray-500">Max</label>
+                  <input type="number" min={1} max={480} value={agentDelayMax}
+                    onChange={e => setAgentDelayMax(Number(e.target.value))}
+                    className="w-16 border border-gray-300 rounded px-2 py-1 text-sm" />
+                  <span className="text-xs text-gray-400">min</span>
+                </div>
+                <p className="text-xs text-gray-400">Human-like randomised window before sending</p>
+              </div>
+            </div>
+
+            {/* Not interested action */}
+            <div>
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">When Lead Says Not Interested</p>
+              <div className="flex gap-2">
+                {(['pause', 'end'] as const).map(opt => (
+                  <button key={opt} type="button"
+                    onClick={() => setAgentNIAction(opt)}
+                    className={`px-3 py-1 rounded text-sm border transition-colors ${agentNIAction === opt ? 'bg-gray-800 text-white border-gray-800' : 'border-gray-300 text-gray-600 hover:bg-gray-50'}`}
+                  >
+                    {opt === 'pause' ? 'Pause lead' : 'End & exclude'}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Meeting scheduler */}
+            <div className="border border-gray-200 rounded-lg p-4 space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-gray-800">Meeting Scheduler</p>
+                  <p className="text-xs text-gray-500 mt-0.5">Agent proposes a meeting when warmth is high enough</p>
+                </div>
+                <button type="button" onClick={() => setAgentMeeting(v => !v)}
+                  className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${agentMeeting ? 'bg-violet-500' : 'bg-gray-200'}`}>
+                  <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${agentMeeting ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
+                </button>
+              </div>
+
+              {agentMeeting && (
+                <div className="space-y-4 border-t border-gray-100 pt-3">
+                  {/* Warmth threshold */}
+                  <div className="flex items-center gap-3">
+                    <label className="text-xs text-gray-500 w-40">Propose meeting at warmth ≥</label>
+                    <input type="number" min={0} max={100} value={agentWarmthThreshold}
+                      onChange={e => setAgentWarmthThreshold(Number(e.target.value))}
+                      className="w-16 border border-gray-300 rounded px-2 py-1 text-sm" />
+                    <span className="text-xs text-gray-400">/ 100</span>
+                  </div>
+
+                  {/* Meeting type */}
+                  <div>
+                    <p className="text-xs text-gray-500 mb-1.5">Meeting type</p>
+                    <div className="flex gap-2">
+                      {(['online', 'face_to_face', 'either'] as const).map(t => (
+                        <button key={t} type="button"
+                          onClick={() => setAgentMeetingType(t)}
+                          className={`px-3 py-1 rounded text-sm border transition-colors ${agentMeetingType === t ? 'bg-violet-600 text-white border-violet-600' : 'border-gray-300 text-gray-600 hover:bg-gray-50'}`}
+                        >
+                          {t === 'online' ? 'Online' : t === 'face_to_face' ? 'Face-to-face' : 'Either'}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Online options */}
+                  {(agentMeetingType === 'online' || agentMeetingType === 'either') && (
+                    <div className="space-y-3">
+                      <div>
+                        <p className="text-xs text-gray-500 mb-1.5">Platform</p>
+                        <div className="flex gap-2 flex-wrap">
+                          {(['zoom', 'google_meet', 'teams', 'phone'] as const).map(p => (
+                            <button key={p} type="button"
+                              onClick={() => setAgentMeetingPlatform(p)}
+                              className={`px-3 py-1 rounded text-sm border transition-colors ${agentMeetingPlatform === p ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-300 text-gray-600 hover:bg-gray-50'}`}
+                            >
+                              {p === 'google_meet' ? 'Google Meet' : p === 'phone' ? 'Phone' : p.charAt(0).toUpperCase() + p.slice(1)}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <label className="text-xs text-gray-500 w-28">Duration</label>
+                        <select value={agentMeetingDuration} onChange={e => setAgentMeetingDuration(Number(e.target.value))}
+                          className="border border-gray-300 rounded px-2 py-1 text-sm">
+                          {[15, 20, 30, 45, 60].map(d => <option key={d} value={d}>{d} min</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-xs text-gray-500 block mb-1">Calendar link (optional)</label>
+                        <input type="url" placeholder="https://calendly.com/your-link"
+                          value={agentMeetingLink} onChange={e => setAgentMeetingLink(e.target.value)}
+                          className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm" />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* F2F options */}
+                  {(agentMeetingType === 'face_to_face' || agentMeetingType === 'either') && (
+                    <div className="space-y-3">
+                      <div>
+                        <label className="text-xs text-gray-500 block mb-1">Your location (shown to lead)</label>
+                        <input type="text" placeholder="e.g. London, UK"
+                          value={agentSenderLocation} onChange={e => setAgentSenderLocation(e.target.value)}
+                          className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm" />
+                      </div>
+                      <div>
+                        <p className="text-xs text-gray-500 mb-2">Face-to-face locations</p>
+                        <LocationSelector
+                          mode={agentF2FMode}
+                          locations={agentF2FLocations}
+                          onModeChange={setAgentF2FMode}
+                          onLocationsChange={setAgentF2FLocations}
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </CollapsibleSection>
 
       {/* ── Save ── */}

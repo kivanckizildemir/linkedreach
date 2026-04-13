@@ -22,6 +22,7 @@ import { supabase } from '../lib/supabase'
 import { extractCookies } from '../linkedin/session'
 import { classifyReply } from '../ai/classify'
 import { acquireAccountLock } from '../lib/accountLock'
+import { replyAgentQueue } from './replyAgent.worker'
 import { ProxyAgent, fetch as undiciFetch } from 'undici'
 import { getExistingContext, getOrCreateBrowserSession, invalidateBrowserSession } from '../lib/browserPool'
 import type { AccountRecord } from '../linkedin/session'
@@ -350,13 +351,13 @@ async function pollAccountInbox(account: Account): Promise<void> {
     // Find the campaign_lead for this account + lead
     const { data: campaignLeads } = await supabase
       .from('campaign_leads')
-      .select('id, reply_classification')
+      .select('id, campaign_id, reply_classification')
       .eq('lead_id', leadId)
       .eq('account_id', account.id)
       .limit(1)
 
     if (!campaignLeads || campaignLeads.length === 0) continue
-    const cl = campaignLeads[0] as { id: string; reply_classification: string }
+    const cl = campaignLeads[0] as { id: string; campaign_id: string; reply_classification: string }
 
     // Fetch messages in this conversation
     const convUrnEncoded = encodeURIComponent(conv.entityUrn)
@@ -434,6 +435,31 @@ async function pollAccountInbox(account: Account): Promise<void> {
         console.log(`[inbox] Lead ${leadId} (${publicIdentifier}) → ${classification}`)
       } catch (err) {
         console.error(`[inbox] Classification failed for lead ${leadId}:`, err)
+      }
+
+      // If agent mode is enabled for this campaign, enqueue a reply agent job
+      try {
+        const { data: camp } = await supabase
+          .from('campaigns')
+          .select('agent_mode_settings')
+          .eq('id', cl.campaign_id)
+          .single()
+
+        const agentSettings = (camp as any)?.agent_mode_settings
+        if (agentSettings?.enabled) {
+          await replyAgentQueue.add(
+            'reply',
+            { campaign_lead_id: cl.id, reply_content: latest.content },
+            {
+              jobId:    `agent-reply-${cl.id}-${Date.now()}`,
+              attempts: 3,
+              backoff:  { type: 'exponential', delay: 60_000 },
+            }
+          )
+          console.log(`[inbox] Enqueued agent reply job for campaign_lead ${cl.id}`)
+        }
+      } catch (err) {
+        console.error(`[inbox] Failed to enqueue agent job for ${cl.id}:`, (err as Error).message)
       }
     }
   }

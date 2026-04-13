@@ -262,6 +262,7 @@ campaignsRouter.patch('/:id', async (req: Request, res: Response) => {
     'target_audience',
     'product_id',
     'lead_priority',
+    'agent_mode_settings',
   ] as const
   type AllowedKey = (typeof allowed)[number]
 
@@ -361,6 +362,9 @@ campaignsRouter.get('/:id/leads', async (req: Request, res: Response) => {
       engagement_score,
       engagement_trend,
       engagement_reasoning,
+      warmth_score,
+      warmth_flag,
+      agent_mode_active,
       created_at,
       lead:leads (
         id, first_name, last_name, title, company, industry, location,
