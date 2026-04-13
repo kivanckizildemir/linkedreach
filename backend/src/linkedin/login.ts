@@ -689,9 +689,10 @@ async function runLogin(key: string, email: string, password: string): Promise<v
 
     // Blank page: LinkedIn's edge may gate headless local Chromium via TLS fingerprint.
     // In BrightData mode this shouldn't happen; in local-Chromium fallback mode it might.
-    // If we detect an empty page, wait for networkidle in case it's just slow rendering.
+    // If we detect an empty or very short page, wait for networkidle in case it's slow rendering.
     const afterGotoHtml = await page.evaluate(() => document.documentElement.outerHTML).catch(() => '')
     const isBlank = afterGotoText.trim().length < 20 && !afterGotoHtml.includes('<form')
+    const isMinimal = afterGotoText.trim().length < 600 // partial render — wait for full content
     if (isBlank) {
       console.log(`[LOGIN DEBUG] Empty page at ${page.url()} — waiting for networkidle then rotating to /uas/login`)
       await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {})
@@ -700,6 +701,10 @@ async function runLogin(key: string, email: string, password: string): Promise<v
         await page.goto('https://www.linkedin.com/uas/login', { waitUntil: 'domcontentloaded', timeout: 30_000 })
         await DELAY(2000)
       }
+    } else if (isMinimal) {
+      console.log(`[LOGIN DEBUG] Short page (${afterGotoText.trim().length} chars) — waiting for networkidle`)
+      await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {})
+      await DELAY(1_500)
     }
 
     // ── Snapshot immediately after first navigation ───────────────────────────
@@ -1181,7 +1186,8 @@ async function runLogin(key: string, email: string, password: string): Promise<v
           }
 
           console.log('[LOGIN DEBUG] Waiting for password field after Continue…')
-          await page.waitForSelector(passSelector, { timeout: 12_000 }).catch(() => {
+          await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {})
+          await page.waitForSelector(passSelector, { timeout: 20_000 }).catch(() => {
             console.log('[LOGIN DEBUG] Password field still not visible after Continue')
           })
         } catch (e) {
