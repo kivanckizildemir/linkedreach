@@ -1352,31 +1352,29 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       // CDP mode: submit via fetch() from page context — does NOT navigate the page so
       // BrightData's CDP session stays alive. form.submit() causes a navigation that
       // drops the WebSocket connection ("Browser session closed unexpectedly").
-      console.log('[LOGIN DEBUG] CDP mode: fetch-submit from page context')
-      const fetchResult = await page.evaluate(async (args: { email: string; pass: string }) => {
-        const form = document.querySelector('form') as HTMLFormElement | null
-        const params = new URLSearchParams()
-        // Collect all visible form inputs (CSRF, hidden fields, email…)
-        Array.from(form?.querySelectorAll('input') ?? []).forEach(inp => {
-          const i = inp as HTMLInputElement
-          if (i.name && i.type !== 'submit' && !i.disabled) params.set(i.name, i.value)
-        })
-        // Override credentials
-        params.set('session_key',      args.email)
-        params.set('session_password', args.pass)
-        const action = form?.getAttribute('action') || '/checkpoint/lg/login-submit'
-        try {
-          const r = await fetch(action, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            credentials: 'include',
-            body: params.toString(),
+      console.log('[LOGIN DEBUG] CDP mode: XHR-submit from page context')
+      const fetchResult = await page.evaluate((args: { email: string; pass: string }) => {
+        return new Promise<{ ok: boolean; status: number; finalUrl: string; error?: string }>((resolve) => {
+          const form = document.querySelector('form') as HTMLFormElement | null
+          const params = new URLSearchParams()
+          Array.from(form?.querySelectorAll('input') ?? []).forEach(inp => {
+            const i = inp as HTMLInputElement
+            if (i.name && i.type !== 'submit' && !i.disabled) params.set(i.name, i.value)
           })
-          return { ok: r.ok, status: r.status, finalUrl: r.url }
-        } catch (e) {
-          return { ok: false, status: 0, finalUrl: '', error: String(e) }
-        }
-      }, { email, pass: password }).catch(e => ({ ok: false, status: 0, finalUrl: '', error: String(e) }))
+          params.set('session_key',      args.email)
+          params.set('session_password', args.pass)
+          const action = form?.getAttribute('action') || '/checkpoint/lg/login-submit'
+          const xhr = new XMLHttpRequest()
+          xhr.open('POST', action, true)
+          xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded')
+          xhr.withCredentials = true
+          xhr.onload  = () => resolve({ ok: xhr.status >= 200 && xhr.status < 400, status: xhr.status, finalUrl: xhr.responseURL })
+          xhr.onerror = () => resolve({ ok: false, status: 0, finalUrl: '', error: 'XHR network error' })
+          xhr.ontimeout = () => resolve({ ok: false, status: 0, finalUrl: '', error: 'XHR timeout' })
+          xhr.timeout = 15_000
+          xhr.send(params.toString())
+        })
+      }, { email, pass: password }).catch((e: unknown) => ({ ok: false, status: 0, finalUrl: '', error: String(e) }))
 
       console.log('[LOGIN DEBUG] fetch-submit result:', JSON.stringify(fetchResult))
 
@@ -1384,7 +1382,7 @@ async function runLogin(key: string, email: string, password: string): Promise<v
       // click the submit button instead — the page.route() interceptor set up above will
       // inject the password directly into the outgoing POST body, so no keyboard typing needed.
       if (fetchResult.status === 0 && !fetchResult.finalUrl) {
-        console.log('[LOGIN DEBUG] fetch-submit blocked (status 0) — falling back to button click (route interceptor will inject password)')
+        console.log('[LOGIN DEBUG] XHR-submit blocked (status 0) — falling back to button click')
         const submitBtn = await page.$(
           'button[type="submit"], .btn__primary--large, ' +
           'button[data-litms-control-urn="guest|submit"], ' +
@@ -1443,30 +1441,30 @@ async function runLogin(key: string, email: string, password: string): Promise<v
           // Navigate back to /login and retry submit
           await page.goto('https://www.linkedin.com/login', { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => {})
           await DELAY(1_500)
-          // Re-submit
-          const retryResult = await page.evaluate(async (args: { email: string; pass: string }) => {
-            const form = document.querySelector('form') as HTMLFormElement | null
-            const params = new URLSearchParams()
-            Array.from(form?.querySelectorAll('input') ?? []).forEach(inp => {
-              const i = inp as HTMLInputElement
-              if (i.name && i.type !== 'submit' && !i.disabled) params.set(i.name, i.value)
-            })
-            params.set('session_key',      args.email)
-            params.set('session_password', args.pass)
-            const action = form?.getAttribute('action') || '/checkpoint/lg/login-submit'
-            try {
-              const r = await fetch(action, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                credentials: 'include',
-                body: params.toString(),
+          // Re-submit via XHR
+          const retryResult = await page.evaluate((args: { email: string; pass: string }) => {
+            return new Promise<{ ok: boolean; status: number; finalUrl: string; error?: string }>((resolve) => {
+              const form = document.querySelector('form') as HTMLFormElement | null
+              const params = new URLSearchParams()
+              Array.from(form?.querySelectorAll('input') ?? []).forEach(inp => {
+                const i = inp as HTMLInputElement
+                if (i.name && i.type !== 'submit' && !i.disabled) params.set(i.name, i.value)
               })
-              return { ok: r.ok, status: r.status, finalUrl: r.url }
-            } catch (e) {
-              return { ok: false, status: 0, finalUrl: '', error: String(e) }
-            }
-          }, { email, pass: password }).catch(e => ({ ok: false, status: 0, finalUrl: '', error: String(e) }))
-          console.log('[LOGIN DEBUG] fetch-submit RETRY result:', JSON.stringify(retryResult))
+              params.set('session_key',      args.email)
+              params.set('session_password', args.pass)
+              const action = form?.getAttribute('action') || '/checkpoint/lg/login-submit'
+              const xhr = new XMLHttpRequest()
+              xhr.open('POST', action, true)
+              xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded')
+              xhr.withCredentials = true
+              xhr.onload  = () => resolve({ ok: xhr.status >= 200 && xhr.status < 400, status: xhr.status, finalUrl: xhr.responseURL })
+              xhr.onerror = () => resolve({ ok: false, status: 0, finalUrl: '', error: 'XHR network error' })
+              xhr.timeout = 15_000
+              xhr.ontimeout = () => resolve({ ok: false, status: 0, finalUrl: '', error: 'XHR timeout' })
+              xhr.send(params.toString())
+            })
+          }, { email, pass: password }).catch((e: unknown) => ({ ok: false, status: 0, finalUrl: '', error: String(e) }))
+          console.log('[LOGIN DEBUG] XHR-submit RETRY result:', JSON.stringify(retryResult))
           const retryDest = retryResult.finalUrl || ''
           if (retryDest && !retryDest.includes('/login')) {
             await page.goto(retryDest, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => {})
