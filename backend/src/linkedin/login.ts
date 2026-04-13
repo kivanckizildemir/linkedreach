@@ -240,35 +240,16 @@ async function resolveBrowserEndpoint(accountId: string): Promise<string | null>
   if (!browserUrl) return null
 
   try {
-    const { data: account } = await supabase
-      .from('linkedin_accounts')
-      .select('proxy_id')
-      .eq('id', accountId)
-      .single()
-
-    // If the account has its own residential proxy, use local Chromium + that proxy
-    // instead of BrightData Scraping Browser. This avoids BrightData's CDP restrictions
-    // (blocked fetch, blocked keyboard.type on password, non-working page.route intercept)
-    // and uses a trusted static IP the user controls.
-    if ((account as { proxy_id?: string | null })?.proxy_id) {
-      console.log(`[LOGIN DEBUG] Account has own proxy — skipping BrightData, using local Chromium + residential proxy`)
-      return null
-    }
-
-    // No account proxy → fall back to BrightData Scraping Browser with country targeting.
+    // Always use BrightData Scraping Browser for login — GB location + built-in CAPTCHA
+    // solver configured on BrightData dashboard. Account's proxy_id is used by automation
+    // workers only; login always goes through BrightData.
     const country = process.env.BRIGHTDATA_DEFAULT_COUNTRY ?? 'gb'
-
     const url = new URL(browserUrl)
     const baseUser = decodeURIComponent(url.username)
-
-    // Always apply the country from DB (or fallback env/default).
-    // Strip any -country-xx already in the env var so we never double-append
-    // and so the DB value always wins over whatever was hardcoded in the env var.
+    // Strip any -country-xx already baked into the env var so we never double-append
     const userWithoutCountry = baseUser.replace(/-country-[a-z]{2,3}/gi, '')
     url.username = encodeURIComponent(`${userWithoutCountry}-country-${country.toLowerCase()}`)
-    console.log(`[LOGIN DEBUG] BrightData country targeting applied: ${country} (base user: ${userWithoutCountry})`)
-
-    console.log(`[LOGIN DEBUG] BrightData endpoint username: ${decodeURIComponent(url.username).replace(/:.*/, '')}`)
+    console.log(`[LOGIN DEBUG] BrightData: country=${country} user=${decodeURIComponent(url.username).replace(/:.*/, '')}`)
     return url.toString()
   } catch {
     return null
