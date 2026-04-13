@@ -1994,10 +1994,10 @@ async function runLogin(key: string, email: string, password: string): Promise<v
         }
       }
 
-      console.log(`[LOGIN DEBUG] push poll: ⏰ 3-minute deadline expired without approval`)
-      session.status = 'error'
-      session.error  = 'Verification not completed within 3 minutes. Please try again.'
-      await browser.close().catch(() => {})
+      console.log(`[LOGIN DEBUG] push poll: ⏰ 3-minute deadline expired without approval — switching to needs_verification`)
+      // Don't hard-fail — give the user a chance to enter a code from email/SMS
+      session.status = 'needs_verification'
+      session.hint   = 'LinkedIn requires verification. Check your email or LinkedIn mobile app for a code or approval request, then enter it below.'
       return
     }
 
