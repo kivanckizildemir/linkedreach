@@ -137,6 +137,7 @@ interface Props {
 export function LocationSelector({ mode, locations, onModeChange, onLocationsChange }: Props) {
   const [query,       setQuery]       = useState('')
   const [open,        setOpen]        = useState(false)
+  const [openUpward,  setOpenUpward]  = useState(false)
   const [radiusMode,  setRadiusMode]  = useState(false)
   const [radiusCity,  setRadiusCity]  = useState('')
   const [radiusMiles, setRadiusMiles] = useState(50)
@@ -153,6 +154,14 @@ export function LocationSelector({ mode, locations, onModeChange, onLocationsCha
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
   }, [])
+
+  // Detect if dropdown would overflow the viewport bottom — if so, open upward
+  useEffect(() => {
+    if (!open || !dropRef.current) return
+    const rect = dropRef.current.getBoundingClientRect()
+    const spaceBelow = window.innerHeight - rect.bottom
+    setOpenUpward(spaceBelow < 260)
+  }, [open])
 
   // Build search results
   const q = query.toLowerCase().trim()
@@ -312,7 +321,7 @@ export function LocationSelector({ mode, locations, onModeChange, onLocationsCha
 
         {/* Dropdown */}
         {open && results.length > 0 && (
-          <div className="absolute z-50 top-full mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-64 overflow-y-auto">
+          <div className={`absolute z-50 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-64 overflow-y-auto ${openUpward ? 'bottom-full mb-1' : 'top-full mt-1'}`}>
             {Object.entries(groups).map(([group, items]) => (
               <div key={group}>
                 <div className="px-3 py-1 text-xs font-semibold text-gray-400 uppercase tracking-wide bg-gray-50">
