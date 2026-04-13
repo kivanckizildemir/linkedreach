@@ -75,24 +75,33 @@ export const qualifyWorker = new Worker<QualifyJob>(
 
     const rawDataUpdate: Record<string, unknown> = {
       ...(lead.raw_data as Record<string, unknown> ?? {}),
-      ai_reasoning: result.reasoning,
+      ai_reasoning:    result.reasoning,
       ai_qualified_at: new Date().toISOString(),
+      score_breakdown: result.score_breakdown,
     }
     if (result.product_scores) {
-      rawDataUpdate.product_scores = result.product_scores
-      rawDataUpdate.best_product_id = result.best_product_id
+      rawDataUpdate.product_scores   = result.product_scores
+      rawDataUpdate.best_product_id  = result.best_product_id
     }
 
     await supabase
       .from('leads')
       .update({
         icp_score: result.score,
-        icp_flag: result.flag,
-        raw_data: rawDataUpdate,
+        icp_flag:  result.flag,
+        raw_data:  rawDataUpdate,
       })
       .eq('id', lead_id)
 
-    console.log(`[qualify] "${leadName}" [${contextLabel}]: score=${result.score} flag=${result.flag}`)
+    const dims = result.score_breakdown.dimensions
+    console.log(
+      `[qualify] "${leadName}" [${contextLabel}]: score=${result.score} flag=${result.flag} ` +
+      `(title=${dims.title_role.score}/${dims.title_role.max} ` +
+      `industry=${dims.industry.score}/${dims.industry.max} ` +
+      `location=${dims.location.score}/${dims.location.max} ` +
+      `size=${dims.company_size.score}/${dims.company_size.max} ` +
+      `criteria=${dims.custom_criteria.score}/${dims.custom_criteria.max})`
+    )
     return result
   },
   {
