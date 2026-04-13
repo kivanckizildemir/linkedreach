@@ -2520,6 +2520,16 @@ async function runManualSession(key: string): Promise<void> {
 }
 
 /** Returns a session_key immediately — all browser work is in the background */
+/** Returns true if there's an active (non-terminal) login session for this account */
+export function hasActiveLoginSession(accountId: string): boolean {
+  for (const s of sessions.values()) {
+    if (s.accountId === accountId && s.status !== 'success' && s.status !== 'error') {
+      return true
+    }
+  }
+  return false
+}
+
 export function startLogin(
   accountId:   string,
   email:       string,

@@ -18,6 +18,7 @@ import { supabase } from '../lib/supabase'
 import { createSession, closeSession, persistCookies } from '../linkedin/session'
 import { acquireAccountLock } from '../lib/accountLock'
 import { reconnectWithPersistentProfile } from '../lib/browserPool'
+import { hasActiveLoginSession } from '../linkedin/login'
 import type { AccountRecord } from '../linkedin/session'
 
 const INTERVAL_MS           = 15 * 60 * 1000       // Check every 15 min (was 30)
@@ -50,6 +51,10 @@ async function keepAliveTick(): Promise<void> {
 
     // Paused accounts with credentials — attempt auto-reconnect with backoff
     if (account.status === 'paused') {
+      if (hasActiveLoginSession(account.id)) {
+        console.log(`[keep-alive] Account ${account.id} has active login session — skipping auto-reconnect`)
+        continue
+      }
       if (!email || !password) {
         console.log(`[keep-alive] Account ${account.id} is paused and has no credentials — skipping`)
         continue
