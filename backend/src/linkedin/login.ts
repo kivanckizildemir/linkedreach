@@ -327,9 +327,7 @@ async function resolveProxy(accountId: string): Promise<
     const username = baseUsernameClean && country
       ? `${baseUsernameClean}-country-${country.toLowerCase()}`
       : baseUsernameClean
-    // BrightData: port 33335 is SSL-only and Chromium doesn't support
-    // SSL proxy servers. Always connect via the plain HTTP port 22225.
-    const proxyPort = host.includes('superproxy.io') ? '22225' : port
+    const proxyPort = port || '33335'
     const envResolved = {
       server:   `http://${host}:${proxyPort}`,
       username,
