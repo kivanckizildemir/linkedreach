@@ -40,7 +40,7 @@ microsoftRouter.get('/auth', async (req: Request, res: Response) => {
   }
 
   // Encode user ID in state so we can recover it in the callback
-  const state = Buffer.from(JSON.stringify({ userId: user.id, token })).toString('base64url')
+  const state = Buffer.from(JSON.stringify({ userId: user.id })).toString('base64url')
 
   const params = new URLSearchParams({
     client_id:     CLIENT_ID,
