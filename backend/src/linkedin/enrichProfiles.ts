@@ -366,6 +366,10 @@ export async function enrichLeads(
         try {
           page = await page.context().newPage()
           await blockResources(page)
+          // Navigate to blank first to let Chromium GC the previous page's memory
+          // before loading the next heavy LinkedIn profile page
+          await page.goto('about:blank', { waitUntil: 'commit' }).catch(() => null)
+          await page.waitForTimeout(2000)
           console.warn('[enrich] New page opened — continuing batch')
           // Don't retry the crashed lead — just move on
         } catch (newPageErr) {
@@ -388,6 +392,14 @@ export async function enrichLeads(
         console.log('[enrich] Pausing at feed between profiles…')
         await page.goto('https://www.linkedin.com/feed/', { waitUntil: 'domcontentloaded', timeout: 25_000 }).catch(() => null)
         await page.waitForTimeout(3000 + Math.random() * 2000)
+      }
+
+      // Every 4th profile, navigate to about:blank to let Chromium GC renderer memory
+      // before loading the next heavy profile page — prevents OOM crashes from accumulating
+      if ((i + 1) % 4 === 0) {
+        console.log('[enrich] Flushing renderer memory (about:blank)…')
+        await page.goto('about:blank', { waitUntil: 'commit' }).catch(() => null)
+        await page.waitForTimeout(1500)
       }
     }
   }
