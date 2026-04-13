@@ -55,6 +55,8 @@ export function createBrightDataTunnel(
           `CONNECT ${targetHost}:${targetPort} HTTP/1.1\r\n` +
           `Host: ${targetHost}:${targetPort}\r\n` +
           `Proxy-Authorization: Basic ${auth}\r\n` +
+          `Proxy-Connection: Keep-Alive\r\n` +
+          `User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\n` +
           `\r\n`
 
         bdSocket.write(connectReq)
@@ -70,6 +72,8 @@ export function createBrightDataTunnel(
 
           const statusLine = responseBuf.split('\r\n')[0] ?? ''
           const leftover   = Buffer.from(responseBuf.slice(headerEnd + 4), 'binary')
+
+          console.error('[proxy-tunnel] BrightData CONNECT response:', responseBuf.slice(0, 500))
 
           if (/^HTTP\/1\.[01] 200/.test(statusLine)) {
             // Tell Chromium the tunnel is open
