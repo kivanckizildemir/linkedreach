@@ -19,6 +19,7 @@ export interface Campaign {
   connection_note: string | null
   target_audience: string | null
   product_id: string | null
+  agent_mode_settings: Record<string, unknown> | null
   created_at: string
   updated_at: string
 }
@@ -46,7 +47,7 @@ export async function createCampaign(name: string): Promise<Campaign> {
 
 export async function updateCampaign(
   id: string,
-  updates: Partial<Pick<Campaign, 'name' | 'status' | 'icp_config' | 'daily_connection_limit' | 'daily_message_limit' | 'schedule_start_hour' | 'schedule_end_hour' | 'schedule_days' | 'schedule_timezone' | 'account_id' | 'min_icp_score' | 'connection_note' | 'target_audience' | 'product_id' | 'lead_priority'>> & { message_approach?: string | null; message_tone?: string | null }
+  updates: Partial<Pick<Campaign, 'name' | 'status' | 'icp_config' | 'daily_connection_limit' | 'daily_message_limit' | 'schedule_start_hour' | 'schedule_end_hour' | 'schedule_days' | 'schedule_timezone' | 'account_id' | 'min_icp_score' | 'connection_note' | 'target_audience' | 'product_id' | 'lead_priority' | 'agent_mode_settings'>> & { message_approach?: string | null; message_tone?: string | null }
 ): Promise<Campaign> {
   const res = await apiFetch(`/api/campaigns/${id}`, {
     method: 'PATCH',
