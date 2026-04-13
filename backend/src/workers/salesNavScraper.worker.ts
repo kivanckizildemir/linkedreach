@@ -425,27 +425,7 @@ export const salesNavScraperWorker = new Worker<SalesNavJob>(
         })
       }
 
-      // Collect all leads by scrolling incrementally through the page.
-      // Sales Nav renders results inside a fixed-height scrollable container (not window),
-      // so we must scroll that container. We detect it once before the loop.
-      const scrollContainerSel: string = await page.evaluate(`(function() {
-        // Candidates in priority order — find the first one that is actually scrollable
-        var candidates = [
-          '[data-view-name="search-results-list"]',
-          '.search-results-container',
-          '.scaffold-layout__main',
-          '[class*="search-results"]',
-          'main'
-        ];
-        for (var i = 0; i < candidates.length; i++) {
-          var el = document.querySelector(candidates[i]);
-          if (el && el.scrollHeight > el.clientHeight + 50) return candidates[i];
-        }
-        return '';  // fallback: window scroll
-      })()`) as string
-      console.log(`[sales-nav] Scroll container: ${scrollContainerSel || 'window'}`)
-
-      // DOM diagnostic: understand the page structure before scrolling
+      // DOM diagnostic — log the page structure so we can understand what's scrollable
       const domDiag = await page.evaluate(`(function() {
         var cardCount = document.querySelectorAll('[data-view-name="search-results-lead-result"]').length;
         var liCount = document.querySelectorAll('li.artdeco-list__item, li[class*="result"]').length;
@@ -456,21 +436,37 @@ export const salesNavScraperWorker = new Worker<SalesNavJob>(
         ));
         var bodyH = document.body.scrollHeight;
         var docH = document.documentElement.scrollHeight;
-        // Find all elements with scrollHeight > clientHeight
         var scrollables = Array.from(document.querySelectorAll('*')).filter(function(el) {
           return el.scrollHeight > el.clientHeight + 100 && el.scrollHeight > 500;
         }).map(function(el) {
-          return (el.tagName.toLowerCase()) + (el.id ? '#'+el.id : '') + (el.className && typeof el.className === 'string' ? '.'+el.className.trim().split(/\\s+/).slice(0,2).join('.') : '') + ' sh=' + el.scrollHeight;
-        }).slice(0, 8);
+          return (el.tagName.toLowerCase()) + (el.id ? '#'+el.id : '') + (el.className && typeof el.className === 'string' ? '.'+el.className.trim().split(/\\s+/).slice(0,2).join('.') : '') + ' sh=' + el.scrollHeight + ' ch=' + el.clientHeight;
+        }).slice(0, 10);
         return { cardCount: cardCount, liCount: liCount, viewNames: allViewNames, bodyH: bodyH, docH: docH, scrollables: scrollables };
       })()`) as { cardCount: number; liCount: number; viewNames: string[]; bodyH: number; docH: number; scrollables: string[] }
       console.log(`[sales-nav] DOM diag: cards=${domDiag.cardCount} lis=${domDiag.liCount} bodyH=${domDiag.bodyH} docH=${domDiag.docH}`)
       console.log(`[sales-nav] DOM diag viewNames: ${domDiag.viewNames.join(', ') || 'none'}`)
       console.log(`[sales-nav] DOM diag scrollables: ${domDiag.scrollables.join(' | ') || 'none'}`)
 
+      // Collect all leads by scrolling incrementally.
+      // Sales Nav renders results inside a fixed-height inner container — window.scrollTo() has
+      // no effect on it. Instead, move the mouse over the results area and use real wheel events,
+      // which the browser routes to whichever element is under the cursor (the right container).
+      // This approach is scroll-target agnostic and works regardless of DOM structure.
+
+      // Find a card to hover over so the cursor is inside the results container
+      const firstCardPos = await page.evaluate(`(function() {
+        var card = document.querySelector('[data-view-name="search-results-lead-result"]') ||
+                   document.querySelector('li.artdeco-list__item');
+        if (!card) return null;
+        var r = card.getBoundingClientRect();
+        return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+      })()`) as { x: number; y: number } | null
+      const hoverX = firstCardPos?.x ?? 960
+      const hoverY = firstCardPos?.y ?? 400
+      console.log(`[sales-nav] Mouse scroll anchor: (${hoverX}, ${hoverY})`)
+      await page.mouse.move(hoverX, hoverY)
+
       const allRawLeads = new Map<string, RawLead>()  // keyed by salesNavUrl for dedup
-      let scrollY = 0
-      const SCROLL_STEP = 400   // px per step — larger = reach more of the page faster
       let noNewCount = 0
 
       for (let s = 0; s < 80 && noNewCount < 15; s++) {
@@ -483,19 +479,11 @@ export const salesNavScraperWorker = new Worker<SalesNavJob>(
         if (allRawLeads.size === before) noNewCount++
         else noNewCount = 0
 
-        console.log(`[sales-nav] Scroll step ${s + 1}: y=${scrollY} leads=${allRawLeads.size} noNew=${noNewCount}`)
+        console.log(`[sales-nav] Scroll step ${s + 1}: leads=${allRawLeads.size} noNew=${noNewCount}`)
 
-        scrollY += SCROLL_STEP
-        if (scrollContainerSel) {
-          // Scroll the Sales Nav results container directly
-          await page.evaluate(`(function(sel, y) {
-            var el = document.querySelector(sel);
-            if (el) el.scrollTop = y;
-          })(${JSON.stringify(scrollContainerSel)}, ${scrollY})`)
-        } else {
-          await page.evaluate(`window.scrollTo(0, ${scrollY})`)
-        }
-        await delay(1200 + Math.random() * 600)  // longer dwell for virtual scroll to render
+        // Real mouse-wheel scroll — routed to the element under the cursor (results container)
+        await page.mouse.wheel(0, 400)
+        await delay(1200 + Math.random() * 600)  // dwell for lazy-loaded cards to render
       }
 
       const cardCount = allRawLeads.size
@@ -515,9 +503,8 @@ export const salesNavScraperWorker = new Worker<SalesNavJob>(
         if (pageNum === 0) {
           pageLeads = Array.from(allRawLeads.values())
         } else {
-          // Scroll-collect for subsequent pages too (virtual scrolling)
+          // Scroll-collect for subsequent pages — use real mouse wheel scroll
           const pageRaw = new Map<string, RawLead>()
-          let pgScrollY = 0
           let pgNoNew = 0
           for (let s = 0; s < 80 && pgNoNew < 15; s++) {
             const batch = await extractVisibleLeads().catch(() => [] as RawLead[])
@@ -528,12 +515,7 @@ export const salesNavScraperWorker = new Worker<SalesNavJob>(
             }
             if (pageRaw.size === before) pgNoNew++
             else pgNoNew = 0
-            pgScrollY += SCROLL_STEP
-            if (scrollContainerSel) {
-              await page.evaluate(`(function(sel, y) { var el = document.querySelector(sel); if (el) el.scrollTop = y; })(${JSON.stringify(scrollContainerSel)}, ${pgScrollY})`)
-            } else {
-              await page.evaluate(`window.scrollTo(0, ${pgScrollY})`)
-            }
+            await page.mouse.wheel(0, 400)
             await delay(1200 + Math.random() * 600)
           }
           pageLeads = Array.from(pageRaw.values())
