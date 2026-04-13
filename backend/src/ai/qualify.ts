@@ -161,6 +161,12 @@ function toArr(v: unknown): string[] {
   return []
 }
 
+/** Returns the array only if it has items, otherwise null — safe for ?? fallback */
+function nonEmpty(v: unknown): string[] | null {
+  const arr = toArr(v)
+  return arr.length > 0 ? arr : null
+}
+
 function neutralDimension(max: number): ScoringDimension {
   return {
     score:      Math.round(max / 2),
@@ -491,9 +497,11 @@ function aggregateScore(
 // ── Core scoring function ─────────────────────────────────────────────────────
 
 function resolveCriteria(product: Product, globalIcp: IcpConfig): ScoringCriteria {
-  const titles     = toArr(product.target_titles)     || toArr(globalIcp.target_titles)
-  const industries = toArr(product.target_industries) || toArr(globalIcp.target_industries)
-  const locations  = toArr(product.target_locations)  || toArr(globalIcp.target_locations)
+  // Use nonEmpty() + ?? so an empty product array correctly falls back to global ICP.
+  // Previously used || which treated [] as truthy, causing all products to score identically.
+  const titles     = nonEmpty(product.target_titles)     ?? toArr(globalIcp.target_titles)
+  const industries = nonEmpty(product.target_industries) ?? toArr(globalIcp.target_industries)
+  const locations  = nonEmpty(product.target_locations)  ?? toArr(globalIcp.target_locations)
   const minSize    = product.min_company_size ?? globalIcp.min_company_size ?? null
   const maxSize    = product.max_company_size ?? globalIcp.max_company_size ?? null
   const rawCriteria = product.custom_criteria?.length

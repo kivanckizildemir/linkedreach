@@ -18,7 +18,15 @@ const FLAG_COLORS: Record<NonNullable<Lead['icp_flag']>, string> = {
 }
 
 const FLAG_ICONS: Record<NonNullable<Lead['icp_flag']>, string> = {
-  hot: '🔥', warm: '☀️', cold: '❄️', disqualified: '✗',
+  hot: '★', warm: '◆', cold: '○', disqualified: '✗',
+}
+
+// Human-readable ICP fit labels (avoids confusion with engagement "warmth")
+const FLAG_LABELS: Record<NonNullable<Lead['icp_flag']>, string> = {
+  hot:          'Ideal Fit',
+  warm:         'Good Fit',
+  cold:         'Weak Fit',
+  disqualified: 'Not a Fit',
 }
 
 function ScoreBar({ score }: { score: number }) {
@@ -764,11 +772,11 @@ export function Leads() {
           onChange={e => setIcpFlag(e.target.value)}
           className="px-4 py-2 border border-gray-300 rounded-lg text-sm text-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
         >
-          <option value="">All flags</option>
-          <option value="hot">🔥 Hot</option>
-          <option value="warm">☀️ Warm</option>
-          <option value="cold">❄️ Cold</option>
-          <option value="disqualified">✗ Disqualified</option>
+          <option value="">All ICP fits</option>
+          <option value="hot">★ Ideal Fit</option>
+          <option value="warm">◆ Good Fit</option>
+          <option value="cold">○ Weak Fit</option>
+          <option value="disqualified">✗ Not a Fit</option>
         </select>
         <select
           value={sourceFilter}
@@ -860,7 +868,7 @@ export function Leads() {
                   className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer select-none hover:bg-gray-100 transition-colors"
                   onClick={() => toggleSort('icp_flag')}
                 >
-                  <span className="inline-flex items-center">Flag{sortArrow('icp_flag')}</span>
+                  <span className="inline-flex items-center">ICP Fit{sortArrow('icp_flag')}</span>
                 </th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Best Fit</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Labels</th>
@@ -948,7 +956,7 @@ export function Leads() {
                         {lead.icp_flag ? (
                           <span className={`inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full border ${FLAG_COLORS[lead.icp_flag]}`}>
                             <span>{FLAG_ICONS[lead.icp_flag]}</span>
-                            {lead.icp_flag}
+                            {FLAG_LABELS[lead.icp_flag]}
                           </span>
                         ) : (
                           <span className="text-gray-400 text-xs italic">Unscored</span>
@@ -1696,14 +1704,41 @@ interface ParsedLead {
   raw_data?: Record<string, unknown>
 }
 
+/**
+ * Normalises a URL to a standard linkedin.com/in/ profile URL.
+ * Sales Navigator exports contain /sales/lead/ or /sales/people/ URLs which
+ * cannot be scraped — we attempt to find a proper /in/ URL in the row first,
+ * and skip the lead if none is available.
+ */
+function normalizeLinkedInUrl(raw: string): string | null {
+  const url = raw.trim()
+  // Already a valid profile URL
+  if (url.includes('linkedin.com/in/')) return url.split('?')[0].replace(/\/$/, '')
+  // Sales Navigator / Recruiter / Talent URLs — not scrapeable, reject
+  if (
+    url.includes('linkedin.com/sales/') ||
+    url.includes('linkedin.com/talent/') ||
+    url.includes('linkedin.com/recruiter/')
+  ) return null
+  // Any other linkedin.com URL we don't recognise — reject
+  if (url.includes('linkedin.com/')) return null
+  return null
+}
+
 function parseSheet(rows: Record<string, string>[]): ParsedLead[] {
   const leads: ParsedLead[] = []
   for (const row of rows) {
-    const linkedin_url = pickCol(row,
-      'LinkedIn URL', 'Profile URL', 'linkedin url', 'profile url',
+    // Try the proper LinkedIn profile URL columns first (Sales Navigator exports
+    // include both a "LinkedIn Profile URL" (/in/) and a "Sales Navigator URL").
+    const rawUrl = pickCol(row,
+      'LinkedIn Profile URL', 'LinkedIn URL', 'Profile URL',
+      'linkedin profile url', 'linkedin url', 'profile url',
       'LinkedinURL', 'ProfileURL', 'url', 'linkedin', 'profilelink'
     )
-    if (!linkedin_url) continue
+    if (!rawUrl) continue
+
+    const linkedin_url = normalizeLinkedInUrl(rawUrl)
+    if (!linkedin_url) continue   // skip Sales Nav / unrecognised URLs
 
     const first_name = pickCol(row,
       'First Name', 'firstname', 'first', 'firstName'
