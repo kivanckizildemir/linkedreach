@@ -302,9 +302,14 @@ export function CampaignDetail() {
     },
   })
 
+  const [settingsSaveError, setSettingsSaveError] = useState<string | null>(null)
   const scheduleMutation = useMutation({
     mutationFn: (updates: Parameters<typeof updateCampaign>[1]) => updateCampaign(id!, updates),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['campaign', id] }),
+    onSuccess: () => {
+      setSettingsSaveError(null)
+      void queryClient.invalidateQueries({ queryKey: ['campaign', id] })
+    },
+    onError: (err: Error) => setSettingsSaveError(err.message),
   })
 
   async function handleScoreEngagement(clIds?: string[]) {
@@ -1069,8 +1074,9 @@ export function CampaignDetail() {
         <CampaignSettings
           campaign={campaign}
           accounts={accounts}
-          onSave={updates => scheduleMutation.mutate(updates)}
+          onSave={updates => { setSettingsSaveError(null); scheduleMutation.mutate(updates) }}
           saving={scheduleMutation.isPending}
+          saveError={settingsSaveError}
         />
       )}
     </div>
@@ -1362,11 +1368,13 @@ function CampaignSettings({
   accounts,
   onSave,
   saving,
+  saveError,
 }: {
   campaign: Campaign
   accounts: import('../api/accounts').LinkedInAccount[]
   onSave: (updates: Partial<Campaign>) => void
   saving: boolean
+  saveError?: string | null
 }) {
   const icp = (campaign.icp_config ?? {}) as {
     selected_product_ids?: string[]
@@ -1800,7 +1808,12 @@ function CampaignSettings({
       </CollapsibleSection>
 
       {/* ── Save ── */}
-      <div className="flex justify-end pt-1">
+      <div className="flex flex-col items-end gap-2 pt-1">
+        {saveError && (
+          <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2 max-w-sm text-right">
+            Save failed: {saveError}
+          </p>
+        )}
         <button
           onClick={handleSave}
           disabled={!isDirty || saving}

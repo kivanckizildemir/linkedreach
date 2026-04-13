@@ -131,7 +131,13 @@ function randomDelay(): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
-/** Check daily limits for an account. Respects warmup ramp for warming_up accounts. */
+/** Check daily limits for an account. Respects warmup ramp for warming_up accounts.
+ *
+ * Counts today's completed actions from activity_log — NOT from campaign_lead.status.
+ * campaign_lead.status changes as connections get accepted ('connection_sent' → 'connected')
+ * so counting by status would undercount the real number of actions taken today.
+ * activity_log has one entry per action regardless of subsequent status changes.
+ */
 async function checkDailyLimit(
   accountId: string,
   type: 'connection' | 'message',
@@ -140,12 +146,15 @@ async function checkDailyLimit(
 ): Promise<boolean> {
   const today = new Date().toISOString().slice(0, 10)
 
+  // 'connect' step → connection sent.  'message' or 'inmail' step → message sent.
+  const actions = type === 'connection' ? ['connect'] : ['message', 'inmail']
+
   const { count } = await supabase
-    .from('campaign_leads')
+    .from('activity_log')
     .select('*', { count: 'exact', head: true })
     .eq('account_id', accountId)
-    .gte('last_action_at', `${today}T00:00:00Z`)
-    .eq('status', type === 'connection' ? 'connection_sent' : 'messaged')
+    .in('action', actions)
+    .gte('created_at', `${today}T00:00:00Z`)
 
   let limit: number
   if (type === 'connection') {
@@ -565,7 +574,9 @@ async function runSequenceStep(campaignLeadId: string): Promise<void> {
       } catch (aiErr) {
         console.error(`[runner] AI message generation failed for ${leadData.first_name}:`, (aiErr as Error).message)
         if (context) await persistCookies(context, account.id)
-        return
+        // Throw so BullMQ retries with backoff instead of silently hanging the lead.
+        // With attempts:3 + backoff:60s, this retries up to 3 times before giving up.
+        throw aiErr
       }
     }
 
@@ -617,9 +628,10 @@ async function runSequenceStep(campaignLeadId: string): Promise<void> {
         if (resolved) {
           effectiveUrl = resolved
           console.log(`[runner] Resolved Sales Nav for ${leadData.first_name}: ${resolved}`)
-          // Update the lead's URL so future actions go directly to the right profile
-          supabase.from('leads').update({ linkedin_url: resolved }).eq('id', leadData.id)
-            .then(({ error }) => { if (error) console.warn('[runner] lead URL update failed:', error.message) })
+          // Update the lead's URL so future actions go directly to the right profile.
+          // Awaited so the next scheduler cycle sees the resolved URL immediately.
+          const { error: urlErr } = await supabase.from('leads').update({ linkedin_url: resolved }).eq('id', leadData.id)
+          if (urlErr) console.warn('[runner] lead URL update failed:', urlErr.message)
         } else {
           console.log(`[runner] Could not resolve Sales Nav URL for ${leadData.first_name} — proceeding with original`)
         }
@@ -679,12 +691,16 @@ async function runSequenceStep(campaignLeadId: string): Promise<void> {
 
           await sendMessage(page, effectiveUrl, account.id, personalised)
           newStatus = 'messaged'
-          supabase.from('messages').insert({
+          // Awaited — message was already sent on LinkedIn so we never throw on insert failure,
+          // but we do log loudly so it can be caught in monitoring.
+          const { error: msgErr } = await supabase.from('messages').insert({
             campaign_lead_id: campaignLeadId,
             direction: 'sent',
             content: personalised,
             sent_at: new Date().toISOString(),
-          }).then(({ error }) => { if (error) console.warn('[runner] messages insert failed:', error.message) })
+            step_id: currentStep.id,
+          })
+          if (msgErr) console.warn('[runner] messages insert failed — message was sent but not recorded:', msgErr.message)
           break
         }
 
@@ -696,12 +712,14 @@ async function runSequenceStep(campaignLeadId: string): Promise<void> {
             personalised
           )
           newStatus = 'messaged'
-          supabase.from('messages').insert({
+          const { error: inmailMsgErr } = await supabase.from('messages').insert({
             campaign_lead_id: campaignLeadId,
             direction: 'sent',
             content: personalised,
             sent_at: new Date().toISOString(),
-          }).then(({ error }) => { if (error) console.warn('[runner] messages insert failed:', error.message) })
+            step_id: currentStep.id,
+          })
+          if (inmailMsgErr) console.warn('[runner] messages insert (inmail) failed — message was sent but not recorded:', inmailMsgErr.message)
           break
         }
 
@@ -740,15 +758,17 @@ async function runSequenceStep(campaignLeadId: string): Promise<void> {
       }
     }
 
-    // 10. Log activity
-    await supabase.from('activity_log').insert({
+    // 10. Log activity — MUST be awaited before step advance so that checkDailyLimit
+    // (which counts activity_log rows) sees this action in the same cycle.
+    const { error: logErr } = await supabase.from('activity_log').insert({
       user_id:     account.user_id,
       account_id:  account.id,
       campaign_id: campaignLead.campaign_id,
       lead_id:     campaignLead.lead_id,
       action:      currentStep.type,
       detail:      `${leadData.first_name} ${leadData.last_name}${leadData.company ? ` · ${leadData.company}` : ''}`,
-    }).then(({ error }) => { if (error) console.warn('[runner] activity_log insert failed:', error.message) })
+    })
+    if (logErr) console.warn('[runner] activity_log insert failed:', logErr.message)
 
     // 11. Advance to next step
     const nextStep = resolveNextStep(
