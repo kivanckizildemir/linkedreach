@@ -339,27 +339,31 @@ export const salesNavScraperWorker = new Worker<SalesNavJob>(
             salesNavUrl: string | null; degree: number | null
           }> = []
 
-          // Sales Nav 2024/2025 uses data-view-name="search-results-lead-result" on each card.
-          // Older versions used [data-anonymize="person-name"] or .result-lockup__name.
-          // Strategy: first collect ALL card roots directly via data-view-name, then also
-          // collect via name-element anchors for older layouts — union into one Set.
+          // Sales Nav 2025: results are <li class="artdeco-list__item"> inside
+          // #search-results-container. The old data-view-name="search-results-lead-result"
+          // attribute no longer exists. All results load upfront (no virtual scroll).
           const itemSet = new Set<Element>()
 
-          // Primary: query card roots directly (catches ALL cards regardless of inner attrs)
-          const cardRoots = Array.from(document.querySelectorAll<HTMLElement>(
+          // Primary: li items inside the known results container (current Sales Nav layout)
+          const liCards = Array.from(document.querySelectorAll<HTMLElement>(
+            '#search-results-container li.artdeco-list__item, li.artdeco-list__item'
+          ))
+          for (const card of liCards) itemSet.add(card)
+
+          // Fallback A: legacy data-view-name attribute (older Sales Nav versions)
+          const legacyCards = Array.from(document.querySelectorAll<HTMLElement>(
             '[data-view-name="search-results-lead-result"]'
           ))
-          for (const card of cardRoots) itemSet.add(card)
+          for (const card of legacyCards) itemSet.add(card)
 
-          // Fallback: anchor on name elements and walk up (for older layouts)
+          // Fallback B: anchor on name elements and walk up (catches any remaining layouts)
           const nameEls = Array.from(document.querySelectorAll<HTMLElement>(
             '[data-anonymize="person-name"], .result-lockup__name'
           ))
           for (const el of nameEls) {
-            // Walk up to the nearest card root
             const card =
-              el.closest('[data-view-name="search-results-lead-result"]') ??
               el.closest('li.artdeco-list__item') ??
+              el.closest('[data-view-name="search-results-lead-result"]') ??
               el.closest('li') ??
               el.closest('.result-lockup') ??
               el.parentElement
@@ -453,21 +457,27 @@ export const salesNavScraperWorker = new Worker<SalesNavJob>(
       // which the browser routes to whichever element is under the cursor (the right container).
       // This approach is scroll-target agnostic and works regardless of DOM structure.
 
-      // Find a card to hover over so the cursor is inside the results container
-      const firstCardPos = await page.evaluate(`(function() {
-        var card = document.querySelector('[data-view-name="search-results-lead-result"]') ||
-                   document.querySelector('li.artdeco-list__item');
-        if (!card) return null;
-        var r = card.getBoundingClientRect();
-        return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
-      })()`) as { x: number; y: number } | null
-      const hoverX = firstCardPos?.x ?? 960
-      const hoverY = firstCardPos?.y ?? 400
-      console.log(`[sales-nav] Mouse scroll anchor: (${hoverX}, ${hoverY})`)
-      await page.mouse.move(hoverX, hoverY)
+      // Detect the scrollable results container — prefer #search-results-container
+      // (confirmed in diagnostic), fall back to other candidates, then window.
+      const scrollContainerSel: string = await page.evaluate(`(function() {
+        var candidates = [
+          '#search-results-container',
+          '[data-view-name="search-results-list"]',
+          '.search-results-container',
+          '.scaffold-layout__main',
+          '[class*="search-results"]'
+        ];
+        for (var i = 0; i < candidates.length; i++) {
+          var el = document.querySelector(candidates[i]);
+          if (el && el.scrollHeight > el.clientHeight + 50) return candidates[i];
+        }
+        return '';
+      })()`) as string
+      console.log(`[sales-nav] Scroll container: ${scrollContainerSel || 'window'}`)
 
       const allRawLeads = new Map<string, RawLead>()  // keyed by salesNavUrl for dedup
       let noNewCount = 0
+      let scrollPos = 0
 
       for (let s = 0; s < 80 && noNewCount < 15; s++) {
         const batch = await extractVisibleLeads().catch(() => [] as RawLead[])
@@ -481,9 +491,16 @@ export const salesNavScraperWorker = new Worker<SalesNavJob>(
 
         console.log(`[sales-nav] Scroll step ${s + 1}: leads=${allRawLeads.size} noNew=${noNewCount}`)
 
-        // Real mouse-wheel scroll — routed to the element under the cursor (results container)
-        await page.mouse.wheel(0, 400)
-        await delay(1200 + Math.random() * 600)  // dwell for lazy-loaded cards to render
+        scrollPos += 400
+        if (scrollContainerSel) {
+          await page.evaluate(`(function(sel, y) {
+            var el = document.querySelector(sel);
+            if (el) el.scrollTop = y;
+          })(${JSON.stringify(scrollContainerSel)}, ${scrollPos})`)
+        } else {
+          await page.mouse.wheel(0, 400)
+        }
+        await delay(1200 + Math.random() * 600)
       }
 
       const cardCount = allRawLeads.size
@@ -503,9 +520,10 @@ export const salesNavScraperWorker = new Worker<SalesNavJob>(
         if (pageNum === 0) {
           pageLeads = Array.from(allRawLeads.values())
         } else {
-          // Scroll-collect for subsequent pages — use real mouse wheel scroll
+          // Scroll-collect for subsequent pages
           const pageRaw = new Map<string, RawLead>()
           let pgNoNew = 0
+          let pgScrollPos = 0
           for (let s = 0; s < 80 && pgNoNew < 15; s++) {
             const batch = await extractVisibleLeads().catch(() => [] as RawLead[])
             const before = pageRaw.size
@@ -515,7 +533,12 @@ export const salesNavScraperWorker = new Worker<SalesNavJob>(
             }
             if (pageRaw.size === before) pgNoNew++
             else pgNoNew = 0
-            await page.mouse.wheel(0, 400)
+            pgScrollPos += 400
+            if (scrollContainerSel) {
+              await page.evaluate(`(function(sel, y) { var el = document.querySelector(sel); if (el) el.scrollTop = y; })(${JSON.stringify(scrollContainerSel)}, ${pgScrollPos})`)
+            } else {
+              await page.mouse.wheel(0, 400)
+            }
             await delay(1200 + Math.random() * 600)
           }
           pageLeads = Array.from(pageRaw.values())
