@@ -1380,6 +1380,40 @@ async function runLogin(key: string, email: string, password: string): Promise<v
 
       console.log('[LOGIN DEBUG] fetch-submit result:', JSON.stringify(fetchResult))
 
+      // If fetch is completely blocked by BrightData (status 0, TypeError: Failed to fetch),
+      // click the submit button instead — the page.route() interceptor set up above will
+      // inject the password directly into the outgoing POST body, so no keyboard typing needed.
+      if (fetchResult.status === 0 && !fetchResult.finalUrl) {
+        console.log('[LOGIN DEBUG] fetch-submit blocked (status 0) — falling back to button click (route interceptor will inject password)')
+        const submitBtn = await page.$(
+          'button[type="submit"], .btn__primary--large, ' +
+          'button[data-litms-control-urn="guest|submit"], ' +
+          'button[data-id="sign-in-form__submit-btn"], ' +
+          'form .sign-in-form__submit-btn'
+        ).catch(() => null)
+        if (submitBtn) {
+          console.log('[LOGIN DEBUG] Clicking submit button')
+          await submitBtn.click()
+        } else {
+          console.log('[LOGIN DEBUG] No submit button found — using JS click')
+          await page.evaluate(() => {
+            const btn = document.querySelector('button[type="submit"], form button') as HTMLElement | null
+            if (btn) btn.click()
+          })
+        }
+        try {
+          await page.waitForURL(
+            (u) => !String(u).includes('/login') || String(u).includes('/checkpoint') || String(u).includes('/challenge'),
+            { timeout: 15_000, waitUntil: 'domcontentloaded' }
+          )
+        } catch {
+          console.log('[LOGIN DEBUG] waitForURL timed out after button click — checking page state anyway')
+        }
+        await DELAY(500)
+        // Update fetchResult.finalUrl so the destUrl block below navigates correctly
+        ;(fetchResult as any).finalUrl = page.url()
+      }
+
       // If the fetch returned a consent/cookie page URL, the li_gc cookie wasn't valid.
       // Accept the banner NOW (LinkedIn will set its own li_gc), then retry the POST once.
       const destUrl = fetchResult.finalUrl || ''

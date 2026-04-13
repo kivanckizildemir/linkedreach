@@ -11,9 +11,9 @@ import { scrapeIntoList, importExcelIntoList, fetchLeadList, cancelScrapeJob, ge
 import * as XLSX from 'xlsx'
 
 const FLAG_COLORS: Record<NonNullable<Lead['icp_flag']>, string> = {
-  hot:          'bg-violet-100 text-violet-700 border-violet-200',
-  warm:         'bg-green-100 text-green-700 border-green-200',
-  cold:         'bg-blue-100 text-blue-700 border-blue-200',
+  hot:          'bg-green-100 text-green-700 border-green-200',
+  warm:         'bg-yellow-100 text-yellow-700 border-yellow-200',
+  cold:         'bg-red-100 text-red-600 border-red-200',
   disqualified: 'bg-gray-100 text-gray-500 border-gray-200',
 }
 
@@ -23,10 +23,10 @@ const FLAG_ICONS: Record<NonNullable<Lead['icp_flag']>, string> = {
 
 // Human-readable ICP fit labels (avoids confusion with engagement "warmth")
 const FLAG_LABELS: Record<NonNullable<Lead['icp_flag']>, string> = {
-  hot:          'Ideal Fit',
-  warm:         'Good Fit',
-  cold:         'Weak Fit',
-  disqualified: 'Not a Fit',
+  hot:          'Ideal',
+  warm:         'Good',
+  cold:         'Weak',
+  disqualified: 'No Fit',
 }
 
 function ScoreBar({ score }: { score: number }) {
@@ -2570,7 +2570,7 @@ export function LeadDetailDrawer({
                   <span className="text-lg font-bold tabular-nums" style={{ color: scoreColor }}>{lead.icp_score}</span>
                   {lead.icp_flag && (
                     <span className={`text-xs font-medium px-2.5 py-1 rounded-full border ${FLAG_COLORS[lead.icp_flag]}`}>
-                      {FLAG_ICONS[lead.icp_flag]} {lead.icp_flag}
+                      {FLAG_ICONS[lead.icp_flag]} {FLAG_LABELS[lead.icp_flag]}
                     </span>
                   )}
                 </div>
