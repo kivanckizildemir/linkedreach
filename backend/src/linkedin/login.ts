@@ -246,28 +246,17 @@ async function resolveBrowserEndpoint(accountId: string): Promise<string | null>
       .eq('id', accountId)
       .single()
 
-    // Always use BrightData Scraping Browser for login — it reliably loads LinkedIn
-    // from Railway without bot detection. The account's proxy_id is used by workers
-    // for automation (scraping, messaging) but NOT for the initial login session.
-
-    // Country targeting: read from the assigned proxy record (proxies.country),
-    // falling back to BRIGHTDATA_DEFAULT_COUNTRY env var (default: gb).
-    // Without a country, BrightData assigns a random IP — often non-UK — which
-    // causes LinkedIn to redirect to a country subdomain (e.g. no.linkedin.com).
-    let country: string | null = null
+    // If the account has its own residential proxy, use local Chromium + that proxy
+    // instead of BrightData Scraping Browser. This avoids BrightData's CDP restrictions
+    // (blocked fetch, blocked keyboard.type on password, non-working page.route intercept)
+    // and uses a trusted static IP the user controls.
     if ((account as { proxy_id?: string | null })?.proxy_id) {
-      const { data: proxy } = await supabase
-        .from('proxies')
-        .select('country')
-        .eq('id', (account as { proxy_id: string }).proxy_id)
-        .single()
-      country = (proxy as { country?: string | null } | null)?.country ?? null
+      console.log(`[LOGIN DEBUG] Account has own proxy — skipping BrightData, using local Chromium + residential proxy`)
+      return null
     }
-    // Fallback: BRIGHTDATA_DEFAULT_COUNTRY env var, then hardcoded 'gb'
-    if (!country) {
-      country = process.env.BRIGHTDATA_DEFAULT_COUNTRY ?? 'gb'
-      console.log(`[LOGIN DEBUG] No proxy country in DB — using fallback country: ${country}`)
-    }
+
+    // No account proxy → fall back to BrightData Scraping Browser with country targeting.
+    const country = process.env.BRIGHTDATA_DEFAULT_COUNTRY ?? 'gb'
 
     const url = new URL(browserUrl)
     const baseUser = decodeURIComponent(url.username)
