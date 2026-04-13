@@ -396,7 +396,7 @@ export async function enrichLeads(
 
       // Every 4th profile, navigate to about:blank to let Chromium GC renderer memory
       // before loading the next heavy profile page — prevents OOM crashes from accumulating
-      if ((i + 1) % 4 === 0) {
+      if ((i + 1) % 8 === 0) {
         console.log('[enrich] Flushing renderer memory (about:blank)…')
         await page.goto('about:blank', { waitUntil: 'commit' }).catch(() => null)
         await page.waitForTimeout(1500)

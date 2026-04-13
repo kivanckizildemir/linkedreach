@@ -479,7 +479,7 @@ export const salesNavScraperWorker = new Worker<SalesNavJob>(
       let noNewCount = 0
       let scrollPos = 0
 
-      for (let s = 0; s < 80 && noNewCount < 15; s++) {
+      for (let s = 0; s < 80 && noNewCount < 5; s++) {
         const batch = await extractVisibleLeads().catch(() => [] as RawLead[])
         const before = allRawLeads.size
         for (const r of batch) {
